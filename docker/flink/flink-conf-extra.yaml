@@ -1,0 +1,14 @@
+# Extra Flink config merged into flink-conf.yaml at image build time.
+# S3/MinIO settings for checkpoint storage and Iceberg data file access.
+s3.endpoint: http://minio:9000
+s3.path.style.access: true
+s3.access-key: minioadmin
+s3.secret-key: minioadmin
+
+# Increase parallelism tolerance for local single-node setup
+taskmanager.numberOfTaskSlots: 4
+parallelism.default: 1
+
+# RocksDB state backend for Flink upsert state (silver jobs)
+state.backend: rocksdb
+state.backend.incremental: true

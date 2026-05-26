@@ -1,0 +1,497 @@
+name: streaming-comparisons
+
+x-iceberg-catalog-env: &iceberg-catalog-env
+  CATALOG_NAME: rest
+  ICEBERG_REST_URI: http://iceberg-rest:8181
+  ICEBERG_WAREHOUSE: s3://warehouse/
+  MINIO_ENDPOINT: http://minio:9000
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+
+x-spark-env: &spark-env
+  <<: *iceberg-catalog-env
+  SPARK_CATALOG_NAME: rest
+  SPARK_CATALOG_TYPE: rest
+  SPARK_CATALOG_URI: http://iceberg-rest:8181
+  SPARK_CATALOG_WAREHOUSE: s3://warehouse/
+  SPARK_S3_ENDPOINT: http://minio:9000
+
+x-flink-env: &flink-env
+  <<: *iceberg-catalog-env
+  FLINK_CATALOG_URI: http://iceberg-rest:8181
+  S3_ENDPOINT: http://minio:9000
+  FLINK_PROPERTIES: |
+    jobmanager.rpc.address: flink-jobmanager
+    taskmanager.numberOfTaskSlots: 4
+    state.backend: rocksdb
+    state.checkpoints.dir: s3://warehouse/_flink_chk/
+    s3.endpoint: http://minio:9000
+    s3.path.style.access: true
+    s3.access-key: minioadmin
+    s3.secret-key: minioadmin
+
+networks:
+  streaming-net:
+    driver: bridge
+
+volumes:
+  pgdata_app:
+  pgdata_catalog:
+  minio_data:
+  flink_checkpoints:
+  spark_checkpoints:
+
+services:
+
+  # ─── Databases ────────────────────────────────────────────────────────────
+
+  postgres-app:
+    image: postgres:15
+    container_name: postgres-app
+    environment:
+      POSTGRES_USER: ${POSTGRES_APP_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_APP_DB:-appdb}
+    command: >
+      postgres
+        -c wal_level=logical
+        -c max_wal_senders=10
+        -c max_replication_slots=10
+        -c wal_keep_size=512
+    ports:
+      - "${POSTGRES_APP_PORT:-5432}:5432"
+    volumes:
+      - pgdata_app:/var/lib/postgresql/data
+      - ./infra/postgres/init-appdb.sql:/docker-entrypoint-initdb.d/01-init-appdb.sql
+    networks:
+      - streaming-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_APP_USER:-app} -d ${POSTGRES_APP_DB:-appdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-catalog:
+    image: postgres:15
+    container_name: postgres-catalog
+    environment:
+      POSTGRES_USER: ${POSTGRES_CATALOG_USER:-iceberg}
+      POSTGRES_PASSWORD: ${POSTGRES_CATALOG_PASSWORD:-iceberg}
+      POSTGRES_DB: ${POSTGRES_CATALOG_DB:-iceberg_catalog}
+    ports:
+      - "${POSTGRES_CATALOG_PORT:-5433}:5432"
+    volumes:
+      - pgdata_catalog:/var/lib/postgresql/data
+      - ./infra/postgres/init-catalogdb.sql:/docker-entrypoint-initdb.d/01-init-catalogdb.sql
+    networks:
+      - streaming-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_CATALOG_USER:-iceberg} -d ${POSTGRES_CATALOG_DB:-iceberg_catalog}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── Object Storage ───────────────────────────────────────────────────────
+
+  minio:
+    image: minio/minio:RELEASE.2024-05-10T01-41-38Z
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - streaming-net
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mc-init:
+    image: minio/mc:latest
+    container_name: mc-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - ./infra/minio/init-buckets.sh:/init-buckets.sh
+    entrypoint: ["/bin/sh", "/init-buckets.sh"]
+    networks:
+      - streaming-net
+
+  # ─── Iceberg REST Catalog ─────────────────────────────────────────────────
+
+  iceberg-rest:
+    image: tabulario/iceberg-rest:1.5.0
+    container_name: iceberg-rest
+    depends_on:
+      postgres-catalog:
+        condition: service_healthy
+      mc-init:
+        condition: service_completed_successfully
+    environment:
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: jdbc:postgresql://postgres-catalog:5432/${POSTGRES_CATALOG_DB:-iceberg_catalog}
+      CATALOG_JDBC_USER: ${POSTGRES_CATALOG_USER:-iceberg}
+      CATALOG_JDBC_PASSWORD: ${POSTGRES_CATALOG_PASSWORD:-iceberg}
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${ICEBERG_REST_PORT:-8181}:8181"
+    networks:
+      - streaming-net
+    healthcheck:
+      test: ["CMD-SHELL", "cat /proc/net/tcp6 | awk '{print $2}' | grep -qi '1FF5'"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  # ─── Kafka (KRaft, single broker) ─────────────────────────────────────────
+
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    networks:
+      - streaming-net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ─── Debezium Kafka Connect ───────────────────────────────────────────────
+
+  kafka-connect:
+    build:
+      context: ./infra/kafka-connect
+      dockerfile: Dockerfile
+    container_name: kafka-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres-app:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: debezium-connect
+      CONFIG_STORAGE_TOPIC: debezium_connect_configs
+      OFFSET_STORAGE_TOPIC: debezium_connect_offsets
+      STATUS_STORAGE_TOPIC: debezium_connect_statuses
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_REST_PORT: 8083
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+    ports:
+      - "${KAFKA_CONNECT_PORT:-8083}:8083"
+    volumes:
+      - ./infra/kafka-connect/connectors:/connectors:ro
+    networks:
+      - streaming-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  # ─── DDL Init ─────────────────────────────────────────────────────────────
+
+  ddl-init:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile
+    container_name: ddl-init
+    depends_on:
+      iceberg-rest:
+        condition: service_healthy
+      mc-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *spark-env
+      JOB_FILE: /app/ddl/create_tables_spark.py
+    volumes:
+      - ./ddl:/app/ddl
+    networks:
+      - streaming-net
+
+  # ─── Data Generators ──────────────────────────────────────────────────────
+
+  generator-sales:
+    build:
+      context: ./docker/streamlit
+      dockerfile: Dockerfile
+    container_name: generator-sales
+    depends_on:
+      postgres-app:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres-app
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_APP_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_APP_DB:-appdb}
+      EVENTS_PER_SEC: ${SALES_EVENTS_PER_SEC:-5}
+    volumes:
+      - ./generators:/app/generators
+    entrypoint: ["python", "/app/generators/gen_item_sales.py"]
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  generator-attributes:
+    build:
+      context: ./docker/streamlit
+      dockerfile: Dockerfile
+    container_name: generator-attributes
+    depends_on:
+      postgres-app:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres-app
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_APP_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_APP_DB:-appdb}
+      EVENTS_PER_SEC: ${ATTRIBUTES_EVENTS_PER_SEC:-1}
+    volumes:
+      - ./generators:/app/generators
+    entrypoint: ["python", "/app/generators/gen_item_attributes.py"]
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  # ─── Spark Jobs ───────────────────────────────────────────────────────────
+
+  spark-bronze-sales:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile
+    container_name: spark-bronze-sales
+    depends_on:
+      kafka:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_healthy
+      ddl-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *spark-env
+      JOB_FILE: /opt/jobs/bronze_item_sales.py
+    volumes:
+      - ./jobs/spark:/opt/jobs:ro
+      - spark_checkpoints:/opt/checkpoints
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  spark-bronze-attr:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile
+    container_name: spark-bronze-attr
+    depends_on:
+      kafka:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_healthy
+      ddl-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *spark-env
+      JOB_FILE: /opt/jobs/bronze_item_attributes.py
+    volumes:
+      - ./jobs/spark:/opt/jobs:ro
+      - spark_checkpoints:/opt/checkpoints
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  spark-silver-sales:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile
+    container_name: spark-silver-sales
+    depends_on:
+      spark-bronze-sales:
+        condition: service_started
+    environment:
+      <<: *spark-env
+      JOB_FILE: /opt/jobs/silver_item_sales.py
+    volumes:
+      - ./jobs/spark:/opt/jobs:ro
+      - spark_checkpoints:/opt/checkpoints
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  spark-gold-item-category-count:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile
+    container_name: spark-gold-item-category-count
+    depends_on:
+      spark-silver-attr:
+        condition: service_started
+    environment:
+      <<: *spark-env
+      JOB_FILE: /opt/jobs/gold_item_category_count.py
+    volumes:
+      - ./jobs/spark:/opt/jobs:ro
+      - spark_checkpoints:/opt/checkpoints
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  spark-silver-attr:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile
+    container_name: spark-silver-attr
+    depends_on:
+      spark-bronze-attr:
+        condition: service_started
+    environment:
+      <<: *spark-env
+      JOB_FILE: /opt/jobs/silver_item_attributes.py
+    volumes:
+      - ./jobs/spark:/opt/jobs:ro
+      - spark_checkpoints:/opt/checkpoints
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  compactor:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile
+    container_name: compactor
+    depends_on:
+      iceberg-rest:
+        condition: service_healthy
+      ddl-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *spark-env
+      JOB_FILE: /opt/jobs/maintenance_compaction.py
+    volumes:
+      - ./jobs/spark:/opt/jobs:ro
+      - spark_checkpoints:/opt/checkpoints
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  # ─── Flink ────────────────────────────────────────────────────────────────
+
+  flink-jobmanager:
+    build:
+      context: ./docker/flink
+      dockerfile: Dockerfile
+    container_name: flink-jobmanager
+    command: jobmanager
+    depends_on:
+      iceberg-rest:
+        condition: service_healthy
+      ddl-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *flink-env
+    ports:
+      - "${FLINK_JOBMANAGER_PORT:-8081}:8081"
+    networks:
+      - streaming-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/overview || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  flink-taskmanager:
+    build:
+      context: ./docker/flink
+      dockerfile: Dockerfile
+    container_name: flink-taskmanager
+    command: taskmanager
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      <<: *flink-env
+    networks:
+      - streaming-net
+
+  flink-submitter:
+    build:
+      context: ./docker/flink
+      dockerfile: Dockerfile
+    container_name: flink-submitter
+    depends_on:
+      flink-taskmanager:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      ddl-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *flink-env
+    volumes:
+      - ./jobs/flink:/opt/flink-jobs:ro
+    entrypoint: ["/bin/bash", "/opt/flink-jobs/submit.sh"]
+    networks:
+      - streaming-net
+
+  # ─── Streamlit UI ─────────────────────────────────────────────────────────
+
+  streamlit-ui:
+    build:
+      context: ./docker/streamlit
+      dockerfile: Dockerfile
+    container_name: streamlit-ui
+    depends_on:
+      iceberg-rest:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *iceberg-catalog-env
+      KAFKA_BROKERS: kafka:9092
+    ports:
+      - "${STREAMLIT_PORT:-8501}:8501"
+    volumes:
+      - ./ui:/app/ui
+    entrypoint: ["streamlit", "run", "/app/ui/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    networks:
+      - streaming-net
+    restart: unless-stopped

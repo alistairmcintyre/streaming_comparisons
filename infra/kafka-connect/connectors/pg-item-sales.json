@@ -1,0 +1,29 @@
+{
+  "name": "pg-item-sales",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "plugin.name": "pgoutput",
+    "database.hostname": "postgres-app",
+    "database.port": "5432",
+    "database.user": "app",
+    "database.password": "app",
+    "database.dbname": "appdb",
+    "topic.prefix": "app",
+    "schema.include.list": "public",
+    "table.include.list": "public.item_sales",
+    "slot.name": "dbz_item_sales",
+    "publication.autocreate.mode": "disabled",
+    "publication.name": "dbz_publication",
+    "snapshot.mode": "initial",
+    "tombstones.on.delete": "false",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "connect",
+    "heartbeat.interval.ms": "10000",
+    "heartbeat.action.query": "UPDATE public.item_sales SET updated_at = updated_at WHERE item_id = -1"
+  }
+}
