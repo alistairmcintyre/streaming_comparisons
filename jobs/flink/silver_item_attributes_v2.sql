@@ -61,7 +61,8 @@ CREATE TEMPORARY TABLE bronze_src (
     'database-name'       = 'bronze',
     'table-name'          = 'item_attributes_flink',
     'streaming'           = 'true',
-    'monitor-interval'    = '10s'
+    'monitor-interval'    = '10s',
+    'scan.startup.mode'   = 'earliest'
 );
 
 -- SCD1 aggregation using LAST_VALUE per item_id.
@@ -74,18 +75,13 @@ CREATE TEMPORARY TABLE bronze_src (
 CREATE TEMPORARY VIEW deduped AS
 SELECT
     item_id,
-    LAST_VALUE(op)                                                          AS op,
-    LAST_VALUE(name) FILTER (WHERE source_updated_at = MAX(source_updated_at))
-                                                                            AS name,
-    LAST_VALUE(price) FILTER (WHERE source_updated_at = MAX(source_updated_at))
-                                                                            AS price,
-    LAST_VALUE(category) FILTER (WHERE source_updated_at = MAX(source_updated_at))
-                                                                            AS category,
-    MAX(source_updated_at)                                                  AS source_updated_at,
-    LAST_VALUE(event_ts) FILTER (WHERE source_updated_at = MAX(source_updated_at))
-                                                                            AS event_ts,
-    LAST_VALUE(ingest_ts) FILTER (WHERE source_updated_at = MAX(source_updated_at))
-                                                                            AS ingest_ts
+    LAST_VALUE(op)                AS op,
+    LAST_VALUE(name)              AS name,
+    LAST_VALUE(price)             AS price,
+    LAST_VALUE(category)          AS category,
+    MAX(source_updated_at)        AS source_updated_at,
+    MAX(event_ts)                 AS event_ts,
+    MAX(ingest_ts)                AS ingest_ts
 FROM bronze_src
 WHERE op IS NOT NULL
 GROUP BY item_id;

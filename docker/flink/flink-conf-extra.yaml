@@ -6,7 +6,7 @@ s3.access-key: minioadmin
 s3.secret-key: minioadmin
 
 # Increase parallelism tolerance for local single-node setup
-taskmanager.numberOfTaskSlots: 4
+taskmanager.numberOfTaskSlots: 6
 parallelism.default: 1
 
 # RocksDB state backend for Flink upsert state (silver jobs)

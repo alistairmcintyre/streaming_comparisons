@@ -394,3 +394,10 @@ CALL rest.system.rewrite_data_files(
 ```
 
 After this runs, re-query `.files` — equality delete count drops to 0, a new snapshot appears with `operation = 'replace'`, and the silver row values are unchanged.
+
+debugging:
+
+flink
+check job statuses
+curl -s http://localhost:8081/jobs | python3 -m json.tool
+curl -s http://localhost:8081/overview | python3 -m json.tool && docker compose ps flink-jobmanager flink-taskmanager flink-submitter

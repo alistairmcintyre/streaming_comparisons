@@ -17,14 +17,32 @@ until curl -sf "http://${JM_HOST}:${JM_REST}/overview" > /dev/null; do
 done
 echo "JobManager is ready."
 
+# Write RPC address into config so sql-client picks it up.
+# The submitter uses a custom entrypoint that bypasses the Flink docker
+# entrypoint which normally processes FLINK_PROPERTIES into the config file.
+for CONF_FILE in "${FLINK_HOME}/conf/flink-conf.yaml" "${FLINK_HOME}/conf/config.yaml"; do
+  if [ -f "${CONF_FILE}" ]; then
+    sed -i "s/^jobmanager.rpc.address:.*/jobmanager.rpc.address: ${JM_HOST}/" "${CONF_FILE}"
+    sed -i "s/^rest.address:.*/rest.address: ${JM_HOST}/" "${CONF_FILE}"
+    echo "Set jobmanager.rpc.address and rest.address to ${JM_HOST} in ${CONF_FILE}"
+  fi
+done
+
+# Run Flink DDL synchronously before submitting jobs.
+# iceberg-flink-runtime is in lib/ so no --jar flag needed — passing it via
+# --jar and having it in lib/ causes a ClassCastException from duplicate classloading.
+SQL_CLIENT="${FLINK_HOME}/bin/sql-client.sh"
+
+echo "Creating Flink tables..."
+${SQL_CLIENT} -f /opt/ddl/create_tables_flink.sql
+echo "Flink tables ready."
+
 # sql-client in embedded mode runs SQL from a file and exits.
 # Run each file in background so all jobs are submitted concurrently.
 submit_job() {
   local sql_file=$1
   echo "Submitting: ${sql_file}"
-  ${FLINK_HOME}/bin/sql-client.sh \
-    --jar ${FLINK_HOME}/lib/iceberg-flink-runtime-1.18-1.5.2.jar \
-    -f "${sql_file}" &
+  ${SQL_CLIENT} -f "${sql_file}" &
 }
 
 submit_job "${JOB_DIR}/bronze_item_attributes.sql"
