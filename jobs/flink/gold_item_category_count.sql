@@ -51,10 +51,11 @@ CREATE TEMPORARY TABLE silver_item_attributes (
     's3.path-style-access' = 'true',
     's3.access-key-id'    = 'minioadmin',
     's3.secret-access-key' = 'minioadmin',
-    'database-name'       = 'silver',
-    'table-name'          = 'item_attributes_flink',
+    'catalog-database'    = 'silver',
+    'catalog-table'       = 'item_attributes_flink',
     'streaming'           = 'true',
-    'monitor-interval'    = '10s'
+    'monitor-interval'    = '10s',
+    'starting-strategy'   = 'TABLE_SCAN_THEN_INCREMENTAL'
 );
 
 INSERT INTO rest.gold.item_category_count_flink /*+ OPTIONS('upsert-enabled'='true') */

@@ -34,8 +34,10 @@ CREATE CATALOG rest WITH (
     's3.secret-access-key' = 'minioadmin'
 );
 
--- Read bronze as an append stream. Bronze has the full Debezium envelope
--- flattened: op, item_id, name, price, category, source_updated_at, event_ts.
+-- Read bronze directly from the catalog as a streaming source.
+-- Using the catalog table reference (rest.bronze.item_attributes_flink) rather
+-- than the connector approach avoids database-name resolution issues.
+-- TABLE_SCAN_THEN_INCREMENTAL ensures existing rows are read before streaming new ones.
 CREATE TEMPORARY TABLE bronze_src (
     op                STRING,
     item_id           BIGINT,
@@ -58,11 +60,11 @@ CREATE TEMPORARY TABLE bronze_src (
     's3.path-style-access' = 'true',
     's3.access-key-id'    = 'minioadmin',
     's3.secret-access-key' = 'minioadmin',
-    'database-name'       = 'bronze',
-    'table-name'          = 'item_attributes_flink',
+    'catalog-database'    = 'bronze',
+    'catalog-table'       = 'item_attributes_flink',
     'streaming'           = 'true',
     'monitor-interval'    = '10s',
-    'scan.startup.mode'   = 'earliest'
+    'starting-strategy'   = 'TABLE_SCAN_THEN_INCREMENTAL'
 );
 
 -- SCD1 aggregation using LAST_VALUE per item_id.
