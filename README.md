@@ -401,3 +401,32 @@ flink
 check job statuses
 curl -s http://localhost:8081/jobs | python3 -m json.tool
 curl -s http://localhost:8081/overview | python3 -m json.tool && docker compose ps flink-jobmanager flink-taskmanager flink-submitter
+
+
+### Checking iceberg table stats
+
+
+SELECT * FROM rest.silver.item_attributes_flink.history order by made_current_at desc limit 2;
+
+SELECT * FROM rest.silver.item_attributes_flink.snapshots order by committed_at desc limit 2;
+
+-- Partitions
+SELECT * FROM rest.silver.item_attributes_flink.partitions limit 10;
+
+-- Files
+-- shows min/max values for each column
+SELECT * FROM rest.silver.item_attributes_flink.files;
+
+SELECT * FROM rest.silver.item_attributes_flink.manifests;
+
+select
+h.made_current_at,
+s.operation,
+h.snapshot_id,
+h.is_current_ancestor,
+s.summary
+from rest.silver.item_attributes_flink_v2.history h
+join rest.silver.item_attributes_flink_v2.snapshots s
+on h.snapshot_id = s.snapshot_id
+order by made_current_at desc
+limit 5;

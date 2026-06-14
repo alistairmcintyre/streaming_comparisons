@@ -23,6 +23,7 @@ CREATE CATALOG rest WITH (
 );
 
 -- ─── Bronze tables ────────────────────────────────────────────────────────
+-- Append-only — MoR not applicable.
 
 CREATE TABLE IF NOT EXISTS rest.bronze.item_sales_flink (
   op                STRING,
@@ -50,6 +51,10 @@ CREATE TABLE IF NOT EXISTS rest.bronze.item_attributes_flink (
 );
 
 -- ─── Silver tables ────────────────────────────────────────────────────────
+-- MoR: Flink's EqualityDeltaWriter already produces append + equality-delete
+-- files. Setting MoR explicitly ensures Spark-initiated compaction and batch
+-- reads use the same strategy rather than defaulting to CoW, which would cause
+-- expensive full file rewrites at scale.
 
 CREATE TABLE IF NOT EXISTS rest.silver.item_sales_flink (
   item_id           BIGINT NOT NULL,
@@ -61,6 +66,11 @@ CREATE TABLE IF NOT EXISTS rest.silver.item_sales_flink (
   ingest_ts         TIMESTAMP(6),
   commit_ts         TIMESTAMP(6),
   PRIMARY KEY (item_id) NOT ENFORCED
+);
+ALTER TABLE rest.silver.item_sales_flink SET (
+  'write.delete.mode' = 'merge-on-read',
+  'write.update.mode' = 'merge-on-read',
+  'write.merge.mode'  = 'merge-on-read'
 );
 
 CREATE TABLE IF NOT EXISTS rest.silver.item_attributes_flink (
@@ -75,6 +85,11 @@ CREATE TABLE IF NOT EXISTS rest.silver.item_attributes_flink (
   commit_ts         TIMESTAMP(6),
   PRIMARY KEY (item_id) NOT ENFORCED
 );
+ALTER TABLE rest.silver.item_attributes_flink SET (
+  'write.delete.mode' = 'merge-on-read',
+  'write.update.mode' = 'merge-on-read',
+  'write.merge.mode'  = 'merge-on-read'
+);
 
 CREATE TABLE IF NOT EXISTS rest.silver.item_attributes_flink_v2 (
   item_id           BIGINT NOT NULL,
@@ -88,6 +103,11 @@ CREATE TABLE IF NOT EXISTS rest.silver.item_attributes_flink_v2 (
   commit_ts         TIMESTAMP(6),
   PRIMARY KEY (item_id) NOT ENFORCED
 );
+ALTER TABLE rest.silver.item_attributes_flink_v2 SET (
+  'write.delete.mode' = 'merge-on-read',
+  'write.update.mode' = 'merge-on-read',
+  'write.merge.mode'  = 'merge-on-read'
+);
 
 -- ─── Gold tables ──────────────────────────────────────────────────────────
 
@@ -96,9 +116,19 @@ CREATE TABLE IF NOT EXISTS rest.gold.item_category_count_flink (
   item_count BIGINT NOT NULL,
   PRIMARY KEY (category) NOT ENFORCED
 );
+ALTER TABLE rest.gold.item_category_count_flink SET (
+  'write.delete.mode' = 'merge-on-read',
+  'write.update.mode' = 'merge-on-read',
+  'write.merge.mode'  = 'merge-on-read'
+);
 
 CREATE TABLE IF NOT EXISTS rest.gold.item_category_count_flink_v2 (
   category   STRING NOT NULL,
   item_count BIGINT NOT NULL,
   PRIMARY KEY (category) NOT ENFORCED
+);
+ALTER TABLE rest.gold.item_category_count_flink_v2 SET (
+  'write.delete.mode' = 'merge-on-read',
+  'write.update.mode' = 'merge-on-read',
+  'write.merge.mode'  = 'merge-on-read'
 );
