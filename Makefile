@@ -1,6 +1,7 @@
 .PHONY: up down build wait create-tables register-connectors seed sql \
         start-generators start-spark start-flink start-compactor start-attr-only \
-        ui logs status all clean logs-spark
+        start-delta start-hudi start-paimon \
+        ui logs status all clean logs-spark logs-delta logs-hudi logs-paimon
 
 # ─── Bring up infrastructure ────────────────────────────────────────────────
 
@@ -63,6 +64,27 @@ start-attr-only:
 		spark-bronze-attr \
 		spark-silver-attr \
 		spark-gold-item-category-count
+
+start-delta:
+	docker compose up -d ddl-init-delta
+	@echo "Waiting 15s for Delta DDL init to complete..."
+	@sleep 15
+	docker compose up -d \
+		delta-bronze-attr \
+		delta-silver-attr \
+		delta-gold-item-category-count
+
+start-hudi:
+	docker compose up -d \
+		hudi-bronze-attr \
+		hudi-silver-attr \
+		hudi-gold-item-category-count
+
+start-paimon:
+	docker compose up -d \
+		paimon-bronze-attr \
+		paimon-silver-attr \
+		paimon-gold-item-category-count
 
 # Interactive Spark SQL shell with Iceberg catalog pre-configured
 sql:
@@ -132,6 +154,15 @@ logs-spark:
 
 logs-flink:
 	docker compose logs -f --tail=50 flink-jobmanager flink-taskmanager flink-submitter
+
+logs-delta:
+	docker compose logs -f --tail=50 ddl-init-delta delta-bronze-attr delta-silver-attr delta-gold-item-category-count
+
+logs-hudi:
+	docker compose logs -f --tail=50 hudi-bronze-attr hudi-silver-attr hudi-gold-item-category-count
+
+logs-paimon:
+	docker compose logs -f --tail=50 paimon-bronze-attr paimon-silver-attr paimon-gold-item-category-count
 
 logs-connect:
 	docker compose logs -f --tail=50 kafka-connect

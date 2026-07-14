@@ -17,6 +17,14 @@ x-spark-env: &spark-env
   SPARK_CATALOG_WAREHOUSE: s3://warehouse/
   SPARK_S3_ENDPOINT: http://minio:9000
 
+x-s3-env: &s3-env
+  MINIO_ENDPOINT: http://minio:9000
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  KAFKA_BROKERS: kafka:9092
+  CHECKPOINT_BASE: s3a://warehouse/_chk
+
 x-flink-env: &flink-env
   <<: *iceberg-catalog-env
   FLINK_CATALOG_URI: http://iceberg-rest:8181
@@ -409,6 +417,187 @@ services:
     volumes:
       - ./jobs/spark:/opt/jobs:ro
       - spark_checkpoints:/opt/checkpoints
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  # ─── Delta Lake Spark Jobs ────────────────────────────────────────────────
+
+  ddl-init-delta:
+    build:
+      context: ./docker/spark-delta
+      dockerfile: Dockerfile
+    container_name: ddl-init-delta
+    depends_on:
+      mc-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *s3-env
+      JOB_FILE: /app/ddl/create_tables_delta.py
+    volumes:
+      - ./ddl:/app/ddl
+    networks:
+      - streaming-net
+
+  delta-bronze-attr:
+    build:
+      context: ./docker/spark-delta
+      dockerfile: Dockerfile
+    container_name: delta-bronze-attr
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ddl-init-delta:
+        condition: service_completed_successfully
+    environment:
+      <<: *s3-env
+      JOB_FILE: /opt/jobs/bronze_item_attributes.py
+    volumes:
+      - ./jobs/spark-delta:/opt/jobs:ro
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  delta-silver-attr:
+    build:
+      context: ./docker/spark-delta
+      dockerfile: Dockerfile
+    container_name: delta-silver-attr
+    depends_on:
+      delta-bronze-attr:
+        condition: service_started
+    environment:
+      <<: *s3-env
+      JOB_FILE: /opt/jobs/silver_item_attributes.py
+    volumes:
+      - ./jobs/spark-delta:/opt/jobs:ro
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  delta-gold-item-category-count:
+    build:
+      context: ./docker/spark-delta
+      dockerfile: Dockerfile
+    container_name: delta-gold-item-category-count
+    depends_on:
+      delta-silver-attr:
+        condition: service_started
+    environment:
+      <<: *s3-env
+      JOB_FILE: /opt/jobs/gold_item_category_count.py
+    volumes:
+      - ./jobs/spark-delta:/opt/jobs:ro
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  # ─── Apache Hudi Spark Jobs ───────────────────────────────────────────────
+
+  hudi-bronze-attr:
+    build:
+      context: ./docker/spark-hudi
+      dockerfile: Dockerfile
+    container_name: hudi-bronze-attr
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mc-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *s3-env
+      JOB_FILE: /opt/jobs/bronze_item_attributes.py
+    volumes:
+      - ./jobs/spark-hudi:/opt/jobs:ro
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  hudi-silver-attr:
+    build:
+      context: ./docker/spark-hudi
+      dockerfile: Dockerfile
+    container_name: hudi-silver-attr
+    depends_on:
+      hudi-bronze-attr:
+        condition: service_started
+    environment:
+      <<: *s3-env
+      JOB_FILE: /opt/jobs/silver_item_attributes.py
+    volumes:
+      - ./jobs/spark-hudi:/opt/jobs:ro
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  hudi-gold-item-category-count:
+    build:
+      context: ./docker/spark-hudi
+      dockerfile: Dockerfile
+    container_name: hudi-gold-item-category-count
+    depends_on:
+      hudi-silver-attr:
+        condition: service_started
+    environment:
+      <<: *s3-env
+      JOB_FILE: /opt/jobs/gold_item_category_count.py
+    volumes:
+      - ./jobs/spark-hudi:/opt/jobs:ro
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  # ─── Apache Paimon Spark Jobs ─────────────────────────────────────────────
+
+  paimon-bronze-attr:
+    build:
+      context: ./docker/spark-paimon
+      dockerfile: Dockerfile
+    container_name: paimon-bronze-attr
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mc-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *s3-env
+      JOB_FILE: /opt/jobs/bronze_item_attributes.py
+    volumes:
+      - ./jobs/spark-paimon:/opt/jobs:ro
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  paimon-silver-attr:
+    build:
+      context: ./docker/spark-paimon
+      dockerfile: Dockerfile
+    container_name: paimon-silver-attr
+    depends_on:
+      paimon-bronze-attr:
+        condition: service_started
+    environment:
+      <<: *s3-env
+      JOB_FILE: /opt/jobs/silver_item_attributes.py
+    volumes:
+      - ./jobs/spark-paimon:/opt/jobs:ro
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  paimon-gold-item-category-count:
+    build:
+      context: ./docker/spark-paimon
+      dockerfile: Dockerfile
+    container_name: paimon-gold-item-category-count
+    depends_on:
+      paimon-silver-attr:
+        condition: service_started
+    environment:
+      <<: *s3-env
+      JOB_FILE: /opt/jobs/gold_item_category_count.py
+    volumes:
+      - ./jobs/spark-paimon:/opt/jobs:ro
     networks:
       - streaming-net
     restart: unless-stopped
