@@ -13,20 +13,45 @@ parameters:
   type: gp3
   encrypted: "true"
 ---
-# EFS (ReadWriteMany) for Fluss remote.data.dir — shared across coordinator/tablet/flink.
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata: { name: efs-sc }
-provisioner: efs.csi.aws.com
-parameters:
-  provisioningMode: efs-ap
-  fileSystemId: ${EFS_ID}
-  directoryPerms: "700"
+# Fluss remote.data.dir on EFS, SHARED across namespaces (fluss coordinator/tablet
+# AND the flink cluster that reads the remote-log tier). Dynamic efs-ap provisioning
+# gives each PVC an isolated access point → NOT shared, so we use STATIC PVs that all
+# point at the same EFS filesystem root (volumeHandle=${EFS_ID}); one PV+PVC per
+# namespace, same underlying filesystem → shared data.
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: fluss-remote-fluss }
+spec:
+  capacity: { storage: 50Gi }
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi: { driver: efs.csi.aws.com, volumeHandle: "${EFS_ID}" }
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata: { name: fluss-remote, namespace: fluss }
 spec:
   accessModes: ["ReadWriteMany"]
-  storageClassName: efs-sc
+  storageClassName: ""
+  volumeName: fluss-remote-fluss
+  resources: { requests: { storage: 50Gi } }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: fluss-remote-flink }
+spec:
+  capacity: { storage: 50Gi }
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi: { driver: efs.csi.aws.com, volumeHandle: "${EFS_ID}" }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: fluss-remote, namespace: flink }
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: fluss-remote-flink
   resources: { requests: { storage: 50Gi } }
