@@ -23,6 +23,10 @@ on:
       run_id:
         description: "Stable id → shared state/names so re-apply is INCREMENTAL"
         default: "iter"
+      skip_build:
+        description: "Skip image build+push (reuse images already in ECR) — fast deploy iterations"
+        type: boolean
+        default: false
 
 permissions:
   id-token: write      # OIDC
@@ -80,6 +84,7 @@ jobs:
           echo "ECR_REGISTRY=${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
 
       - name: Build + push images to ECR
+        if: ${{ !inputs.skip_build }}
         run: |
           aws ecr get-login-password --region "$AWS_REGION" \
             | docker login --username AWS --password-stdin "$ECR_REGISTRY"
@@ -103,10 +108,13 @@ jobs:
             --set "settings.clusterName=${CLUSTER_NAME}" --set "settings.interruptionQueue=${KARPENTER_QUEUE}" \
             --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=${KARPENTER_CONTROLLER_ROLE}" --wait
           helm repo add jetstack https://charts.jetstack.io && helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo add spark-operator https://kubeflow.github.io/spark-operator && helm repo update
+          helm repo add spark-operator https://kubeflow.github.io/spark-operator
+          # Flink operator: Apache archive HTTP repo (version in URL; OCI ref is not a valid chart)
+          helm repo add flink-operator https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.13.0/
+          helm repo update
           helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set crds.enabled=true --wait
           helm upgrade --install strimzi oci://quay.io/strimzi-helm/strimzi-kafka-operator -n kafka --create-namespace --wait
-          helm upgrade --install flink-operator oci://ghcr.io/apache/flink-kubernetes-operator -n flink --create-namespace --wait
+          helm upgrade --install flink-operator flink-operator/flink-kubernetes-operator -n flink --create-namespace --wait
           helm upgrade --install spark-operator spark-operator/spark-operator -n spark --create-namespace --wait
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -n monitoring --create-namespace --wait
 
