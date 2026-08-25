@@ -14,6 +14,12 @@ module "eks" {
   cluster_endpoint_public_access           = true
   enable_cluster_creator_admin_permissions = true
 
+  # Ephemeral benchmark cluster (2.5h, synthetic data) → skip customer-managed KMS
+  # secret encryption. Avoids a KMS key to provision/grant/tear down and the extra
+  # kms:* perms on the deploy role. (EBS/EFS still use AWS-managed keys.)
+  cluster_encryption_config = {}
+  create_kms_key            = false
+
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
