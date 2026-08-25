@@ -205,16 +205,28 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: |
           CN="sc-${RUN_ID}"
-          # Karpenter-provisioned nodes are NOT in terraform state, so destroy leaves
-          # them running and their CNI ENIs block VPC/subnet deletion. Terminate all
-          # cluster-tagged EC2 first (same as the kill-switch CodeBuild does).
+          # Destroy FIRST: deleting the EKS cluster kills Karpenter. Terminating EC2
+          # while the control plane is alive makes Karpenter launch replacements
+          # (seen live 2026-08-25). Karpenter nodes are NOT in tf state, so leftovers
+          # are cleaned up AFTER the destroy.
+          terraform destroy -auto-approve -input=false \
+            -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
+            echo "first destroy pass failed — sweeping blockers, then retrying"
+          # Terminate leftover cluster EC2 (Karpenter is dead now; they stay dead)
           IDS=$(aws ec2 describe-instances --region "$AWS_REGION" \
             --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
             --query 'Reservations[].Instances[].InstanceId' --output text)
           if [ -n "$IDS" ]; then aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $IDS; aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids $IDS || true; fi
+          # Their CNI ENIs linger 'available' and block subnet/SG deletion
+          for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+            --filters "Name=description,Values=aws-K8S-*" "Name=status,Values=available" \
+            --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
+            aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
+          done
+          # Second pass finishes whatever the leftovers blocked (VPC/subnet/SG)
           terraform destroy -auto-approve -input=false \
             -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
-            echo "destroy failed — EventBridge kill switch will tear down at the 2.5h mark"
+            echo "destroy still failing — EventBridge kill switch will tear down at the 2.5h mark"
           # Sweep CSI-provisioned EBS orphans (PVCs; reclaimPolicy Delete, but the
           # cluster is gone before they're deleted → orphaned).
           VOLS=$(aws ec2 describe-volumes --region "$AWS_REGION" \

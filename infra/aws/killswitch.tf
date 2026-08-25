@@ -61,15 +61,27 @@ resource "aws_codebuild_project" "teardown" {
             - unzip -o /tmp/tf.zip -d /usr/local/bin
         build:
           commands:
-            # 1) stop the compute bleed immediately — Karpenter + nodegroup EC2
+            # 1) full, dependency-ordered teardown FIRST. Deleting the EKS cluster
+            #    kills Karpenter — terminating EC2 while the control plane is alive
+            #    just makes Karpenter launch replacements (seen live 2026-08-25:
+            #    3 terminated -> 4 new within minutes).
+            - terraform init -input=false
+            - terraform destroy -auto-approve -input=false || true
+            # 2) NOW terminate any leftover cluster EC2 (Karpenter is dead, they stay dead)
             - |
               IDS=$(aws ec2 describe-instances --region "$AWS_REGION" \
                 --filters "Name=tag:kubernetes.io/cluster/$CLUSTER_NAME,Values=owned" \
                           "Name=instance-state-name,Values=pending,running,stopping,stopped" \
                 --query 'Reservations[].Instances[].InstanceId' --output text)
-              if [ -n "$IDS" ]; then echo "Terminating $IDS"; aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $IDS || true; fi
-            # 2) full, dependency-ordered teardown of the run
-            - terraform init -input=false
+              if [ -n "$IDS" ]; then echo "Terminating $IDS"; aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $IDS || true; aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids $IDS || true; fi
+            # 2b) their CNI ENIs linger 'available' and block subnet/SG delete
+            - |
+              for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+                --filters "Name=description,Values=aws-K8S-*" "Name=status,Values=available" \
+                --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
+                aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
+              done
+            # 2c) second destroy pass finishes anything the leftovers blocked (VPC/subnet/SG)
             - terraform destroy -auto-approve -input=false
             # 3) sweep CSI-provisioned EBS orphans (PVCs; cluster gone before delete)
             - |
@@ -155,7 +167,11 @@ resource "aws_iam_role_policy" "teardown" {
         Action = [
           "eks:*", "ec2:*", "elasticloadbalancing:*", "autoscaling:*",
           "iam:*", "ecr:*", "logs:*", "events:*", "scheduler:*", "lambda:*",
-          "codebuild:*", "sqs:*", "glue:*", "athena:*", "cloudwatch:*", "budgets:*"
+          "codebuild:*", "sqs:*", "glue:*", "athena:*", "cloudwatch:*", "budgets:*",
+          # efs.tf + the delta-logstore DynamoDB table are run resources too —
+          # without these the destroy dies in refresh (AccessDenied, seen live
+          # 2026-08-25: elasticfilesystem:DescribeFileSystems + dynamodb:DescribeTable).
+          "elasticfilesystem:*", "dynamodb:*", "kms:*", "ssm:*"
         ]
         Resource = "*"
       },
