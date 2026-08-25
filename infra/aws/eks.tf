@@ -47,18 +47,10 @@ module "eks" {
     }
   }
 
-  # Let the GitHub deploy role administer the cluster (kubectl deploys).
-  access_entries = {
-    gha_deploy = {
-      principal_arn = data.aws_iam_role.github_deploy.arn
-      policy_associations = {
-        admin = {
-          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-          access_scope = { type = "cluster" }
-        }
-      }
-    }
-  }
+  # The GitHub deploy role IS the cluster creator, so
+  # enable_cluster_creator_admin_permissions=true already grants it admin access
+  # (and kubectl works in the workflow). An explicit access_entries block for the
+  # same principal caused a 409 ResourceInUseException — don't double-grant.
 
   # Nodes must be discoverable + drainable by Karpenter.
   node_security_group_tags = { "karpenter.sh/discovery" = local.cluster_name }

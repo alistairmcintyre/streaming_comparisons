@@ -15,6 +15,14 @@ on:
       run_minutes:
         description: "Minutes to run before snapshot+destroy"
         default: "120"
+      destroy_mode:
+        description: "When to terraform destroy (EventBridge 2.5h kill-switch always backstops)"
+        type: choice
+        options: ["on-success", "never", "always"]
+        default: "on-success"   # iteration-friendly: keep the cluster on failure
+      run_id:
+        description: "Stable id → shared state/names so re-apply is INCREMENTAL"
+        default: "iter"
 
 permissions:
   id-token: write      # OIDC
@@ -44,15 +52,22 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Set run id
-        run: echo "RUN_ID=run-$(date +%Y%m%d-%H%M%S)" >> "$GITHUB_ENV"
+        run: echo "RUN_ID=${{ inputs.run_id }}" >> "$GITHUB_ENV"
 
       - uses: hashicorp/setup-terraform@v3
+
+      # Upload the kill-switch source BEFORE apply, so the 2.5h EventBridge teardown
+      # has its config even if apply fails and we leave the cluster up (destroy_mode).
+      - name: Upload teardown bundle (kill-switch source)
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          zip -qr /tmp/eks-run.zip . -x '.terraform/*'
+          aws s3 cp /tmp/eks-run.zip "s3://${WAREHOUSE_BUCKET}/teardown/eks-run.zip"
 
       - name: Terraform apply (run)
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform init -input=false \
-            -backend-config="dynamodb_table=${PROJECT}-tflock"
+          terraform init -input=false
           terraform apply -auto-approve -input=false \
             -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150"
           echo "CLUSTER_NAME=$(terraform output -raw cluster_name)" >> "$GITHUB_ENV"
@@ -63,12 +78,6 @@ jobs:
           echo "EFS_ID=$(terraform output -raw efs_id)" >> "$GITHUB_ENV"
           echo "DELTA_LOGSTORE_TABLE=$(terraform output -raw delta_logstore_table)" >> "$GITHUB_ENV"
           echo "ECR_REGISTRY=${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
-
-      - name: Upload teardown bundle (kill-switch source)
-        working-directory: ${{ env.TF_DIR }}
-        run: |
-          zip -qr /tmp/eks-run.zip . -x '.terraform/*'
-          aws s3 cp /tmp/eks-run.zip "s3://${WAREHOUSE_BUCKET}/teardown/eks-run.zip"
 
       - name: Build + push images to ECR
         run: |
@@ -138,10 +147,23 @@ jobs:
           # (Athena) and write results next to it. See infra/aws/README.md.
           echo "TODO: athena reconciliation query → s3://${WAREHOUSE_BUCKET}/benchmarks/${RUN_ID}/"
 
-      - name: Terraform destroy (normal teardown)
-        if: always()
+      # Teardown policy (the 2.5h EventBridge kill-switch ALWAYS backstops):
+      #   on-success → destroy only if the whole run succeeded (keeps a failed
+      #                cluster up for debugging + incremental re-apply). DEFAULT.
+      #   never      → never destroy here; rely on the 2.5h kill-switch.
+      #   always     → destroy no matter what (original behaviour).
+      - name: Terraform destroy
+        if: ${{ inputs.destroy_mode == 'always' || (inputs.destroy_mode == 'on-success' && success()) }}
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform destroy -auto-approve -input=false \
             -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
             echo "destroy failed — EventBridge kill switch will tear down at the 2.5h mark"
+
+      - name: Teardown skipped — cluster left running
+        if: ${{ inputs.destroy_mode != 'always' && !success() }}
+        run: |
+          echo "Run did not fully succeed and destroy_mode=${{ inputs.destroy_mode }}."
+          echo "Cluster '${{ inputs.run_id }}' LEFT RUNNING for debugging / incremental re-apply."
+          echo "It will be torn down by the EventBridge kill-switch ~2.5h after apply."
+          echo "Manual teardown: re-run this workflow with destroy_mode=always."
