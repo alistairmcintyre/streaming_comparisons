@@ -128,6 +128,11 @@ jobs:
           export TRADES_PER_SEC="${{ inputs.trades_per_sec }}"
           export POSTGRES_PASSWORD="$(openssl rand -hex 16)"
           echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" >> "$GITHUB_ENV"
+          # paimon-s3 needs static keys (no IRSA). Read the scoped IAM user's key from
+          # SSM (created by bootstrap) → exported for envsubst into the Paimon manifests.
+          # Never in the repo/GitHub; lives in SSM + the ephemeral cluster specs.
+          export S3_ACCESS_KEY="$(aws ssm get-parameter --name /${PROJECT}/paimon-s3/access-key-id --with-decryption --query Parameter.Value --output text)"
+          export S3_SECRET_KEY="$(aws ssm get-parameter --name /${PROJECT}/paimon-s3/secret-access-key --with-decryption --query Parameter.Value --output text)"
           # source configmaps from the repo files
           kubectl create ns streaming --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n streaming create configmap pg-init --from-file=infra/postgres/init-appdb.sql --dry-run=client -o yaml | kubectl apply -f -

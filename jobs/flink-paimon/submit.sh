@@ -33,8 +33,11 @@ EOF
 
 # ── Build environment-specific SQL fragments ────────────────────────────────
 if [ "${DEPLOY_ENV}" = "aws" ]; then
-  # S3 access via the pod/task IAM role — no endpoint/keys in the catalog.
-  PAIMON_S3_OPTS=""
+  # paimon-s3 needs static keys (it can't use the IRSA IAM-role chain) — injected
+  # from SSM via env (S3_ACCESS_KEY/S3_SECRET_KEY). Real S3 → no endpoint/path-style.
+  PAIMON_S3_OPTS=",
+    's3.access-key' = '${S3_ACCESS_KEY}',
+    's3.secret-key' = '${S3_SECRET_KEY}'"
   # Register Iceberg metadata in Glue so Athena can query it; legacy manifests
   # are required by Athena's Iceberg manifest reader.
   PAIMON_ICEBERG_OPTS=",

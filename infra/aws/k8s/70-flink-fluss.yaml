@@ -12,8 +12,11 @@ spec:
   serviceAccount: lake
   flinkConfiguration:
     taskmanager.numberOfTaskSlots: "4"
-    # datalake S3 for the Fluss source's hybrid lake read (IRSA creds, region only)
+    # datalake S3 for the Fluss source's hybrid lake read. paimon-s3 needs static
+    # keys (no IRSA) — from SSM via envsubst at deploy (see workflow).
     s3.region: "${AWS_REGION}"
+    s3.access-key: "${S3_ACCESS_KEY}"
+    s3.secret-key: "${S3_SECRET_KEY}"
     # Java 17 opens for the tiering DataStream job
     env.java.opts.all: "--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED"
   jobManager:
@@ -54,6 +57,9 @@ spec:
             - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
             - { name: FLUSS_PAIMON_WAREHOUSE, value: "s3://${PAIMON_BUCKET}/fluss/paimon" }
             - { name: DATALAKE_FORMAT, value: "paimon" }
+            - { name: S3_ACCESS_KEY, value: "${S3_ACCESS_KEY}" }
+            - { name: S3_SECRET_KEY, value: "${S3_SECRET_KEY}" }
+            - { name: S3_PATH_STYLE, value: "false" }
           volumeMounts: [{ name: sql, mountPath: /opt/sql }]
       volumes:
         - { name: sql, configMap: { name: fluss-sql } }

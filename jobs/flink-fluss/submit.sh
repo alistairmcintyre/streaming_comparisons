@@ -40,8 +40,11 @@ if [ "${DEPLOY_ENV}" = "aws" ]; then
     'paimon.metadata.iceberg.storage' = 'hive-catalog',
     'paimon.metadata.iceberg.hive-client-class' = 'com.amazonaws.glue.catalog.metastore.AWSCatalogMetastoreClient',
     'paimon.metadata.iceberg.manifest-legacy-version' = 'true'"
-  # Real S3 + IAM → only region, no endpoint/keys/path-style.
-  DATALAKE_S3_ARGS="--datalake.paimon.s3.region ${AWS_REGION}"
+  # paimon-s3 needs static keys (no IRSA) — injected from SSM via env (S3_ACCESS_KEY/
+  # S3_SECRET_KEY). Real S3 → no endpoint/path-style.
+  DATALAKE_S3_ARGS="--datalake.paimon.s3.region ${AWS_REGION} \
+    --datalake.paimon.s3.access-key ${S3_ACCESS_KEY} \
+    --datalake.paimon.s3.secret-key ${S3_SECRET_KEY}"
 else
   FLUSS_ICEBERG_OPTS=",
     'paimon.metadata.iceberg.storage' = 'hadoop-catalog'"

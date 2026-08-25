@@ -11,7 +11,10 @@ spec:
   serviceAccount: lake
   flinkConfiguration:
     taskmanager.numberOfTaskSlots: "6"
+    # paimon-s3 needs static keys (no IRSA) — from SSM via envsubst at deploy.
     s3.region: "${AWS_REGION}"
+    s3.access-key: "${S3_ACCESS_KEY}"
+    s3.secret-key: "${S3_SECRET_KEY}"
     state.backend: rocksdb
     execution.checkpointing.interval: "10s"
   jobManager: { resource: { memory: "1600m", cpu: 1 } }
@@ -41,6 +44,8 @@ spec:
             - { name: PAIMON_WAREHOUSE, value: "s3://${PAIMON_BUCKET}/paimon" }
             - { name: PAIMON_ICEBERG_STORAGE, value: "hive-catalog" }
             - { name: PAIMON_FULL_COMPACT_INTERVAL, value: "1min" }
+            - { name: S3_ACCESS_KEY, value: "${S3_ACCESS_KEY}" }
+            - { name: S3_SECRET_KEY, value: "${S3_SECRET_KEY}" }
           volumeMounts: [{ name: sql, mountPath: /opt/flink-jobs }]
       volumes:
         - { name: sql, configMap: { name: paimon-sql } }
