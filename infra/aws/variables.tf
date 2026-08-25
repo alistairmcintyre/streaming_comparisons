@@ -28,7 +28,7 @@ variable "run_id" {
 
 variable "cluster_version" {
   type    = string
-  default = "1.30"
+  default = "1.34"
 }
 
 # Namespaces whose service accounts may assume the S3/Glue/Athena workload role.
