@@ -1,0 +1,117 @@
+STREAMING-COMPARISON EKS RUN — HEALTHCHECK GUIDE
+=================================================
+Copy-paste checks, ordered by data flow. Run each stage top-to-bottom: the first
+stage that fails is where the pipeline is broken.
+
+── 0. SETUP (once per cluster) ────────────────────────────────────────────────
+export AWS_PROFILE=streaming-comparisons
+REGION=eu-west-1; CLUSTER=sc-iter
+
+# Each NEW cluster only trusts its creator (the deploy role). Re-add your SSO
+# admin access entry or the console/kubectl says "Unauthorized":
+ROLE_ARN='arn:aws:iam::167217327348:role/aws-reserved/sso.amazonaws.com/eu-west-1/AWSReservedSSO_AdministratorAccess_6cd28e502a101d46'
+aws eks create-access-entry    --region $REGION --cluster-name $CLUSTER --principal-arn $ROLE_ARN
+aws eks associate-access-policy --region $REGION --cluster-name $CLUSTER --principal-arn $ROLE_ARN \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy --access-scope type=cluster
+aws eks update-kubeconfig --region $REGION --name $CLUSTER
+
+# kubectl v1.34 (if not installed):
+curl -sSL -o ~/kubectl https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl && chmod +x ~/kubectl
+alias k=~/kubectl
+
+── 1. CLUSTER + PODS OVERVIEW ─────────────────────────────────────────────────
+k get nodes                          # expect: all Ready, v1.34.x
+k get pods -A | grep -vE 'Running|Completed'   # expect: EMPTY (nothing unhealthy)
+
+── 2. GENERATOR → POSTGRES ────────────────────────────────────────────────────
+k -n streaming logs deploy/generator-trades --tail=3
+# expect: "emitted ~10000 fills in 10s (~1000/s)" lines
+
+k -n streaming exec postgres-0 -- psql -U app -d appdb -tAc 'select count(*) from trades;'
+# expect: growing by ~TRADES_PER_SEC every second (run it twice)
+
+── 3. DEBEZIUM (CDC) → KAFKA ──────────────────────────────────────────────────
+k -n kafka get kafkaconnect,kafkaconnector
+# expect: kafkaconnect debezium READY=True; connector pg-app READY (single
+# connector by design — two connectors can't share topic.prefix=app)
+
+k -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh \
+  --bootstrap-server localhost:9092 --topic app.public.trades
+# expect: offset ≈ the postgres count from stage 2 (CDC keeping up)
+
+# if broken: k -n kafka logs debezium-connect-0 --tail=50
+#            k -n kafka logs debezium-connect-build   (in-cluster image build;
+#            "authentication required" on push = missing/expired ecr-push secret)
+
+── 4. FLINK — FLUSS PIPELINE ──────────────────────────────────────────────────
+k -n flink logs job/fluss-submitter --tail=30
+# expect: ends "All Fluss jobs submitted." with no [ERROR] blocks
+
+k -n flink exec deploy/fluss-flink -- curl -s localhost:8081/jobs/overview | python3 -m json.tool | grep -E '"name"|"state"'
+# expect 3 jobs, ALL "RUNNING":
+#   insert-into_fluss_catalog.trades_db.trades          (bronze)
+#   insert-into_fluss_catalog.trades_db.open_positions  (gold)
+#   Fluss Lake Tiering Service - paimon                 (hot tier → S3 lake)
+# RESTARTING = check exceptions + JM log:
+k -n flink logs deploy/fluss-flink --tail=100 | grep -iE 'forbidden|slot|exception'
+# "cannot get resource deployments ... forbidden" = flink-native Role missing
+# apps/deployments (fixed in 00-namespaces.yaml); slot starvation follows from it.
+
+── 5. FLINK — PAIMON PIPELINE ─────────────────────────────────────────────────
+k -n flink logs job/paimon-submitter --tail=40
+# expect: "Execute statement succeeded." runs + "All Flink Paimon jobs submitted."
+# "The scheme (hdfs://, file://, etc) is null" = FLINK_CHECKPOINT_BASE unset
+# (fixed in 92-flink-paimon.yaml)
+
+k -n flink exec deploy/flink-paimon -- curl -s localhost:8081/jobs/overview | python3 -m json.tool | grep -E '"name"|"state"'
+# expect: bronze/silver/gold jobs RUNNING (empty list = submits failed, read the log above)
+
+── 6. SPARK — ICEBERG + DELTA ─────────────────────────────────────────────────
+k -n spark get sparkapplications
+# expect: 8 apps with STATUS=RUNNING. STATUS blank/<none> AND no driver pods =
+# operator not watching the spark ns (needs --set 'spark.jobNamespaces={spark}',
+# fixed in the workflow). Check what the operator actually watches:
+k -n spark logs deploy/spark-operator-controller --tail=5 | grep -o 'namespaces=[^ ]*'
+
+k -n spark get pods | grep -E 'driver|exec'
+# expect: 8 *-driver pods Running (+ executors)
+# per-app detail: k -n spark describe sparkapplication iceberg-bronze-trades
+
+── 7. FLUSS CLUSTER ───────────────────────────────────────────────────────────
+k -n fluss get pods    # expect: coordinator, tablet-server-0, zookeeper-0 Running
+k -n fluss logs deploy/fluss-coordinator --tail=20   # no repeated ERRORs
+
+── 8. S3 LAKE OUTPUT (the actual point of it all) ─────────────────────────────
+# Paimon bucket — fluss datalake tiering + flink-paimon warehouse:
+aws s3 ls s3://streaming-comparison-amc-paimon/ --recursive | tail -20
+# expect: RECENT timestamps (this run!), data files (parquet/orc) under
+#   fluss/paimon/trades_db.db/...  and  paimon/...
+# schema-only files or stale timestamps = writers not actually flowing
+
+# Warehouse bucket — iceberg/delta output:
+aws s3 ls s3://streaming-comparison-amc-warehouse/ | grep -vE 'tfstate|teardown'
+# expect: iceberg/ and delta/ prefixes with recent objects
+
+── 9. LATENCY + GRAFANA ───────────────────────────────────────────────────────
+k -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh \
+  --bootstrap-server localhost:9092 --topic pipeline_latency
+# expect: offsets > 0 once the latency emit is wired (currently a stub)
+
+k -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+# then http://localhost:3000 (admin / prom-operator unless changed)
+
+── 10. RUN + TEARDOWN STATUS ──────────────────────────────────────────────────
+gh run list --workflow=eks-run.yml --limit 3      # the driving GHA run
+aws eks describe-cluster --region $REGION --name $CLUSTER --query cluster.status
+# kill-switch check — the EventBridge one-time schedule that enforces the 2.5h cap:
+aws scheduler get-schedule --region $REGION --name sc-iter-teardown --query 'ScheduleExpression'
+
+# AFTER teardown, verify nothing is left billing:
+aws ec2 describe-instances --region $REGION \
+  --filters "Name=tag:kubernetes.io/cluster/sc-iter,Values=owned" \
+            "Name=instance-state-name,Values=pending,running" \
+  --query 'length(Reservations[].Instances[])'     # expect: 0
+aws ec2 describe-volumes --region $REGION \
+  --filters "Name=tag:kubernetes.io/cluster/sc-iter,Values=owned" "Name=status,Values=available" \
+  --query 'length(Volumes)'                        # expect: 0 (orphan EBS)
+aws efs describe-file-systems --region $REGION --query 'length(FileSystems)'   # expect: 0

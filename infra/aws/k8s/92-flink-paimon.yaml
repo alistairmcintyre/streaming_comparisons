@@ -42,6 +42,10 @@ spec:
             - { name: FLINK_JOBMANAGER_PORT, value: "8081" }
             - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
             - { name: PAIMON_WAREHOUSE, value: "s3://${PAIMON_BUCKET}/paimon" }
+            # SQL sets state.checkpoints.dir = ${FLINK_CHECKPOINT_BASE}/<job>/ — unset,
+            # it renders a scheme-less path and every INSERT fails with
+            # "The scheme (hdfs://, file://, etc) is null".
+            - { name: FLINK_CHECKPOINT_BASE, value: "s3://${PAIMON_BUCKET}/_flink_chk" }
             - { name: PAIMON_ICEBERG_STORAGE, value: "hive-catalog" }
             - { name: PAIMON_FULL_COMPACT_INTERVAL, value: "1min" }
             - { name: S3_ACCESS_KEY, value: "${S3_ACCESS_KEY}" }
