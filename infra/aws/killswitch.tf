@@ -71,6 +71,13 @@ resource "aws_codebuild_project" "teardown" {
             # 2) full, dependency-ordered teardown of the run
             - terraform init -input=false
             - terraform destroy -auto-approve -input=false
+            # 3) sweep CSI-provisioned EBS orphans (PVCs; cluster gone before delete)
+            - |
+              for v in $(aws ec2 describe-volumes --region "$AWS_REGION" \
+                --filters "Name=tag:kubernetes.io/cluster/$CLUSTER_NAME,Values=owned" "Name=status,Values=available" \
+                --query 'Volumes[].VolumeId' --output text); do
+                aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v" || true
+              done
     YAML
   }
 

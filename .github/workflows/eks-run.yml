@@ -174,9 +174,23 @@ jobs:
         if: ${{ inputs.destroy_mode == 'always' || (inputs.destroy_mode == 'on-success' && success()) }}
         working-directory: ${{ env.TF_DIR }}
         run: |
+          CN="sc-${RUN_ID}"
+          # Karpenter-provisioned nodes are NOT in terraform state, so destroy leaves
+          # them running and their CNI ENIs block VPC/subnet deletion. Terminate all
+          # cluster-tagged EC2 first (same as the kill-switch CodeBuild does).
+          IDS=$(aws ec2 describe-instances --region "$AWS_REGION" \
+            --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId' --output text)
+          if [ -n "$IDS" ]; then aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $IDS; aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids $IDS || true; fi
           terraform destroy -auto-approve -input=false \
             -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
             echo "destroy failed — EventBridge kill switch will tear down at the 2.5h mark"
+          # Sweep CSI-provisioned EBS orphans (PVCs; reclaimPolicy Delete, but the
+          # cluster is gone before they're deleted → orphaned).
+          VOLS=$(aws ec2 describe-volumes --region "$AWS_REGION" \
+            --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" "Name=status,Values=available" \
+            --query 'Volumes[].VolumeId' --output text)
+          for v in $VOLS; do aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v" || true; done
 
       - name: Teardown skipped — cluster left running
         if: ${{ inputs.destroy_mode != 'always' && !success() }}
