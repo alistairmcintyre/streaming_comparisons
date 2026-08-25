@@ -113,7 +113,12 @@ jobs:
           helm repo add flink-operator https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.13.0/
           helm repo update
           helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set crds.enabled=true --wait
-          helm upgrade --install strimzi oci://quay.io/strimzi-helm/strimzi-kafka-operator -n kafka --create-namespace --wait
+          # Strimzi: use the official install bundle (CRDs + RBAC + operator). The
+          # strimzi.io/charts helm chart ships NO CRDs, so Kafka/KafkaNodePool kinds
+          # were missing. Server-side apply handles the large CRD annotations.
+          kubectl create namespace kafka --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply --server-side --force-conflicts -f 'https://strimzi.io/install/latest?namespace=kafka'
+          kubectl -n kafka rollout status deploy/strimzi-cluster-operator --timeout=300s
           helm upgrade --install flink-operator flink-operator/flink-kubernetes-operator -n flink --create-namespace --wait
           helm upgrade --install spark-operator spark-operator/spark-operator -n spark --create-namespace --wait
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -n monitoring --create-namespace --wait
