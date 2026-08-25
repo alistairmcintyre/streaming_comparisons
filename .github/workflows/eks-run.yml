@@ -191,6 +191,14 @@ jobs:
             --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" "Name=status,Values=available" \
             --query 'Volumes[].VolumeId' --output text)
           for v in $VOLS; do aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v" || true; done
+          # Sweep EKS control-plane log groups. EKS auto-creates /aws/eks/$CN/cluster
+          # when control-plane logging is on; an interrupted/forced destroy can leave it
+          # behind and out of state, and the NEXT apply then fails CreateLogGroup with
+          # ResourceAlreadyExistsException (shared run_id=iter state).
+          for lg in $(aws logs describe-log-groups --region "$AWS_REGION" \
+            --log-group-name-prefix "/aws/eks/$CN/" --query 'logGroups[].logGroupName' --output text); do
+            aws logs delete-log-group --region "$AWS_REGION" --log-group-name "$lg" || true
+          done
 
       - name: Teardown skipped — cluster left running
         if: ${{ inputs.destroy_mode != 'always' && !success() }}

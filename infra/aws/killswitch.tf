@@ -78,6 +78,14 @@ resource "aws_codebuild_project" "teardown" {
                 --query 'Volumes[].VolumeId' --output text); do
                 aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v" || true
               done
+            # 4) sweep EKS control-plane log groups (auto-created by EKS; a forced/partial
+            #    destroy leaves them out of state → next apply fails CreateLogGroup)
+            - |
+              for lg in $(aws logs describe-log-groups --region "$AWS_REGION" \
+                --log-group-name-prefix "/aws/eks/$CLUSTER_NAME/" \
+                --query 'logGroups[].logGroupName' --output text); do
+                aws logs delete-log-group --region "$AWS_REGION" --log-group-name "$lg" || true
+              done
     YAML
   }
 
