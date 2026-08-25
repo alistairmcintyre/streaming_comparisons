@@ -16,6 +16,7 @@ x-spark-env: &spark-env
   SPARK_CATALOG_URI: http://iceberg-rest:8181
   SPARK_CATALOG_WAREHOUSE: s3://warehouse/
   SPARK_S3_ENDPOINT: http://minio:9000
+  PYTHONPATH: /opt/shared
 
 x-s3-env: &s3-env
   MINIO_ENDPOINT: http://minio:9000
@@ -24,6 +25,7 @@ x-s3-env: &s3-env
   AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
   KAFKA_BROKERS: kafka:9092
   CHECKPOINT_BASE: s3a://warehouse/_chk
+  PYTHONPATH: /opt/shared
 
 x-flink-env: &flink-env
   <<: *iceberg-catalog-env
@@ -32,6 +34,17 @@ x-flink-env: &flink-env
   FLINK_PROPERTIES: |
     jobmanager.rpc.address: flink-jobmanager
     taskmanager.numberOfTaskSlots: 6
+    state.backend: rocksdb
+    state.checkpoints.dir: s3://warehouse/_flink_chk/
+    s3.endpoint: http://minio:9000
+    s3.path.style.access: true
+    s3.access-key: minioadmin
+    s3.secret-key: minioadmin
+
+x-flink-paimon-env: &flink-paimon-env
+  FLINK_PROPERTIES: |
+    jobmanager.rpc.address: flink-paimon-jobmanager
+    taskmanager.numberOfTaskSlots: 4
     state.backend: rocksdb
     state.checkpoints.dir: s3://warehouse/_flink_chk/
     s3.endpoint: http://minio:9000
@@ -140,7 +153,7 @@ services:
   # ─── Iceberg REST Catalog ─────────────────────────────────────────────────
 
   iceberg-rest:
-    image: tabulario/iceberg-rest:1.5.0
+    image: tabulario/iceberg-rest:1.6.0
     container_name: iceberg-rest
     depends_on:
       postgres-catalog:
@@ -237,31 +250,13 @@ services:
 
   # ─── DDL Init ─────────────────────────────────────────────────────────────
 
-  ddl-init:
-    build:
-      context: ./docker/spark
-      dockerfile: Dockerfile
-    container_name: ddl-init
-    depends_on:
-      iceberg-rest:
-        condition: service_healthy
-      mc-init:
-        condition: service_completed_successfully
-    environment:
-      <<: *spark-env
-      JOB_FILE: /app/ddl/create_tables_spark.py
-    volumes:
-      - ./ddl:/app/ddl
-    networks:
-      - streaming-net
-
   # ─── Data Generators ──────────────────────────────────────────────────────
 
-  generator-sales:
+  generator-accounts:
     build:
-      context: ./docker/streamlit
+      context: ./docker/generator
       dockerfile: Dockerfile
-    container_name: generator-sales
+    container_name: generator-accounts
     depends_on:
       postgres-app:
         condition: service_healthy
@@ -271,19 +266,19 @@ services:
       POSTGRES_USER: ${POSTGRES_APP_USER:-app}
       POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-app}
       POSTGRES_DB: ${POSTGRES_APP_DB:-appdb}
-      EVENTS_PER_SEC: ${SALES_EVENTS_PER_SEC:-5}
+      EVENTS_PER_SEC: ${ACCOUNTS_EVENTS_PER_SEC:-5}
+      MAX_ACCOUNT_ID: ${MAX_ACCOUNT_ID:-1000}
     volumes:
       - ./generators:/app/generators
-    entrypoint: ["python", "/app/generators/gen_item_sales.py"]
+    entrypoint: ["python", "/app/generators/gen_accounts.py"]
     networks:
       - streaming-net
-    restart: unless-stopped
 
-  generator-attributes:
+  generator-trades:
     build:
-      context: ./docker/streamlit
+      context: ./docker/generator
       dockerfile: Dockerfile
-    container_name: generator-attributes
+    container_name: generator-trades
     depends_on:
       postgres-app:
         condition: service_healthy
@@ -293,109 +288,93 @@ services:
       POSTGRES_USER: ${POSTGRES_APP_USER:-app}
       POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-app}
       POSTGRES_DB: ${POSTGRES_APP_DB:-appdb}
-      EVENTS_PER_SEC: ${ATTRIBUTES_EVENTS_PER_SEC:-1}
+      TRADES_PER_SEC: ${TRADES_PER_SEC:-1000}
+      TRADES_BATCH_SIZE: ${TRADES_BATCH_SIZE:-500}
+      MAX_ACCOUNT_ID: ${MAX_ACCOUNT_ID:-1000}
     volumes:
       - ./generators:/app/generators
-    entrypoint: ["python", "/app/generators/gen_item_attributes.py"]
+    entrypoint: ["python", "/app/generators/gen_trades.py"]
     networks:
       - streaming-net
     restart: unless-stopped
 
   # ─── Spark Jobs ───────────────────────────────────────────────────────────
 
-  spark-bronze-sales:
+  spark-bronze-trades:
     build:
       context: ./docker/spark
       dockerfile: Dockerfile
-    container_name: spark-bronze-sales
+    container_name: spark-bronze-trades
     depends_on:
       kafka:
         condition: service_healthy
       iceberg-rest:
         condition: service_healthy
-      ddl-init:
-        condition: service_completed_successfully
     environment:
       <<: *spark-env
-      JOB_FILE: /opt/jobs/bronze_item_sales.py
+      JOB_FILE: /opt/jobs/bronze_trades.py
     volumes:
-      - ./jobs/spark:/opt/jobs:ro
+      - ./jobs/spark-iceberg:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
       - spark_checkpoints:/opt/checkpoints
     networks:
       - streaming-net
     restart: unless-stopped
 
-  spark-bronze-attr:
+  spark-silver-trades:
     build:
       context: ./docker/spark
       dockerfile: Dockerfile
-    container_name: spark-bronze-attr
+    container_name: spark-silver-trades
+    depends_on:
+      spark-bronze-trades:
+        condition: service_started
+    environment:
+      <<: *spark-env
+      JOB_FILE: /opt/jobs/silver_trades.py
+    volumes:
+      - ./jobs/spark-iceberg:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
+      - spark_checkpoints:/opt/checkpoints
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  spark-silver-accounts:
+    build:
+      context: ./docker/spark
+      dockerfile: Dockerfile
+    container_name: spark-silver-accounts
     depends_on:
       kafka:
         condition: service_healthy
-      iceberg-rest:
-        condition: service_healthy
-      ddl-init:
-        condition: service_completed_successfully
     environment:
       <<: *spark-env
-      JOB_FILE: /opt/jobs/bronze_item_attributes.py
+      JOB_FILE: /opt/jobs/silver_accounts.py
     volumes:
-      - ./jobs/spark:/opt/jobs:ro
+      - ./jobs/spark-iceberg:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
       - spark_checkpoints:/opt/checkpoints
     networks:
       - streaming-net
     restart: unless-stopped
 
-  spark-silver-sales:
+  spark-gold-openpositions:
     build:
       context: ./docker/spark
       dockerfile: Dockerfile
-    container_name: spark-silver-sales
+    container_name: spark-gold-openpositions
     depends_on:
-      spark-bronze-sales:
+      spark-silver-trades:
+        condition: service_started
+      spark-silver-accounts:
         condition: service_started
     environment:
       <<: *spark-env
-      JOB_FILE: /opt/jobs/silver_item_sales.py
+      JOB_FILE: /opt/jobs/gold_open_positions.py
     volumes:
-      - ./jobs/spark:/opt/jobs:ro
-      - spark_checkpoints:/opt/checkpoints
-    networks:
-      - streaming-net
-    restart: unless-stopped
-
-  spark-gold-item-category-count:
-    build:
-      context: ./docker/spark
-      dockerfile: Dockerfile
-    container_name: spark-gold-item-category-count
-    depends_on:
-      spark-silver-attr:
-        condition: service_started
-    environment:
-      <<: *spark-env
-      JOB_FILE: /opt/jobs/gold_item_category_count.py
-    volumes:
-      - ./jobs/spark:/opt/jobs:ro
-      - spark_checkpoints:/opt/checkpoints
-    networks:
-      - streaming-net
-    restart: unless-stopped
-
-  spark-silver-attr:
-    build:
-      context: ./docker/spark
-      dockerfile: Dockerfile
-    container_name: spark-silver-attr
-    depends_on:
-      spark-bronze-attr:
-        condition: service_started
-    environment:
-      <<: *spark-env
-      JOB_FILE: /opt/jobs/silver_item_attributes.py
-    volumes:
-      - ./jobs/spark:/opt/jobs:ro
+      - ./jobs/spark-iceberg:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
       - spark_checkpoints:/opt/checkpoints
     networks:
       - streaming-net
@@ -409,13 +388,12 @@ services:
     depends_on:
       iceberg-rest:
         condition: service_healthy
-      ddl-init:
-        condition: service_completed_successfully
     environment:
       <<: *spark-env
       JOB_FILE: /opt/jobs/maintenance_compaction.py
     volumes:
-      - ./jobs/spark:/opt/jobs:ro
+      - ./jobs/spark-iceberg:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
       - spark_checkpoints:/opt/checkpoints
     networks:
       - streaming-net
@@ -423,82 +401,87 @@ services:
 
   # ─── Delta Lake Spark Jobs ────────────────────────────────────────────────
 
-  ddl-init-delta:
+  delta-bronze-trades:
     build:
       context: ./docker/spark-delta
       dockerfile: Dockerfile
-    container_name: ddl-init-delta
-    depends_on:
-      mc-init:
-        condition: service_completed_successfully
-    environment:
-      <<: *s3-env
-      JOB_FILE: /app/ddl/create_tables_delta.py
-    volumes:
-      - ./ddl:/app/ddl
-    networks:
-      - streaming-net
-
-  delta-bronze-attr:
-    build:
-      context: ./docker/spark-delta
-      dockerfile: Dockerfile
-    container_name: delta-bronze-attr
+    container_name: delta-bronze-trades
     depends_on:
       kafka:
         condition: service_healthy
-      ddl-init-delta:
-        condition: service_completed_successfully
     environment:
       <<: *s3-env
-      JOB_FILE: /opt/jobs/bronze_item_attributes.py
+      JOB_FILE: /opt/jobs/bronze_trades.py
     volumes:
       - ./jobs/spark-delta:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
     networks:
       - streaming-net
     restart: unless-stopped
 
-  delta-silver-attr:
+  delta-silver-trades:
     build:
       context: ./docker/spark-delta
       dockerfile: Dockerfile
-    container_name: delta-silver-attr
+    container_name: delta-silver-trades
     depends_on:
-      delta-bronze-attr:
+      delta-bronze-trades:
         condition: service_started
     environment:
       <<: *s3-env
-      JOB_FILE: /opt/jobs/silver_item_attributes.py
+      JOB_FILE: /opt/jobs/silver_trades.py
     volumes:
       - ./jobs/spark-delta:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
     networks:
       - streaming-net
     restart: unless-stopped
 
-  delta-gold-item-category-count:
+  delta-silver-accounts:
     build:
       context: ./docker/spark-delta
       dockerfile: Dockerfile
-    container_name: delta-gold-item-category-count
+    container_name: delta-silver-accounts
     depends_on:
-      delta-silver-attr:
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *s3-env
+      JOB_FILE: /opt/jobs/silver_accounts.py
+    volumes:
+      - ./jobs/spark-delta:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
+    networks:
+      - streaming-net
+    restart: unless-stopped
+
+  delta-gold-openpositions:
+    build:
+      context: ./docker/spark-delta
+      dockerfile: Dockerfile
+    container_name: delta-gold-openpositions
+    depends_on:
+      delta-silver-trades:
+        condition: service_started
+      delta-silver-accounts:
         condition: service_started
     environment:
       <<: *s3-env
-      JOB_FILE: /opt/jobs/gold_item_category_count.py
+      JOB_FILE: /opt/jobs/gold_open_positions.py
     volumes:
       - ./jobs/spark-delta:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
     networks:
       - streaming-net
     restart: unless-stopped
 
   # ─── Apache Hudi Spark Jobs ───────────────────────────────────────────────
 
-  hudi-bronze-attr:
+  hudi-bronze-customers:
     build:
       context: ./docker/spark-hudi
       dockerfile: Dockerfile
-    container_name: hudi-bronze-attr
+    container_name: hudi-bronze-customers
     depends_on:
       kafka:
         condition: service_healthy
@@ -506,54 +489,57 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *s3-env
-      JOB_FILE: /opt/jobs/bronze_item_attributes.py
+      JOB_FILE: /opt/jobs/bronze_customers.py
     volumes:
       - ./jobs/spark-hudi:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
     networks:
       - streaming-net
     restart: unless-stopped
 
-  hudi-silver-attr:
+  hudi-silver-customers:
     build:
       context: ./docker/spark-hudi
       dockerfile: Dockerfile
-    container_name: hudi-silver-attr
+    container_name: hudi-silver-customers
     depends_on:
-      hudi-bronze-attr:
+      hudi-bronze-customers:
         condition: service_started
     environment:
       <<: *s3-env
-      JOB_FILE: /opt/jobs/silver_item_attributes.py
+      JOB_FILE: /opt/jobs/silver_customers.py
     volumes:
       - ./jobs/spark-hudi:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
     networks:
       - streaming-net
     restart: unless-stopped
 
-  hudi-gold-item-category-count:
+  hudi-gold-customers:
     build:
       context: ./docker/spark-hudi
       dockerfile: Dockerfile
-    container_name: hudi-gold-item-category-count
+    container_name: hudi-gold-customers
     depends_on:
-      hudi-silver-attr:
+      hudi-silver-customers:
         condition: service_started
     environment:
       <<: *s3-env
-      JOB_FILE: /opt/jobs/gold_item_category_count.py
+      JOB_FILE: /opt/jobs/gold_customers_per_country.py
     volumes:
       - ./jobs/spark-hudi:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
     networks:
       - streaming-net
     restart: unless-stopped
 
   # ─── Apache Paimon Spark Jobs ─────────────────────────────────────────────
 
-  paimon-bronze-attr:
+  paimon-bronze-customers:
     build:
       context: ./docker/spark-paimon
       dockerfile: Dockerfile
-    container_name: paimon-bronze-attr
+    container_name: paimon-bronze-customers
     depends_on:
       kafka:
         condition: service_healthy
@@ -561,43 +547,46 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *s3-env
-      JOB_FILE: /opt/jobs/bronze_item_attributes.py
+      JOB_FILE: /opt/jobs/bronze_customers.py
     volumes:
       - ./jobs/spark-paimon:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
     networks:
       - streaming-net
     restart: unless-stopped
 
-  paimon-silver-attr:
+  paimon-silver-customers:
     build:
       context: ./docker/spark-paimon
       dockerfile: Dockerfile
-    container_name: paimon-silver-attr
+    container_name: paimon-silver-customers
     depends_on:
-      paimon-bronze-attr:
+      paimon-bronze-customers:
         condition: service_started
     environment:
       <<: *s3-env
-      JOB_FILE: /opt/jobs/silver_item_attributes.py
+      JOB_FILE: /opt/jobs/silver_customers.py
     volumes:
       - ./jobs/spark-paimon:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
     networks:
       - streaming-net
     restart: unless-stopped
 
-  paimon-gold-item-category-count:
+  paimon-gold-customers:
     build:
       context: ./docker/spark-paimon
       dockerfile: Dockerfile
-    container_name: paimon-gold-item-category-count
+    container_name: paimon-gold-customers
     depends_on:
-      paimon-silver-attr:
+      paimon-silver-customers:
         condition: service_started
     environment:
       <<: *s3-env
-      JOB_FILE: /opt/jobs/gold_item_category_count.py
+      JOB_FILE: /opt/jobs/gold_customers_per_country.py
     volumes:
       - ./jobs/spark-paimon:/opt/jobs:ro
+      - ./jobs/_shared:/opt/shared:ro
     networks:
       - streaming-net
     restart: unless-stopped
@@ -613,8 +602,6 @@ services:
     depends_on:
       iceberg-rest:
         condition: service_healthy
-      ddl-init:
-        condition: service_completed_successfully
     environment:
       <<: *flink-env
     ports:
@@ -651,13 +638,74 @@ services:
         condition: service_started
       kafka:
         condition: service_healthy
-      ddl-init:
-        condition: service_completed_successfully
     environment:
       <<: *flink-env
     volumes:
-      - ./jobs/flink:/opt/flink-jobs:ro
+      - ./jobs/flink-iceberg:/opt/flink-jobs:ro
       - ./ddl:/opt/ddl:ro
+    entrypoint: ["/bin/bash", "/opt/flink-jobs/submit.sh"]
+    networks:
+      - streaming-net
+
+  # ─── Flink Paimon ─────────────────────────────────────────────────────────
+
+  flink-paimon-jobmanager:
+    build:
+      context: ./docker/flink-paimon
+      dockerfile: Dockerfile
+    container_name: flink-paimon-jobmanager
+    command: jobmanager
+    depends_on:
+      minio:
+        condition: service_healthy
+      mc-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./env/local.env
+    environment:
+      <<: *flink-paimon-env
+    ports:
+      - "${FLINK_PAIMON_JOBMANAGER_PORT:-8082}:8081"
+    networks:
+      - streaming-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/overview || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  flink-paimon-taskmanager:
+    build:
+      context: ./docker/flink-paimon
+      dockerfile: Dockerfile
+    container_name: flink-paimon-taskmanager
+    command: taskmanager
+    depends_on:
+      flink-paimon-jobmanager:
+        condition: service_healthy
+    env_file:
+      - ./env/local.env
+    environment:
+      <<: *flink-paimon-env
+    networks:
+      - streaming-net
+
+  flink-paimon-submitter:
+    build:
+      context: ./docker/flink-paimon
+      dockerfile: Dockerfile
+    container_name: flink-paimon-submitter
+    depends_on:
+      flink-paimon-taskmanager:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    env_file:
+      - ./env/local.env
+    environment:
+      JOBMANAGER_RPC_ADDRESS: flink-paimon-jobmanager
+    volumes:
+      - ./jobs/flink-paimon:/opt/flink-jobs:ro
     entrypoint: ["/bin/bash", "/opt/flink-jobs/submit.sh"]
     networks:
       - streaming-net

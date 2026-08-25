@@ -1,0 +1,118 @@
+# Fluss hot tier. remote.data.dir on EFS (shared RWX — see efs.tf for the IRSA/STS
+# reason); Paimon datalake on S3 via IRSA (no keys — the server entrypoint drops
+# blank S3 credential lines → default credential chain).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: fluss-zookeeper, namespace: fluss }
+spec:
+  serviceName: fluss-zookeeper
+  replicas: 1
+  selector: { matchLabels: { app: fluss-zookeeper } }
+  template:
+    metadata: { labels: { app: fluss-zookeeper } }
+    spec:
+      containers:
+        - name: zookeeper
+          image: zookeeper:3.9.2
+          ports: [{ containerPort: 2181 }]
+          resources: { requests: { cpu: "250m", memory: 512Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: fluss-zookeeper, namespace: fluss }
+spec:
+  selector: { app: fluss-zookeeper }
+  ports: [{ port: 2181 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: fluss-coordinator, namespace: fluss }
+spec:
+  selector: { app: fluss-coordinator }
+  ports: [{ port: 9123 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: fluss-coordinator, namespace: fluss }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: fluss-coordinator } }
+  template:
+    metadata: { labels: { app: fluss-coordinator } }
+    spec:
+      serviceAccountName: lake
+      containers:
+        - name: coordinator
+          image: ${ECR_REGISTRY}/streaming-comparison/fluss-server:latest
+          args: ["coordinatorServer"]
+          env:
+            - name: FLUSS_PROPERTIES
+              value: |
+                zookeeper.address: fluss-zookeeper.fluss.svc:2181
+                bind.listeners: INTERNAL://0.0.0.0:0, CLIENT://0.0.0.0:9123
+                advertised.listeners: CLIENT://fluss-coordinator.fluss.svc:9123
+                internal.listener.name: INTERNAL
+                remote.data.dir: /fluss-remote-data
+                datalake.format: paimon
+                datalake.paimon.metastore: filesystem
+                datalake.paimon.warehouse: s3://${PAIMON_BUCKET}/fluss/paimon
+                datalake.paimon.s3.region: ${AWS_REGION}
+                s3.region: ${AWS_REGION}
+          ports: [{ containerPort: 9123 }]
+          volumeMounts: [{ name: remote, mountPath: /fluss-remote-data }]
+          resources: { requests: { cpu: "500m", memory: 1Gi }, limits: { cpu: "2", memory: 2Gi } }
+      volumes:
+        - { name: remote, persistentVolumeClaim: { claimName: fluss-remote } }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: fluss-tablet-server, namespace: fluss }
+spec:
+  serviceName: fluss-tablet-server
+  replicas: 1
+  selector: { matchLabels: { app: fluss-tablet-server } }
+  template:
+    metadata: { labels: { app: fluss-tablet-server } }
+    spec:
+      serviceAccountName: lake
+      containers:
+        - name: tablet
+          image: ${ECR_REGISTRY}/streaming-comparison/fluss-server:latest
+          args: ["tabletServer"]
+          env:
+            - name: FLUSS_PROPERTIES
+              value: |
+                zookeeper.address: fluss-zookeeper.fluss.svc:2181
+                bind.listeners: INTERNAL://0.0.0.0:0, CLIENT://0.0.0.0:9123
+                advertised.listeners: CLIENT://fluss-tablet-server.fluss.svc:9123
+                internal.listener.name: INTERNAL
+                tablet-server.id: 0
+                kv.snapshot.interval: 0s
+                data.dir: /tmp/fluss/data
+                remote.data.dir: /fluss-remote-data
+                datalake.format: paimon
+                datalake.paimon.metastore: filesystem
+                datalake.paimon.warehouse: s3://${PAIMON_BUCKET}/fluss/paimon
+                datalake.paimon.s3.region: ${AWS_REGION}
+                s3.region: ${AWS_REGION}
+          ports: [{ containerPort: 9123 }]
+          volumeMounts:
+            - { name: remote, mountPath: /fluss-remote-data }
+            - { name: data, mountPath: /tmp/fluss/data }
+          resources: { requests: { cpu: "1", memory: 2Gi }, limits: { cpu: "4", memory: 8Gi } }
+      volumes:
+        - { name: remote, persistentVolumeClaim: { claimName: fluss-remote } }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources: { requests: { storage: 20Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: fluss-tablet-server, namespace: fluss }
+spec:
+  clusterIP: None
+  selector: { app: fluss-tablet-server }
+  ports: [{ port: 9123 }]

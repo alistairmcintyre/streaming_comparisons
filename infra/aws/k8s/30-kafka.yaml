@@ -1,0 +1,51 @@
+# OSS Kafka via Strimzi (KRaft, no ZooKeeper). In-cluster PLAINTEXT :9092 →
+# KAFKA_AUTH=none, bootstrap trades-kafka-bootstrap.kafka.svc:9092. 5–10 MB/s at
+# 10k msg/s is trivial; single-AZ so no cross-AZ replication cost. Prometheus
+# metrics exposed for the live dashboard.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: dual-role
+  namespace: kafka
+  labels: { strimzi.io/cluster: trades }
+spec:
+  replicas: 3
+  roles: [controller, broker]
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 50Gi
+        class: gp3
+        deleteClaim: true
+  resources:
+    requests: { cpu: "1", memory: 2Gi }
+    limits:   { cpu: "2", memory: 4Gi }
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: trades
+  namespace: kafka
+  annotations:
+    strimzi.io/node-pools: enabled
+    strimzi.io/kraft: enabled
+spec:
+  kafka:
+    version: 3.9.0
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+      auto.create.topics.enable: "true"
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}

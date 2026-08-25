@@ -1,0 +1,46 @@
+# Flink Paimon streaming pipeline (Kafka → Paimon on S3, Iceberg view via Glue) —
+# Flink-operator session cluster + submitter (renders jobs/flink-paimon SQL for
+# DEPLOY_ENV=aws → hive-catalog/Glue). SQL from a ConfigMap:
+#   kubectl -n flink create configmap paimon-sql --from-file=jobs/flink-paimon/
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata: { name: flink-paimon, namespace: flink }
+spec:
+  image: "${ECR_REGISTRY}/streaming-comparison/flink-paimon:latest"
+  flinkVersion: v1_20
+  serviceAccount: lake
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "6"
+    s3.region: "${AWS_REGION}"
+    state.backend: rocksdb
+    execution.checkpointing.interval: "10s"
+  jobManager: { resource: { memory: "1600m", cpu: 1 } }
+  taskManager: { resource: { memory: "4096m", cpu: 2 } }
+  mode: native
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: paimon-submitter, namespace: flink }
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      serviceAccountName: lake
+      restartPolicy: OnFailure
+      containers:
+        - name: submitter
+          image: "${ECR_REGISTRY}/streaming-comparison/flink-paimon:latest"
+          command: ["/bin/bash", "/opt/flink-jobs/submit.sh"]
+          env:
+            - { name: DEPLOY_ENV, value: "aws" }
+            - { name: KAFKA_AUTH, value: "none" }
+            - { name: AWS_REGION, value: "${AWS_REGION}" }
+            - { name: JOBMANAGER_RPC_ADDRESS, value: "flink-paimon-rest.flink.svc" }
+            - { name: FLINK_JOBMANAGER_PORT, value: "8081" }
+            - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+            - { name: PAIMON_WAREHOUSE, value: "s3://${PAIMON_BUCKET}/paimon" }
+            - { name: PAIMON_ICEBERG_STORAGE, value: "hive-catalog" }
+            - { name: PAIMON_FULL_COMPACT_INTERVAL, value: "1min" }
+          volumeMounts: [{ name: sql, mountPath: /opt/flink-jobs }]
+      volumes:
+        - { name: sql, configMap: { name: paimon-sql } }

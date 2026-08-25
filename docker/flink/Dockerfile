@@ -1,9 +1,10 @@
-FROM flink:1.18.1-scala_2.12-java11
+FROM flink:1.20.5-scala_2.12-java17
 
 USER root
 
-ENV ICEBERG_VERSION=1.8.1 \
-    FLINK_VERSION=1.18 \
+# Iceberg 1.11.0 (matches the Spark stacks) on the Flink 1.20 runtime.
+ENV ICEBERG_VERSION=1.11.0 \
+    FLINK_VERSION=1.20 \
     SCALA_VERSION=2.12
 
 # ── Iceberg Flink runtime ──────────────────────────────────────────────────
@@ -11,14 +12,14 @@ RUN curl -fsSL -o /opt/flink/lib/iceberg-flink-runtime-${FLINK_VERSION}-${ICEBER
       https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-flink-runtime-${FLINK_VERSION}/${ICEBERG_VERSION}/iceberg-flink-runtime-${FLINK_VERSION}-${ICEBERG_VERSION}.jar
 
 # ── Flink Kafka SQL connector ──────────────────────────────────────────────
-RUN curl -fsSL -o /opt/flink/lib/flink-sql-connector-kafka-3.1.0-${FLINK_VERSION}.jar \
-      https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.1.0-${FLINK_VERSION}/flink-sql-connector-kafka-3.1.0-${FLINK_VERSION}.jar
+RUN curl -fsSL -o /opt/flink/lib/flink-sql-connector-kafka-3.4.0-${FLINK_VERSION}.jar \
+      https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.4.0-${FLINK_VERSION}/flink-sql-connector-kafka-3.4.0-${FLINK_VERSION}.jar
 
 # ── Hadoop AWS + S3 filesystem plugin (for s3:// checkpoints) ─────────────
 # Must be in plugins/s3-fs-hadoop/ — NOT in lib/ — or Flink won't load it.
 RUN mkdir -p /opt/flink/plugins/s3-fs-hadoop \
- && curl -fsSL -o /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-1.18.1.jar \
-      https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.18.1/flink-s3-fs-hadoop-1.18.1.jar
+ && curl -fsSL -o /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-1.20.5.jar \
+      https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.5/flink-s3-fs-hadoop-1.20.5.jar
 
 # ── Hadoop client bundle (required by Iceberg S3FileIO at runtime) ────────
 # Using the shaded bundle avoids chasing individual transitive dependencies.

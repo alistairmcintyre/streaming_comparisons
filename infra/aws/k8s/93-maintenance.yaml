@@ -1,0 +1,86 @@
+# Table maintenance. COMPACTION runs IN-pipeline for Delta (Optimized Writes + Auto
+# Compaction via table props / session confs) and for Paimon (self-compacts) — no job.
+# Only the pieces that can't run in-stream are scheduled here:
+#   Delta   → VACUUM (GC; no auto-vacuum in OSS)
+#   Iceberg → rewrite_data_files + expire_snapshots (no in-writer auto-compaction in
+#             Spark structured streaming) + orphan/GC
+# ScheduledSparkApplication cron; tune the cadence (or disable, to observe degradation).
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: ScheduledSparkApplication
+metadata: { name: iceberg-maintenance, namespace: spark }
+spec:
+  schedule: "*/15 * * * *"           # rewrite_data_files + expire_snapshots every 15m
+  concurrencyPolicy: Forbid
+  template:
+    type: Python
+    mode: cluster
+    image: "${ECR_REGISTRY}/streaming-comparison/spark-iceberg:latest"
+    mainApplicationFile: "local:///opt/jobs/maintenance_compaction.py"
+    sparkVersion: "3.5.1"
+    restartPolicy: { type: Never }
+    sparkConf:
+      "spark.sql.catalog.rest": "org.apache.iceberg.spark.SparkCatalog"
+      "spark.sql.catalog.rest.catalog-impl": "org.apache.iceberg.aws.glue.GlueCatalog"
+      "spark.sql.catalog.rest.warehouse": "s3://${WAREHOUSE_BUCKET}/iceberg"
+      "spark.sql.catalog.rest.io-impl": "org.apache.iceberg.aws.s3.S3FileIO"
+      "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+    volumes:
+      - { name: jobs, configMap: { name: spark-iceberg-jobs } }
+      - { name: shared, configMap: { name: spark-shared } }
+    driver:
+      serviceAccount: lake
+      cores: 1
+      memory: "2g"
+      env: [{ name: PYTHONPATH, value: "/opt/shared" }]
+      volumeMounts:
+        - { name: jobs, mountPath: /opt/jobs }
+        - { name: shared, mountPath: /opt/shared }
+    executor:
+      instances: 2
+      cores: 2
+      memory: "4g"
+      serviceAccount: lake
+      volumeMounts:
+        - { name: jobs, mountPath: /opt/jobs }
+        - { name: shared, mountPath: /opt/shared }
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: ScheduledSparkApplication
+metadata: { name: delta-vacuum, namespace: spark }
+spec:
+  schedule: "*/30 * * * *"           # VACUUM only (compaction is in-pipeline)
+  concurrencyPolicy: Forbid
+  template:
+    type: Python
+    mode: cluster
+    image: "${ECR_REGISTRY}/streaming-comparison/spark-delta:latest"
+    mainApplicationFile: "local:///opt/jobs/maintenance_vacuum.py"
+    sparkVersion: "3.5.1"
+    restartPolicy: { type: Never }
+    sparkConf:
+      "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
+      "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+      "spark.delta.logStore.s3a.impl": "io.delta.storage.S3DynamoDBLogStore"
+      "spark.io.delta.storage.S3DynamoDBLogStore.ddb.tableName": "${DELTA_LOGSTORE_TABLE}"
+      "spark.io.delta.storage.S3DynamoDBLogStore.ddb.region": "${AWS_REGION}"
+    volumes:
+      - { name: jobs, configMap: { name: spark-delta-jobs } }
+      - { name: shared, configMap: { name: spark-shared } }
+    driver:
+      serviceAccount: lake
+      cores: 1
+      memory: "2g"
+      env:
+        - { name: PYTHONPATH, value: "/opt/shared" }
+        - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
+      volumeMounts:
+        - { name: jobs, mountPath: /opt/jobs }
+        - { name: shared, mountPath: /opt/shared }
+    executor:
+      instances: 2
+      cores: 2
+      memory: "4g"
+      serviceAccount: lake
+      volumeMounts:
+        - { name: jobs, mountPath: /opt/jobs }
+        - { name: shared, mountPath: /opt/shared }

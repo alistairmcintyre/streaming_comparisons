@@ -1,0 +1,165 @@
+# Fluss hot tier (+ its own Flink) tiering into Paimon, which exposes the Iceberg
+# view for Athena/Trino/spark-iceberg.
+#
+# OVERLAY on the base stack — Fluss is isolated here. Run with both files:
+#   docker compose -f docker-compose.yml -f docker-compose.fluss.yml up -d \
+#       fluss-zookeeper fluss-coordinator fluss-tablet-server \
+#       fluss-flink-jobmanager fluss-flink-taskmanager fluss-flink-submitter
+#
+# Built from Fluss `main` (1.0-SNAPSHOT) for FIP-27 (clean lake schema → the
+# Paimon Iceberg view works, unlike 0.9.1). Build artifacts first:
+#   FLUSS_SRC=~/git/apache/fluss docker/fluss/build-fluss.sh
+#
+# CONFIG is env-driven with local (MinIO) defaults via ${VAR:-default}. To target
+# AWS, source an env file with your values before `up`, e.g.:
+#   set -a && source env/aws.env && set +a
+# and see jobs/flink-fluss/PHEASE_1_README.md (Glue + MSK + IAM + S3 remote data).
+#
+# Flow:  Kafka trades ─► Fluss (hot PK tables) ─► fold in Flink ─► Fluss book
+#        Fluss tiering job ─► Paimon (${FLUSS_PAIMON_WAREHOUSE}) ─► Iceberg view
+services:
+  fluss-zookeeper:
+    image: zookeeper:3.9.2
+    container_name: fluss-zookeeper
+    restart: always
+    networks: [streaming-net]
+
+  fluss-coordinator:
+    build:
+      context: ./docker/fluss
+    container_name: fluss-coordinator
+    command: coordinatorServer
+    depends_on: [fluss-zookeeper]
+    restart: unless-stopped
+    ports: ["9123:9123"]
+    environment:
+      FLUSS_PROPERTIES: |
+        zookeeper.address: fluss-zookeeper:2181
+        bind.listeners: INTERNAL://fluss-coordinator:0, CLIENT://fluss-coordinator:9123
+        advertised.listeners: CLIENT://fluss-coordinator:9123
+        internal.listener.name: INTERNAL
+        # Local: a shared volume (MinIO can't serve Fluss's STS GetSessionToken).
+        # AWS: an s3:// path — real S3 + IAM makes the STS token path work.
+        remote.data.dir: ${FLUSS_REMOTE_DATA_DIR:-/fluss-remote-data}
+        datalake.format: ${DATALAKE_FORMAT:-paimon}
+        datalake.paimon.metastore: filesystem
+        datalake.paimon.warehouse: ${FLUSS_PAIMON_WAREHOUSE:-s3://warehouse/fluss/paimon}
+        datalake.paimon.s3.endpoint: ${S3_ENDPOINT:-http://minio:9000}
+        datalake.paimon.s3.access-key: ${S3_ACCESS_KEY:-minioadmin}
+        datalake.paimon.s3.secret-key: ${S3_SECRET_KEY:-minioadmin}
+        datalake.paimon.s3.path.style.access: ${S3_PATH_STYLE:-true}
+        datalake.paimon.s3.region: ${AWS_REGION:-us-east-1}
+        s3.endpoint: ${S3_ENDPOINT:-http://minio:9000}
+        s3.access-key: ${S3_ACCESS_KEY:-minioadmin}
+        s3.secret-key: ${S3_SECRET_KEY:-minioadmin}
+        s3.path.style.access: ${S3_PATH_STYLE:-true}
+        s3.region: ${AWS_REGION:-us-east-1}
+    volumes:
+      - fluss-remote:/fluss-remote-data
+    networks: [streaming-net]
+
+  fluss-tablet-server:
+    build:
+      context: ./docker/fluss
+    container_name: fluss-tablet-server
+    command: tabletServer
+    depends_on: [fluss-coordinator]
+    restart: unless-stopped
+    environment:
+      FLUSS_PROPERTIES: |
+        zookeeper.address: fluss-zookeeper:2181
+        bind.listeners: INTERNAL://fluss-tablet-server:0, CLIENT://fluss-tablet-server:9123
+        advertised.listeners: CLIENT://fluss-tablet-server:9123
+        internal.listener.name: INTERNAL
+        tablet-server.id: 0
+        kv.snapshot.interval: 0s
+        data.dir: /tmp/fluss/data
+        remote.data.dir: ${FLUSS_REMOTE_DATA_DIR:-/fluss-remote-data}
+        datalake.format: ${DATALAKE_FORMAT:-paimon}
+        datalake.paimon.metastore: filesystem
+        datalake.paimon.warehouse: ${FLUSS_PAIMON_WAREHOUSE:-s3://warehouse/fluss/paimon}
+        datalake.paimon.s3.endpoint: ${S3_ENDPOINT:-http://minio:9000}
+        datalake.paimon.s3.access-key: ${S3_ACCESS_KEY:-minioadmin}
+        datalake.paimon.s3.secret-key: ${S3_SECRET_KEY:-minioadmin}
+        datalake.paimon.s3.path.style.access: ${S3_PATH_STYLE:-true}
+        datalake.paimon.s3.region: ${AWS_REGION:-us-east-1}
+        s3.endpoint: ${S3_ENDPOINT:-http://minio:9000}
+        s3.access-key: ${S3_ACCESS_KEY:-minioadmin}
+        s3.secret-key: ${S3_SECRET_KEY:-minioadmin}
+        s3.path.style.access: ${S3_PATH_STYLE:-true}
+        s3.region: ${AWS_REGION:-us-east-1}
+    volumes:
+      - fluss-remote:/fluss-remote-data
+    networks: [streaming-net]
+
+  # Fluss's own Flink cluster. docker/fluss-flink adds the Kafka source, the
+  # Fluss→Paimon lake plugin + Paimon runtime, and the source-built 1.0-SNAPSHOT
+  # Fluss jars (see docker/fluss/build-fluss.sh).
+  fluss-flink-jobmanager:
+    build:
+      context: ./docker/fluss-flink
+    container_name: fluss-flink-jobmanager
+    command: jobmanager
+    depends_on: [fluss-coordinator, fluss-tablet-server]
+    restart: unless-stopped
+    ports: ["8085:8081"]   # Flink UI (8081=flink-iceberg, 8083=kafka-connect)
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: fluss-flink-jobmanager
+        jobmanager.memory.process.size: 1600m
+        # datalake S3 so the Fluss source's HYBRID lake read (Fluss log + Paimon
+        # snapshot) can read the tiered Paimon splits.
+        s3.endpoint: ${S3_ENDPOINT:-http://minio:9000}
+        s3.access-key: ${S3_ACCESS_KEY:-minioadmin}
+        s3.secret-key: ${S3_SECRET_KEY:-minioadmin}
+        s3.path.style.access: ${S3_PATH_STYLE:-true}
+        s3.region: ${AWS_REGION:-us-east-1}
+    volumes:
+      - ./jobs/flink-fluss:/opt/sql:ro
+      - fluss-remote:/fluss-remote-data
+    networks: [streaming-net]
+
+  fluss-flink-taskmanager:
+    build:
+      context: ./docker/fluss-flink
+    container_name: fluss-flink-taskmanager
+    command: taskmanager
+    depends_on: [fluss-flink-jobmanager]
+    restart: unless-stopped
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: fluss-flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        # quickstart image defaults to ~512MB heap → OOM running bronze+gold+tiering
+        # (the tiering job scans the whole trades log + Paimon buffers). Give it room.
+        taskmanager.memory.process.size: ${FLUSS_TM_MEMORY:-4096m}
+        taskmanager.memory.managed.fraction: 0.2
+        s3.endpoint: ${S3_ENDPOINT:-http://minio:9000}
+        s3.access-key: ${S3_ACCESS_KEY:-minioadmin}
+        s3.secret-key: ${S3_SECRET_KEY:-minioadmin}
+        s3.path.style.access: ${S3_PATH_STYLE:-true}
+        s3.region: ${AWS_REGION:-us-east-1}
+    volumes:
+      - fluss-remote:/fluss-remote-data
+    networks: [streaming-net]
+
+  # Renders the SQL templates for DEPLOY_ENV + submits create/bronze/gold and the
+  # Fluss→Paimon tiering job. Swap env_file to env/aws.env for AWS (Glue + MSK).
+  fluss-flink-submitter:
+    build:
+      context: ./docker/fluss-flink
+    container_name: fluss-flink-submitter
+    depends_on: [fluss-flink-jobmanager, fluss-flink-taskmanager]
+    restart: on-failure
+    env_file:
+      - ./env/local.env
+    environment:
+      JOBMANAGER_RPC_ADDRESS: fluss-flink-jobmanager
+    volumes:
+      - ./jobs/flink-fluss:/opt/sql:ro
+    entrypoint: ["/bin/bash", "/opt/sql/submit.sh"]
+    networks: [streaming-net]
+
+volumes:
+  # Local hot remote-log tier for Fluss (unused when FLUSS_REMOTE_DATA_DIR is s3://).
+  fluss-remote:

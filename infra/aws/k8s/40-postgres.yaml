@@ -1,0 +1,49 @@
+# Source OLTP DB. wal_level=logical for Debezium CDC. Init DDL comes from a
+# ConfigMap the workflow creates from infra/postgres/init-appdb.sql:
+#   kubectl -n streaming create configmap pg-init --from-file=infra/postgres/init-appdb.sql
+apiVersion: v1
+kind: Secret
+metadata: { name: postgres, namespace: streaming }
+type: Opaque
+stringData:
+  POSTGRES_USER: app
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  POSTGRES_DB: appdb
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres, namespace: streaming }
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: postgres, namespace: streaming }
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          args: ["-c", "wal_level=logical", "-c", "max_replication_slots=8", "-c", "max_wal_senders=8"]
+          envFrom: [{ secretRef: { name: postgres } }]
+          ports: [{ containerPort: 5432 }]
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data, subPath: pgdata }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits:   { cpu: "2", memory: 4Gi }
+      volumes:
+        - { name: init, configMap: { name: pg-init } }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources: { requests: { storage: 20Gi } }

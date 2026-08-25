@@ -219,3 +219,15 @@ __marimo__/
 
 # IDEs
 .idea
+
+# Fluss source-built artifacts (regenerate via docker/fluss/build-fluss.sh)
+docker/fluss/dist/
+docker/fluss-flink/jars/
+
+# Terraform (infra/aws) — commit .terraform.lock.hcl, ignore state + working dir
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+crash.log
+.fluss-m2-cache/

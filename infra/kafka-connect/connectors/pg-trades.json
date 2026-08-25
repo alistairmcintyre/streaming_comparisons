@@ -1,0 +1,30 @@
+{
+  "name": "pg-trades",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "plugin.name": "pgoutput",
+    "database.hostname": "postgres-app",
+    "database.port": "5432",
+    "database.user": "app",
+    "database.password": "app",
+    "database.dbname": "appdb",
+    "topic.prefix": "app",
+    "schema.include.list": "public",
+    "table.include.list": "public.trades",
+    "slot.name": "dbz_trades",
+    "publication.autocreate.mode": "disabled",
+    "publication.name": "dbz_pub_trades",
+    "snapshot.mode": "initial",
+    "tombstones.on.delete": "false",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "connect",
+    "heartbeat.interval.ms": "10000",
+    "max.batch.size": "8192",
+    "max.queue.size": "32768"
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "title": "Pipeline Comparison — Live",
+  "uid": "pipeline-compare-live",
+  "schemaVersion": 39,
+  "editable": true,
+  "refresh": "5s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROM",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Liveness — latency-event rate per pipeline (flat 0 = pipeline down)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "targets": [
+        { "expr": "sum(rate(pipeline_latency_events_total[1m])) by (pipeline)", "legendFormat": "{{pipeline}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 2,
+      "title": "Processing delay p50 (s) over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum(rate(processing_delay_seconds_bucket[1m])) by (le, pipeline))", "legendFormat": "{{pipeline}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 3,
+      "title": "Processing delay p95 (s) over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(processing_delay_seconds_bucket[1m])) by (le, pipeline))", "legendFormat": "{{pipeline}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 4,
+      "title": "Processing delay p99 (s) over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum(rate(processing_delay_seconds_bucket[1m])) by (le, pipeline))", "legendFormat": "{{pipeline}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 5,
+      "title": "Now — p50 / p95 / p99 per pipeline",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum(rate(processing_delay_seconds_bucket[5m])) by (le, pipeline))", "legendFormat": "p50", "format": "table", "instant": true },
+        { "expr": "histogram_quantile(0.95, sum(rate(processing_delay_seconds_bucket[5m])) by (le, pipeline))", "legendFormat": "p95", "format": "table", "instant": true },
+        { "expr": "histogram_quantile(0.99, sum(rate(processing_delay_seconds_bucket[5m])) by (le, pipeline))", "legendFormat": "p99", "format": "table", "instant": true }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    }
+  ]
+}

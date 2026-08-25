@@ -5,10 +5,15 @@
 -- Why not Spark SQL (create_tables.sql)?
 -- Spark SQL does not support PRIMARY KEY syntax in CREATE TABLE DDL.
 -- Flink's Iceberg connector requires PRIMARY KEY to be declared on the
--- table (not just identifier-field-ids) to enable changelog/upsert reads,
--- which are needed for streaming aggregations with retraction semantics
--- (e.g. GROUP BY with updates). All _flink tables are therefore created
--- here so the primary key can be declared correctly.
+-- table to enable changelog/upsert reads (needed for streaming aggregations
+-- with retraction semantics, e.g. GROUP BY with updates).
+--
+-- Two silver tables are created for customers, to demonstrate both approaches:
+--   customers_flink        — written by the NON-direct silver job (reads the
+--                            bronze Iceberg table, LAST_VALUE aggregation,
+--                            soft deletes). Shows streaming-from-bronze works.
+--   customers_flink_direct — written by the direct silver job (reads Kafka
+--                            debezium-json, hard deletes via the upsert sink).
 
 CREATE CATALOG rest WITH (
     'type'                = 'iceberg',
@@ -22,14 +27,13 @@ CREATE CATALOG rest WITH (
     's3.secret-access-key' = 'minioadmin'
 );
 
--- ─── Bronze tables ────────────────────────────────────────────────────────
--- Append-only — MoR not applicable.
-
-CREATE TABLE IF NOT EXISTS rest.bronze.item_sales_flink (
+-- ─── Bronze (append-only) ──────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS rest.bronze.customers_flink (
   op                STRING,
-  item_id           BIGINT,
-  quantity          INT,
-  total_price       DOUBLE,
+  customer_id       BIGINT,
+  name              STRING,
+  country           STRING,
+  segment           STRING,
   source_updated_at TIMESTAMP(6),
   event_ts          TIMESTAMP(6),
   ingest_ts         TIMESTAMP(6),
@@ -37,97 +41,62 @@ CREATE TABLE IF NOT EXISTS rest.bronze.item_sales_flink (
   kafka_partition   INT
 );
 
-CREATE TABLE IF NOT EXISTS rest.bronze.item_attributes_flink (
-  op                STRING,
-  item_id           BIGINT,
+-- ─── Silver (through-bronze, soft delete) ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS rest.silver.customers_flink (
+  customer_id       BIGINT NOT NULL,
   name              STRING,
-  price             DOUBLE,
-  category          STRING,
-  source_updated_at TIMESTAMP(6),
-  event_ts          TIMESTAMP(6),
-  ingest_ts         TIMESTAMP(6),
-  kafka_offset      BIGINT,
-  kafka_partition   INT
-);
-
--- ─── Silver tables ────────────────────────────────────────────────────────
--- MoR: Flink's EqualityDeltaWriter already produces append + equality-delete
--- files. Setting MoR explicitly ensures Spark-initiated compaction and batch
--- reads use the same strategy rather than defaulting to CoW, which would cause
--- expensive full file rewrites at scale.
-
-CREATE TABLE IF NOT EXISTS rest.silver.item_sales_flink (
-  item_id           BIGINT NOT NULL,
-  quantity          INT,
-  total_price       DOUBLE,
+  country           STRING,
+  segment           STRING,
   source_updated_at TIMESTAMP(6),
   event_ts          TIMESTAMP(6),
   event_date        DATE,
   ingest_ts         TIMESTAMP(6),
   commit_ts         TIMESTAMP(6),
-  PRIMARY KEY (item_id) NOT ENFORCED
+  PRIMARY KEY (customer_id) NOT ENFORCED
 );
-ALTER TABLE rest.silver.item_sales_flink SET (
+ALTER TABLE rest.silver.customers_flink SET (
   'write.delete.mode' = 'merge-on-read',
   'write.update.mode' = 'merge-on-read',
   'write.merge.mode'  = 'merge-on-read'
 );
 
-CREATE TABLE IF NOT EXISTS rest.silver.item_attributes_flink (
-  item_id           BIGINT NOT NULL,
+-- ─── Silver (direct-from-Kafka, hard delete) ───────────────────────────────
+CREATE TABLE IF NOT EXISTS rest.silver.customers_flink_direct (
+  customer_id       BIGINT NOT NULL,
   name              STRING,
-  price             DOUBLE,
-  category          STRING,
+  country           STRING,
+  segment           STRING,
   source_updated_at TIMESTAMP(6),
   event_ts          TIMESTAMP(6),
   event_date        DATE,
   ingest_ts         TIMESTAMP(6),
   commit_ts         TIMESTAMP(6),
-  PRIMARY KEY (item_id) NOT ENFORCED
+  PRIMARY KEY (customer_id) NOT ENFORCED
 );
-ALTER TABLE rest.silver.item_attributes_flink SET (
+ALTER TABLE rest.silver.customers_flink_direct SET (
   'write.delete.mode' = 'merge-on-read',
   'write.update.mode' = 'merge-on-read',
   'write.merge.mode'  = 'merge-on-read'
 );
 
-CREATE TABLE IF NOT EXISTS rest.silver.item_attributes_flink_v2 (
-  item_id           BIGINT NOT NULL,
-  name              STRING,
-  price             DOUBLE,
-  category          STRING,
-  source_updated_at TIMESTAMP(6),
-  event_ts          TIMESTAMP(6),
-  event_date        DATE,
-  ingest_ts         TIMESTAMP(6),
-  commit_ts         TIMESTAMP(6),
-  PRIMARY KEY (item_id) NOT ENFORCED
+-- ─── Gold (active customers per country) ───────────────────────────────────
+CREATE TABLE IF NOT EXISTS rest.gold.customers_per_country_flink (
+  country        STRING NOT NULL,
+  customer_count BIGINT NOT NULL,
+  PRIMARY KEY (country) NOT ENFORCED
 );
-ALTER TABLE rest.silver.item_attributes_flink_v2 SET (
+ALTER TABLE rest.gold.customers_per_country_flink SET (
   'write.delete.mode' = 'merge-on-read',
   'write.update.mode' = 'merge-on-read',
   'write.merge.mode'  = 'merge-on-read'
 );
 
--- ─── Gold tables ──────────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS rest.gold.item_category_count_flink (
-  category   STRING NOT NULL,
-  item_count BIGINT NOT NULL,
-  PRIMARY KEY (category) NOT ENFORCED
+CREATE TABLE IF NOT EXISTS rest.gold.customers_per_country_flink_direct (
+  country        STRING NOT NULL,
+  customer_count BIGINT NOT NULL,
+  PRIMARY KEY (country) NOT ENFORCED
 );
-ALTER TABLE rest.gold.item_category_count_flink SET (
-  'write.delete.mode' = 'merge-on-read',
-  'write.update.mode' = 'merge-on-read',
-  'write.merge.mode'  = 'merge-on-read'
-);
-
-CREATE TABLE IF NOT EXISTS rest.gold.item_category_count_flink_v2 (
-  category   STRING NOT NULL,
-  item_count BIGINT NOT NULL,
-  PRIMARY KEY (category) NOT ENFORCED
-);
-ALTER TABLE rest.gold.item_category_count_flink_v2 SET (
+ALTER TABLE rest.gold.customers_per_country_flink_direct SET (
   'write.delete.mode' = 'merge-on-read',
   'write.update.mode' = 'merge-on-read',
   'write.merge.mode'  = 'merge-on-read'

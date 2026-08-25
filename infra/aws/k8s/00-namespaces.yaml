@@ -1,0 +1,58 @@
+# Namespaces + IRSA service accounts. Pods that touch S3/Glue/Athena run under the
+# `lake` SA, annotated with the Terraform workload role — no static keys.
+apiVersion: v1
+kind: Namespace
+metadata: { name: streaming }
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: fluss }
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: flink }
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: spark }
+---
+# The lake-access SA, created in each namespace that writes S3.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lake
+  namespace: fluss
+  annotations:
+    eks.amazonaws.com/role-arn: ${WORKLOAD_ROLE_ARN}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lake
+  namespace: flink
+  annotations:
+    eks.amazonaws.com/role-arn: ${WORKLOAD_ROLE_ARN}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lake
+  namespace: spark
+  annotations:
+    eks.amazonaws.com/role-arn: ${WORKLOAD_ROLE_ARN}
+---
+# Shared pipeline config (bucket names, bootstraps, region) referenced by workloads.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-config
+  namespace: fluss
+data:
+  AWS_REGION: "${AWS_REGION}"
+  KAFKA_BOOTSTRAP: "trades-kafka-bootstrap.kafka.svc:9092"
+  FLUSS_BOOTSTRAP: "fluss-coordinator.fluss.svc:9123"
+  FLUSS_PAIMON_WAREHOUSE: "s3://${PAIMON_BUCKET}/fluss/paimon"
+  FLUSS_REMOTE_DATA_DIR: "s3://${PAIMON_BUCKET}/fluss/remote-data"
+  DATALAKE_FORMAT: "paimon"
+  DEPLOY_ENV: "aws"
+  KAFKA_AUTH: "none"

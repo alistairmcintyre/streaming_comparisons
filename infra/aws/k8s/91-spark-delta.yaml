@@ -1,0 +1,199 @@
+# Spark Delta streaming pipeline (Kafka → Delta on S3). Four long-running
+# SparkApplications; each self-provisions its tables (ensure_all → createIfNotExists,
+# jobs/_shared/delta_tables.py) so there's no ordering dependency. COMPACTION is
+# IN-pipeline (Optimized Writes + Auto Compaction via table props AND session confs)
+# — mirrors Paimon self-compaction; only VACUUM is a separate job (93-maintenance.yaml).
+# S3 via IRSA; DynamoDB LogStore serializes the writer vs VACUUM on S3.
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata: { name: delta-bronze-trades, namespace: spark }
+spec:
+  type: Python
+  mode: cluster
+  image: "${ECR_REGISTRY}/streaming-comparison/spark-delta:latest"
+  mainApplicationFile: "local:///opt/jobs/bronze_trades.py"
+  sparkVersion: "3.5.1"
+  restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
+  sparkConf:
+    "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
+    "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+    "spark.databricks.delta.optimizeWrite.enabled": "true"
+    "spark.databricks.delta.autoCompact.enabled": "true"
+    "spark.delta.logStore.s3a.impl": "io.delta.storage.S3DynamoDBLogStore"
+    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.tableName": "${DELTA_LOGSTORE_TABLE}"
+    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.region": "${AWS_REGION}"
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+  volumes:
+    - { name: jobs, configMap: { name: spark-delta-jobs } }
+    - { name: shared, configMap: { name: spark-shared } }
+  driver:
+    serviceAccount: lake
+    cores: 1
+    memory: "2g"
+    env:
+      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
+      - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
+      - { name: PYTHONPATH, value: "/opt/shared" }
+    volumeMounts:
+      - { name: jobs, mountPath: /opt/jobs }
+      - { name: shared, mountPath: /opt/shared }
+  executor:
+    instances: 2
+    cores: 2
+    memory: "4g"
+    serviceAccount: lake
+    env:
+      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
+      - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
+      - { name: PYTHONPATH, value: "/opt/shared" }
+    volumeMounts:
+      - { name: jobs, mountPath: /opt/jobs }
+      - { name: shared, mountPath: /opt/shared }
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata: { name: delta-silver-trades, namespace: spark }
+spec:
+  type: Python
+  mode: cluster
+  image: "${ECR_REGISTRY}/streaming-comparison/spark-delta:latest"
+  mainApplicationFile: "local:///opt/jobs/silver_trades.py"
+  sparkVersion: "3.5.1"
+  restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
+  sparkConf:
+    "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
+    "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+    "spark.databricks.delta.optimizeWrite.enabled": "true"
+    "spark.databricks.delta.autoCompact.enabled": "true"
+    "spark.delta.logStore.s3a.impl": "io.delta.storage.S3DynamoDBLogStore"
+    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.tableName": "${DELTA_LOGSTORE_TABLE}"
+    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.region": "${AWS_REGION}"
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+  volumes:
+    - { name: jobs, configMap: { name: spark-delta-jobs } }
+    - { name: shared, configMap: { name: spark-shared } }
+  driver:
+    serviceAccount: lake
+    cores: 1
+    memory: "2g"
+    env:
+      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
+      - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
+      - { name: PYTHONPATH, value: "/opt/shared" }
+    volumeMounts:
+      - { name: jobs, mountPath: /opt/jobs }
+      - { name: shared, mountPath: /opt/shared }
+  executor:
+    instances: 2
+    cores: 2
+    memory: "4g"
+    serviceAccount: lake
+    env:
+      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
+      - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
+      - { name: PYTHONPATH, value: "/opt/shared" }
+    volumeMounts:
+      - { name: jobs, mountPath: /opt/jobs }
+      - { name: shared, mountPath: /opt/shared }
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata: { name: delta-silver-accounts, namespace: spark }
+spec:
+  type: Python
+  mode: cluster
+  image: "${ECR_REGISTRY}/streaming-comparison/spark-delta:latest"
+  mainApplicationFile: "local:///opt/jobs/silver_accounts.py"
+  sparkVersion: "3.5.1"
+  restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
+  sparkConf:
+    "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
+    "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+    "spark.databricks.delta.optimizeWrite.enabled": "true"
+    "spark.databricks.delta.autoCompact.enabled": "true"
+    "spark.delta.logStore.s3a.impl": "io.delta.storage.S3DynamoDBLogStore"
+    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.tableName": "${DELTA_LOGSTORE_TABLE}"
+    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.region": "${AWS_REGION}"
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+  volumes:
+    - { name: jobs, configMap: { name: spark-delta-jobs } }
+    - { name: shared, configMap: { name: spark-shared } }
+  driver:
+    serviceAccount: lake
+    cores: 1
+    memory: "2g"
+    env:
+      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
+      - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
+      - { name: PYTHONPATH, value: "/opt/shared" }
+    volumeMounts:
+      - { name: jobs, mountPath: /opt/jobs }
+      - { name: shared, mountPath: /opt/shared }
+  executor:
+    instances: 2
+    cores: 2
+    memory: "4g"
+    serviceAccount: lake
+    env:
+      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
+      - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
+      - { name: PYTHONPATH, value: "/opt/shared" }
+    volumeMounts:
+      - { name: jobs, mountPath: /opt/jobs }
+      - { name: shared, mountPath: /opt/shared }
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata: { name: delta-gold-open-positions, namespace: spark }
+spec:
+  type: Python
+  mode: cluster
+  image: "${ECR_REGISTRY}/streaming-comparison/spark-delta:latest"
+  mainApplicationFile: "local:///opt/jobs/gold_open_positions.py"
+  sparkVersion: "3.5.1"
+  restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
+  sparkConf:
+    "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
+    "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+    "spark.databricks.delta.optimizeWrite.enabled": "true"
+    "spark.databricks.delta.autoCompact.enabled": "true"
+    "spark.delta.logStore.s3a.impl": "io.delta.storage.S3DynamoDBLogStore"
+    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.tableName": "${DELTA_LOGSTORE_TABLE}"
+    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.region": "${AWS_REGION}"
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+  volumes:
+    - { name: jobs, configMap: { name: spark-delta-jobs } }
+    - { name: shared, configMap: { name: spark-shared } }
+  driver:
+    serviceAccount: lake
+    cores: 1
+    memory: "2g"
+    env:
+      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
+      - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
+      - { name: PYTHONPATH, value: "/opt/shared" }
+    volumeMounts:
+      - { name: jobs, mountPath: /opt/jobs }
+      - { name: shared, mountPath: /opt/shared }
+  executor:
+    instances: 2
+    cores: 2
+    memory: "4g"
+    serviceAccount: lake
+    env:
+      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
+      - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
+      - { name: PYTHONPATH, value: "/opt/shared" }
+    volumeMounts:
+      - { name: jobs, mountPath: /opt/jobs }
+      - { name: shared, mountPath: /opt/shared }
+

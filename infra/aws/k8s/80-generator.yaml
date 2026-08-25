@@ -1,0 +1,25 @@
+# Trades generator → Postgres (the CDC source). Rate is the load-test knob
+# (TRADES_PER_SEC): start 1k, then 10k. Built image in ECR.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: generator-trades, namespace: streaming }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: generator-trades } }
+  template:
+    metadata: { labels: { app: generator-trades } }
+    spec:
+      containers:
+        - name: generator
+          image: ${ECR_REGISTRY}/streaming-comparison/generator:latest
+          command: ["python", "gen_trades.py"]
+          env:
+            - { name: PGHOST, value: postgres.streaming.svc }
+            - { name: PGUSER, value: app }
+            - { name: PGDATABASE, value: appdb }
+            - { name: PGPASSWORD, valueFrom: { secretKeyRef: { name: postgres, key: POSTGRES_PASSWORD } } }
+            - { name: TRADES_PER_SEC, value: "${TRADES_PER_SEC}" }
+            - { name: TRADES_BATCH_SIZE, value: "500" }
+          resources:
+            requests: { cpu: "1", memory: 512Mi }
+            limits:   { cpu: "2", memory: 1Gi }

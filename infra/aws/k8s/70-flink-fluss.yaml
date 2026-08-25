@@ -1,0 +1,59 @@
+# Flink for the Fluss pipeline via the Flink Kubernetes Operator: a session cluster
+# (our fluss-flink image) + a submitter Job that renders the SQL for DEPLOY_ENV=aws
+# and runs create/bronze/gold + the tiering job (submit.sh). The SQL comes from a
+# ConfigMap the workflow builds from jobs/flink-fluss/:
+#   kubectl -n flink create configmap fluss-sql --from-file=jobs/flink-fluss/
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata: { name: fluss-flink, namespace: flink }
+spec:
+  image: ${ECR_REGISTRY}/streaming-comparison/fluss-flink:latest
+  flinkVersion: v1_20
+  serviceAccount: lake
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "4"
+    # datalake S3 for the Fluss source's hybrid lake read (IRSA creds, region only)
+    s3.region: "${AWS_REGION}"
+    # Java 17 opens for the tiering DataStream job
+    env.java.opts.all: "--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED"
+  jobManager:
+    resource: { memory: "1600m", cpu: 1 }
+  taskManager:
+    resource: { memory: "4096m", cpu: 2 } # ≥4G heap — quickstart default OOMs
+  # no `job:` block → SESSION cluster; the submitter below feeds it jobs.
+  mode: native
+  podTemplate:
+    spec:
+      volumes:
+        - { name: remote, persistentVolumeClaim: { claimName: fluss-remote } }
+      containers:
+        - name: flink-main-container
+          volumeMounts: [{ name: remote, mountPath: /fluss-remote-data }]
+---
+# Submitter: renders SQL for aws + submits create/bronze/gold + starts tiering.
+apiVersion: batch/v1
+kind: Job
+metadata: { name: fluss-submitter, namespace: flink }
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      serviceAccountName: lake
+      restartPolicy: OnFailure
+      containers:
+        - name: submitter
+          image: ${ECR_REGISTRY}/streaming-comparison/fluss-flink:latest
+          command: ["/bin/bash", "/opt/sql/submit.sh"]
+          env:
+            - { name: DEPLOY_ENV, value: "aws" }
+            - { name: KAFKA_AUTH, value: "none" }
+            - { name: AWS_REGION, value: "${AWS_REGION}" }
+            - { name: JOBMANAGER_RPC_ADDRESS, value: "fluss-flink-rest.flink.svc" }
+            - { name: FLINK_JOBMANAGER_PORT, value: "8081" }
+            - { name: FLUSS_BOOTSTRAP, value: "fluss-coordinator.fluss.svc:9123" }
+            - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+            - { name: FLUSS_PAIMON_WAREHOUSE, value: "s3://${PAIMON_BUCKET}/fluss/paimon" }
+            - { name: DATALAKE_FORMAT, value: "paimon" }
+          volumeMounts: [{ name: sql, mountPath: /opt/sql }]
+      volumes:
+        - { name: sql, configMap: { name: fluss-sql } }

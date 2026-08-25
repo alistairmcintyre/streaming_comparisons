@@ -1,0 +1,32 @@
+# gp3 storage class for PVCs (Kafka, Fluss tablet, Postgres). Deleted with the run.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  type: gp3
+  encrypted: "true"
+---
+# EFS (ReadWriteMany) for Fluss remote.data.dir — shared across coordinator/tablet/flink.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: { name: efs-sc }
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: ${EFS_ID}
+  directoryPerms: "700"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: fluss-remote, namespace: fluss }
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: efs-sc
+  resources: { requests: { storage: 50Gi } }
