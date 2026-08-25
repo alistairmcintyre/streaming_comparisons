@@ -176,6 +176,18 @@ jobs:
           echo "Cluster up. Grafana: kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80"
           sleep "$(( ${{ inputs.run_minutes }} * 60 ))"
 
+      # The OIDC-assumed creds from the start of the job live ~1h; after a 120-min
+      # run window they are EXPIRED, so the snapshot/destroy AWS calls fail with
+      # RequestExpired and the cluster is left running (seen 2026-08-25; only the
+      # kill-switch saved the run). GitHub's OIDC id-token is valid for the whole
+      # job, so re-assuming here is free and gives fresh creds for teardown.
+      - name: Re-assume deploy role (fresh creds for snapshot + teardown)
+        if: always()
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::167217327348:role/streaming-comparison-gha-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: Snapshot correctness + latency to S3
         if: always()
         run: |
