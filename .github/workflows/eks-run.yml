@@ -136,6 +136,20 @@ jobs:
           # source configmaps from the repo files
           kubectl create ns streaming --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n streaming create configmap pg-init --from-file=infra/postgres/init-appdb.sql --dry-run=client -o yaml | kubectl apply -f -
+          # generator source (lean image, source mounted at /app) — same ConfigMap pattern as Spark jobs
+          kubectl -n streaming create configmap generator-src \
+            --from-file=generators/common.py \
+            --from-file=generators/gen_trades.py \
+            --from-file=generators/gen_accounts.py \
+            --dry-run=client -o yaml | kubectl apply -f -
+          # ECR push secret for the Strimzi KafkaConnect (Debezium) in-cluster build:
+          # the node role only has ECR pull, so the build pod needs push creds. ECR
+          # token is valid ~12h — ample for an ephemeral run.
+          kubectl create ns kafka --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n kafka create secret docker-registry ecr-push \
+            --docker-server="${ECR_REGISTRY}" --docker-username=AWS \
+            --docker-password="$(aws ecr get-login-password --region "$AWS_REGION")" \
+            --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n flink create ns flink --dry-run=client -o yaml 2>/dev/null || true
           kubectl -n flink create configmap fluss-sql  --from-file=jobs/flink-fluss/  --dry-run=client -o yaml | kubectl apply -f - || true
           kubectl -n flink create configmap paimon-sql --from-file=jobs/flink-paimon/ --dry-run=client -o yaml | kubectl apply -f - || true

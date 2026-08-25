@@ -21,6 +21,9 @@ spec:
     output:
       type: docker
       image: ${ECR_REGISTRY}/streaming-comparison/kafka-connect:latest
+      # Node role has ECR pull only; the build pod needs push creds. `ecr-push`
+      # is a docker-registry secret the workflow creates from an ECR token.
+      pushSecret: ecr-push
     plugins:
       - name: debezium-postgres
         artifacts:
@@ -33,11 +36,17 @@ spec:
   resources:
     requests: { cpu: "1", memory: 1Gi }
     limits:   { cpu: "2", memory: 2Gi }
+# ONE connector captures both tables. Debezium requires topic.prefix to be UNIQUE
+# per connector (it namespaces JMX MBeans + offsets), but both tables must share
+# prefix `app` to yield the topic names the downstream jobs subscribe to
+# (app.public.trades / app.public.accounts). Two connectors with prefix `app`
+# therefore collide on JMX and the second one stalls — so a single connector with
+# table.include.list = both tables is the correct design (one slot, one publication).
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaConnector
 metadata:
-  name: pg-trades
+  name: pg-app
   namespace: kafka
   labels: { strimzi.io/cluster: debezium }
 spec:
@@ -51,28 +60,10 @@ spec:
     database.dbname: appdb
     topic.prefix: app
     plugin.name: pgoutput
-    slot.name: dbz_trades
-    publication.name: dbz_pub_trades
-    table.include.list: public.trades
+    slot.name: dbz_app
+    publication.name: dbz_pub_app
+    publication.autocreate.mode: filtered
+    table.include.list: public.trades,public.accounts
     max.batch.size: 8192
----
-apiVersion: kafka.strimzi.io/v1
-kind: KafkaConnector
-metadata:
-  name: pg-accounts
-  namespace: kafka
-  labels: { strimzi.io/cluster: debezium }
-spec:
-  class: io.debezium.connector.postgresql.PostgresConnector
-  tasksMax: 1
-  config:
-    database.hostname: postgres.streaming.svc
-    database.port: 5432
-    database.user: app
-    database.password: ${POSTGRES_PASSWORD}
-    database.dbname: appdb
-    topic.prefix: app
-    plugin.name: pgoutput
-    slot.name: dbz_accounts
-    publication.name: dbz_pub_accounts
-    table.include.list: public.accounts
+    # Debezium requires max.queue.size > max.batch.size (default queue is 8192).
+    max.queue.size: 32768

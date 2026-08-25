@@ -1,5 +1,8 @@
 # Trades generator → Postgres (the CDC source). Rate is the load-test knob
-# (TRADES_PER_SEC): start 1k, then 10k. Built image in ECR.
+# (TRADES_PER_SEC): start 1k, then 10k. The generator image is lean (python +
+# psycopg2 only); the source is delivered via the `generator-src` ConfigMap
+# (created by the workflow from generators/*.py) and mounted at /app — same
+# pattern as the Spark job ConfigMaps.
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: generator-trades, namespace: streaming }
@@ -9,15 +12,27 @@ spec:
   template:
     metadata: { labels: { app: generator-trades } }
     spec:
+      # Disable K8s service-link env injection: the `postgres` Service would
+      # otherwise inject POSTGRES_PORT=tcp://<ip>:5432, which common.py's
+      # int(POSTGRES_PORT) cannot parse. We set POSTGRES_* explicitly below.
+      enableServiceLinks: false
+      volumes:
+        - name: src
+          configMap: { name: generator-src }
       containers:
         - name: generator
           image: ${ECR_REGISTRY}/streaming-comparison/generator:latest
+          workingDir: /app
           command: ["python", "gen_trades.py"]
+          volumeMounts:
+            - { name: src, mountPath: /app }
           env:
-            - { name: PGHOST, value: postgres.streaming.svc }
-            - { name: PGUSER, value: app }
-            - { name: PGDATABASE, value: appdb }
-            - { name: PGPASSWORD, valueFrom: { secretKeyRef: { name: postgres, key: POSTGRES_PASSWORD } } }
+            # common.py reads POSTGRES_* (NOT libpq PG*); names must match exactly.
+            - { name: POSTGRES_HOST, value: postgres.streaming.svc }
+            - { name: POSTGRES_PORT, value: "5432" }
+            - { name: POSTGRES_USER, value: app }
+            - { name: POSTGRES_DB, value: appdb }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: postgres, key: POSTGRES_PASSWORD } } }
             - { name: TRADES_PER_SEC, value: "${TRADES_PER_SEC}" }
             - { name: TRADES_BATCH_SIZE, value: "500" }
           resources:
