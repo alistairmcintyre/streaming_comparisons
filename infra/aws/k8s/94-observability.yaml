@@ -1,7 +1,7 @@
 # Observability: the latency-exporter (Kafka pipeline_latency → Prometheus histogram
 # + S3 Parquet) + scrape configs. kube-prometheus-stack (Prometheus operator + Grafana)
 # is installed by Helm (see README). Grafana reads Prometheus — never Kafka directly.
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
   name: pipeline-latency

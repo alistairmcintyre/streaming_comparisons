@@ -12,7 +12,7 @@
 # every *.replication.factor / min.insync to 1 and pin to ONE AZ — that removes
 # cross-AZ replication traffic (the only real AWS Kafka cost). 3 replicas below
 # is the HA default; keep all brokers + Flink in the same AZ during a test.
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaNodePool
 metadata:
   name: dual-role
@@ -34,7 +34,7 @@ spec:
     requests: {cpu: "1", memory: 2Gi}
     limits:   {cpu: "2", memory: 4Gi}
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: Kafka
 metadata:
   name: trades

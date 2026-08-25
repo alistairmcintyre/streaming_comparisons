@@ -1,7 +1,7 @@
 # Debezium CDC via Strimzi KafkaConnect. spec.build adds the Postgres connector and
 # pushes the built image to ECR (the Connect build pod needs ECR push — via the node
 # role or a push secret). Two connectors = two replication slots (trades, accounts).
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaConnect
 metadata:
   name: debezium
@@ -9,9 +9,14 @@ metadata:
   annotations:
     strimzi.io/use-connector-resources: "true"
 spec:
-  version: 3.9.0
+  version: 4.2.0
   replicas: 1
   bootstrapServers: trades-kafka-bootstrap.kafka.svc:9092
+  # Strimzi v1 promoted these from config dotted-keys to required top-level fields.
+  groupId: debezium
+  offsetStorageTopic: debezium-offsets
+  configStorageTopic: debezium-configs
+  statusStorageTopic: debezium-status
   build:
     output:
       type: docker
@@ -22,10 +27,6 @@ spec:
           - type: tgz
             url: https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgres/2.7.4.Final/debezium-connector-postgres-2.7.4.Final-plugin.tar.gz
   config:
-    group.id: debezium
-    offset.storage.topic: debezium-offsets
-    config.storage.topic: debezium-configs
-    status.storage.topic: debezium-status
     config.storage.replication.factor: 3
     offset.storage.replication.factor: 3
     status.storage.replication.factor: 3
@@ -33,7 +34,7 @@ spec:
     requests: { cpu: "1", memory: 1Gi }
     limits:   { cpu: "2", memory: 2Gi }
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaConnector
 metadata:
   name: pg-trades
@@ -55,7 +56,7 @@ spec:
     table.include.list: public.trades
     max.batch.size: 8192
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaConnector
 metadata:
   name: pg-accounts

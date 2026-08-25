@@ -2,7 +2,7 @@
 # KAFKA_AUTH=none, bootstrap trades-kafka-bootstrap.kafka.svc:9092. 5–10 MB/s at
 # 10k msg/s is trivial; single-AZ so no cross-AZ replication cost. Prometheus
 # metrics exposed for the live dashboard.
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaNodePool
 metadata:
   name: dual-role
@@ -23,7 +23,7 @@ spec:
     requests: { cpu: "1", memory: 2Gi }
     limits:   { cpu: "2", memory: 4Gi }
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: Kafka
 metadata:
   name: trades
@@ -33,7 +33,7 @@ metadata:
     strimzi.io/kraft: enabled
 spec:
   kafka:
-    version: 3.9.0
+    version: 4.2.0
     listeners:
       - name: plain
         port: 9092

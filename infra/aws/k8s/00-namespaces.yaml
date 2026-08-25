@@ -33,6 +33,26 @@ metadata:
   annotations:
     eks.amazonaws.com/role-arn: ${WORKLOAD_ROLE_ARN}
 ---
+# Flink native-k8s: the JobManager (running as `lake`) creates/lists/deletes the
+# TaskManager pods + its configmaps/services. Without this the JM crashes with
+# "serviceaccount flink:lake cannot list resource pods".
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: flink-native, namespace: flink }
+rules:
+  - apiGroups: [""]
+    resources: [pods, configmaps, services]
+    verbs: ["*"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: [leases]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: flink-native, namespace: flink }
+subjects: [{ kind: ServiceAccount, name: lake, namespace: flink }]
+roleRef: { kind: Role, name: flink-native, apiGroup: rbac.authorization.k8s.io }
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
