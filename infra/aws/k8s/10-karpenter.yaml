@@ -34,10 +34,10 @@ spec:
     # eu-west-1 quota was raised to 128 on-demand (L-1216C47A) AND 128 spot
     # (L-34B43A08) on 2026-08-26, so 64 is comfortably inside it and leaves room
     # for the ~4 vCPU the EKS managed nodegroup holds.
-    # 64 fits the full 1k/s workload WITH maintenance running (~40 vCPU) instead of
-    # suspending it. For 10k/s raise to 96 and for 30k/s to 256 (see SIZING.md) —
-    # 256 needs another quota increase first.
-    cpu: "64"                                 # cap the run's blast radius
+    # 96 fits FIVE engines at 1k/s with maintenance running: ~64 vCPU for
+    # Iceberg/Delta/Paimon/Fluss plus ~18 for Hudi's 4 apps, with headroom. For 30k/s
+    # raise to 256 (see SIZING.md) — that needs another quota increase first.
+    cpu: "96"                                 # cap the run's blast radius
   disruption:
     consolidationPolicy: WhenEmptyOrUnderutilized
     consolidateAfter: 2m

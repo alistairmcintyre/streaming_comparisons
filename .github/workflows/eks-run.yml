@@ -109,6 +109,7 @@ jobs:
           # Spark images stay job-agnostic (jobs mounted via ConfigMap); own context
           bp spark-iceberg    docker/spark/Dockerfile             docker/spark
           bp spark-delta      docker/spark-delta/Dockerfile       docker/spark-delta
+          bp spark-hudi       docker/spark-hudi/Dockerfile        docker/spark-hudi
 
       - name: Kubeconfig + operators
         run: |
@@ -148,7 +149,7 @@ jobs:
       - name: Clean lake (tables + checkpoints)
         if: ${{ inputs.clean_lake }}
         run: |
-          for p in delta iceberg _chk; do
+          for p in delta iceberg hudi _chk; do
             echo "wiping s3://$WAREHOUSE_BUCKET/$p/"
             aws s3 rm "s3://$WAREHOUSE_BUCKET/$p/" --recursive --only-show-errors || true
           done
@@ -212,10 +213,12 @@ jobs:
           kubectl create ns spark --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n spark create configmap spark-iceberg-jobs --from-file=jobs/spark-iceberg/ --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n spark create configmap spark-delta-jobs   --from-file=jobs/spark-delta/   --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n spark create configmap spark-hudi-jobs    --from-file=jobs/spark-hudi/    --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n spark create configmap spark-shared \
             --from-file=jobs/_shared/cdc.py \
             --from-file=jobs/_shared/delta_tables.py \
             --from-file=jobs/_shared/iceberg_tables.py \
+            --from-file=jobs/_shared/hudi_tables.py \
             --dry-run=client -o yaml | kubectl apply -f -
           for f in $(ls infra/aws/k8s/*.yaml | sort); do
             envsubst < "$f" | kubectl apply -f -

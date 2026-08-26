@@ -17,8 +17,8 @@ Two hard rules, both learned the painful way:
 
 | | **1k/s (measured)** | **10k/s (estimate)** | **30k/s (estimate)** |
 |---|---|---|---|
-| **Total vCPU demand** | ~33 | ~90–110 | ~230–280 |
-| **NodePool `limits.cpu`** | 64¹ | 96 | 256 |
+| **Total vCPU demand** | ~82 (5 engines) | ~90–110 | ~230–280 |
+| **NodePool `limits.cpu`** | 96¹ | 96 | 256 |
 | **EC2 quota needed** (on-demand, L-1216C47A) | 128 ✅ | 128 ✅ | 320 (request needed) |
 | **Generator** `TRADES_PER_SEC` / batch | 1000 / 500 | 10000 / 2000 | 30000 / 5000 |
 | Generator cpu req | 1 | 2 | 4 (or 2 replicas) |
@@ -61,6 +61,11 @@ and sub-30s intervals start to dominate p99 latency.
 The engines put compaction in different places, which matters when reading latency
 results at any rate:
 
+- **Hudi** — MERGE_ON_READ with INLINE compaction, so like Delta and Paimon the
+  compaction cost lands inside the write path. Hudi's default is COPY_ON_WRITE, which
+  would have flattered its reads and penalised its writes for configuration reasons.
+  When querying, use `_rt` (real-time) not `_ro` (read-optimised): `_ro` reads base
+  files only and returns STALE data quickly.
 - **Delta** — Optimized Writes + Auto Compaction run IN the streaming job, so
   compaction cost lands inside the microbatch and shows up in p99. VACUUM is separate
   (and commits — hence the DynamoDB LogStore).

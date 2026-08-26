@@ -120,14 +120,14 @@ PJ=$($KB -n flink exec deploy/flink-paimon -- curl -s localhost:8081/jobs/overvi
 
 echo "== 6. spark =="
 SR=$($KB -n spark get sparkapplications -o jsonpath='{.items[*].status.applicationState.state}' 2>/dev/null | tr ' ' '\n' | grep -c RUNNING)
-[ "${SR:-0}" -ge 8 ] && ok "$SR spark apps RUNNING" || bad "only ${SR:-0}/8 spark apps RUNNING"
+[ "${SR:-0}" -ge 12 ] && ok "$SR spark apps RUNNING" || bad "only ${SR:-0}/12 spark apps RUNNING (iceberg+delta+hudi = 4 each)"
 ERR=$($KB -n spark get pods --no-headers 2>/dev/null | grep -c Error)
 [ "${ERR:-0}" = 0 ] && ok "no spark Error pods" || bad "$ERR spark pod(s) in Error"
 BEHIND=$($KB -n spark logs -l spark-role=driver --tail=200 --max-log-requests=10 2>/dev/null | grep -c 'falling behind')
 [ "${BEHIND:-0}" = 0 ] && ok "no microbatch overruns" || warn "$BEHIND 'falling behind' warnings — batches exceed the trigger (executor sizing?)"
 
 echo "== 7. data files in S3 (the actual point) =="
-for spec in "delta:s3://$WAREHOUSE/delta/:parquet" "iceberg:s3://$WAREHOUSE/iceberg/:parquet" "paimon:s3://$PAIMON/paimon/:parquet|orc|avro"; do
+for spec in "delta:s3://$WAREHOUSE/delta/:parquet" "iceberg:s3://$WAREHOUSE/iceberg/:parquet" "hudi:s3://$WAREHOUSE/hudi/:parquet|log" "paimon:s3://$PAIMON/paimon/:parquet|orc|avro"; do
   n="${spec%%:*}"; rest="${spec#*:}"; path="${rest%:*}"; pat="${rest##*:}"
   C=$(aws s3 ls "$path" --recursive 2>/dev/null | grep -cE "\.($pat)$")
   [ "${C:-0}" -gt 0 ] && ok "$n has $C data files" || bad "$n has NO data files (running != writing)"

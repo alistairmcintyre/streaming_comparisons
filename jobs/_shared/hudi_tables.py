@@ -1,0 +1,89 @@
+"""
+Shared Hudi write options for the trades pipelines.
+
+TABLE TYPE: MERGE_ON_READ everywhere, to match how the other engines are configured
+— Iceberg gold uses write.merge.mode=merge-on-read, Delta uses deletion vectors, and
+Paimon is LSM (merge-on-read by nature). Hudi's own default is COPY_ON_WRITE, which
+would make it look slower on writes and faster on reads for configuration reasons
+rather than engine ones. MOR is also the standard recommendation for streaming CDC
+ingest specifically, which is this workload.
+
+COMPACTION: inline, so the cost lands INSIDE the write path. Delta compacts inline
+(autoCompact) and Paimon self-compacts in the writer; if Hudi deferred compaction to
+an async job its write latency would look artificially good. Iceberg is the odd one
+out — it has no in-writer compaction and needs a separate rewrite job — which is
+recorded in SIZING.md as a known asymmetry.
+
+READ SEMANTICS: a MOR table exposes _ro (read-optimised, base files only — STALE) and
+_rt (real-time, merges the log files — CURRENT). Correctness checks must use _rt or
+the snapshot query type; _ro looks fast and returns old data.
+"""
+import os
+
+_BASE = os.environ.get("HUDI_WAREHOUSE", "s3a://warehouse/hudi")
+
+BRONZE_TRADES   = f"{_BASE}/bronze/trades"
+SILVER_TRADES   = f"{_BASE}/silver/trades"
+SILVER_ACCOUNTS = f"{_BASE}/silver/accounts"
+GOLD_POSITIONS  = f"{_BASE}/gold/open_positions"
+
+# Applied to every table: MOR + inline compaction + parquet/zstd to match the others.
+_COMMON = {
+    "hoodie.datasource.write.table.type": "MERGE_ON_READ",
+    "hoodie.compact.inline": "true",
+    "hoodie.compact.inline.max.delta.commits": "5",
+    "hoodie.parquet.compression.codec": "zstd",
+    # Keep the timeline bounded on a long run; without this the .hoodie dir grows
+    # without limit and commit listing slowly dominates write latency.
+    "hoodie.clean.automatic": "true",
+    "hoodie.cleaner.commits.retained": "10",
+    "hoodie.datasource.write.hive_style_partitioning": "true",
+}
+
+
+def _opts(table_name, recordkey, precombine, partitionpath="", operation="upsert",
+          extra=None):
+    o = dict(_COMMON)
+    o.update({
+        "hoodie.table.name": table_name,
+        "hoodie.datasource.write.recordkey.field": recordkey,
+        "hoodie.datasource.write.precombine.field": precombine,
+        "hoodie.datasource.write.partitionpath.field": partitionpath,
+        "hoodie.datasource.write.operation": operation,
+        # Streaming writes need a stable identifier so restarts resume cleanly.
+        "hoodie.datasource.write.streaming.checkpoint.identifier": f"{table_name}_writer",
+    })
+    if not partitionpath:
+        o["hoodie.datasource.write.keygenerator.class"] = \
+            "org.apache.hudi.keygen.NonpartitionedKeyGenerator"
+    if extra:
+        o.update(extra)
+    return o
+
+
+# bronze: append-only fills. `insert` skips the dedup/index lookup an upsert would do
+# — the correct choice for immutable executions and much cheaper at 1k+/s.
+def bronze_trades_opts():
+    return _opts("hudi_bronze_trades", "trade_id", "executed_at",
+                 partitionpath="executed_date", operation="insert")
+
+
+# silver trades: same grain, but deduplicated on trade_id, so upsert.
+def silver_trades_opts():
+    return _opts("hudi_silver_trades", "trade_id", "executed_at",
+                 partitionpath="executed_date", operation="upsert")
+
+
+# silver accounts: SCD1 dimension, latest row per account wins.
+def silver_accounts_opts():
+    return _opts("hudi_silver_accounts", "account_id", "source_updated_at",
+                 operation="upsert")
+
+
+# gold: net book per (account_id, symbol). Compound key, partitioned by symbol so the
+# per-batch read of affected keys prunes instead of scanning the whole table.
+def gold_positions_opts():
+    return _opts("hudi_gold_open_positions", "account_id,symbol", "commit_ts",
+                 partitionpath="symbol", operation="upsert",
+                 extra={"hoodie.datasource.write.keygenerator.class":
+                        "org.apache.hudi.keygen.ComplexKeyGenerator"})

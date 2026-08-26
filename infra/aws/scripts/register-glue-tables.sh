@@ -70,6 +70,26 @@ for spec in "bronze:trades_delta:delta/bronze/trades" \
     && echo "  registered ${db}.${tbl}" || echo "  FAILED ${db}.${tbl}"
 done
 
+# ── Hudi → Glue ──────────────────────────────────────────────────────────────
+# A MOR table exposes _ro (base files only, STALE) and _rt (merges log files,
+# CURRENT). Register the CURRENT view — a correctness check against _ro would quietly
+# compare stale data and make Hudi look wrong.
+echo "== hudi =="
+for spec in "bronze:trades_hudi:hudi/bronze/trades" \
+            "silver:trades_hudi:hudi/silver/trades" \
+            "silver:accounts_hudi:hudi/silver/accounts" \
+            "gold:open_positions_hudi:hudi/gold/open_positions"; do
+  db="${spec%%:*}"; rest="${spec#*:}"; tbl="${rest%%:*}"; path="${rest#*:}"
+  loc="s3://${WAREHOUSE_BUCKET}/${path}"
+  if ! aws s3 ls "${loc}/.hoodie/" >/dev/null 2>&1; then
+    echo "  skip ${db}.${tbl} — no .hoodie yet"; continue
+  fi
+  athena_sql "CREATE EXTERNAL TABLE IF NOT EXISTS \`${db}\`.\`${tbl}\`
+              LOCATION '${loc}'
+              TBLPROPERTIES ('table_type' = 'HUDI')" \
+    && echo "  registered ${db}.${tbl}" || echo "  FAILED ${db}.${tbl}"
+done
+
 # ── Paimon's Iceberg metadata → Glue ─────────────────────────────────────────
 # Paimon (hadoop-catalog) writes Iceberg metadata under <table>/metadata/vN.metadata.json.
 # A Glue table with table_type=ICEBERG + metadata_location makes Athena read it.
