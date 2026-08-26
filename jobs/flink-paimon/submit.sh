@@ -42,11 +42,20 @@ if [ "${DEPLOY_ENV}" = "aws" ]; then
   # hive-catalog/Glue committer needs Hive-metastore + Glue-client jars that the
   # flink-paimon image does not carry -> every commit died with
   # NoClassDefFoundError org/apache/hadoop/hive/metastore/api/NoSuchObjectException.
-  # Athena can still read these tables by registering them at the metadata location;
-  # add the jars later if automatic Glue registration is wanted.
+  # Athena reads these via a Glue table pointing at metadata_location — registered
+  # externally by infra/aws/scripts/register-glue-tables.sh, because in-writer Glue
+  # registration (hive-catalog) needs com.amazonaws.glue...AWSCatalogMetastoreClient,
+  # which AWS does not publish to Maven Central, and Paimon 1.4.2 ships only
+  # IcebergHiveMetadataCommitter.
+  # RETENTION MATTERS: Paimon rotates vN.metadata.json and deletes old ones by
+  # default, so a pinned metadata_location goes stale within SECONDS on a live table
+  # and Athena fails with ICEBERG_MISSING_METADATA. Keep the old versions so an
+  # external pointer stays valid.
   PAIMON_ICEBERG_OPTS=",
     'metadata.iceberg.storage' = 'hadoop-catalog',
-    'metadata.iceberg.manifest-legacy-version' = 'true'"
+    'metadata.iceberg.manifest-legacy-version' = 'true',
+    'metadata.iceberg.delete-after-commit.enabled' = 'false',
+    'metadata.iceberg.previous-versions-max' = '1000'"
 else
   PAIMON_S3_OPTS=",
     's3.endpoint' = '${S3_ENDPOINT:-http://minio:9000}',

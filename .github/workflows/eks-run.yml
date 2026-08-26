@@ -239,6 +239,13 @@ jobs:
           role-to-assume: arn:aws:iam::167217327348:role/streaming-comparison-gha-deploy
           aws-region: ${{ env.AWS_REGION }}
 
+      # Delta and Paimon write to S3 without touching Glue, so Athena cannot see them
+      # even though the data is there (only the Spark/Iceberg jobs self-register).
+      # Runs AFTER the load window so the tables and their metadata actually exist.
+      - name: Register Delta + Paimon tables in Glue (Athena visibility)
+        if: always()
+        run: infra/aws/scripts/register-glue-tables.sh
+
       - name: Snapshot correctness + latency to S3
         if: always()
         run: |
