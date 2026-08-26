@@ -38,6 +38,10 @@ spec:
   driver:
     serviceAccount: lake
     cores: 1
+    # k8s CPU *request* only — spark.driver.cores stays 1. The driver just
+    # coordinates microbatches (executors do the work), so a full core of
+    # scheduling footprint is wasteful on a quota-capped cluster.
+    coreRequest: "500m"
     memory: "2g"
     env:
       - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
@@ -88,6 +92,10 @@ spec:
   driver:
     serviceAccount: lake
     cores: 1
+    # k8s CPU *request* only — spark.driver.cores stays 1. The driver just
+    # coordinates microbatches (executors do the work), so a full core of
+    # scheduling footprint is wasteful on a quota-capped cluster.
+    coreRequest: "500m"
     memory: "2g"
     env:
       - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
@@ -138,6 +146,10 @@ spec:
   driver:
     serviceAccount: lake
     cores: 1
+    # k8s CPU *request* only — spark.driver.cores stays 1. The driver just
+    # coordinates microbatches (executors do the work), so a full core of
+    # scheduling footprint is wasteful on a quota-capped cluster.
+    coreRequest: "500m"
     memory: "2g"
     env:
       - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
@@ -188,6 +200,10 @@ spec:
   driver:
     serviceAccount: lake
     cores: 1
+    # k8s CPU *request* only — spark.driver.cores stays 1. The driver just
+    # coordinates microbatches (executors do the work), so a full core of
+    # scheduling footprint is wasteful on a quota-capped cluster.
+    coreRequest: "500m"
     memory: "2g"
     env:
       - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
