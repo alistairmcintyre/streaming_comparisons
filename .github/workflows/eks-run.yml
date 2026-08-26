@@ -223,7 +223,11 @@ jobs:
           for f in $(ls infra/aws/k8s/*.yaml | sort); do
             envsubst < "$f" | kubectl apply -f -
           done
-          kubectl apply -f infra/aws/k8s/grafana/ || true   # dashboard configmap (optional)
+          # Apply ONLY the ConfigMap wrapper — the raw dashboard .json has no
+          # apiVersion/kind and kubectl cannot apply it. This used to be
+          # `apply -f <dir> || true`, which failed silently every run and is why no
+          # dashboard was ever loaded. No `|| true`: a broken dashboard should be loud.
+          kubectl apply -f infra/aws/k8s/grafana/dashboard-configmap.yaml
 
       - name: Run for ${{ inputs.run_minutes }} min (live Grafana via port-forward)
         run: |

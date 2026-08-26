@@ -17,6 +17,18 @@ kind: Namespace
 metadata: { name: spark }
 ---
 # The lake-access SA, created in each namespace that writes S3.
+# latency-exporter runs here and writes benchmark results to S3, so it needs the
+# same IRSA role. Without this SA the Deployment sits at 0/1 forever with
+# "error looking up service account streaming/lake" on the ReplicaSet — invisible
+# unless you describe the ReplicaSet, since the Deployment logs no events.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lake
+  namespace: streaming
+  annotations:
+    eks.amazonaws.com/role-arn: ${WORKLOAD_ROLE_ARN}
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
