@@ -68,9 +68,20 @@ if [ "$EXEC_OK" = 1 ]; then
   MSG=$($KB -n kafka exec trades-dual-role-0 -- bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
         --topic app.public.trades --max-messages 1 --timeout-ms 15000 2>/dev/null | tail -1)
   if [ -n "$MSG" ]; then
-    echo "$MSG" | grep -q '"schema"' \
-      && bad "wire format WRAPPED ({schema,payload}) — set value.converter.schemas.enable=false; consumers will parse NULL" \
-      || ok "wire format unwrapped (after at top level)"
+    # Check the TOP-LEVEL keys, not a grep for "schema": Debezium's unwrapped envelope
+    # contains source.schema="public" (the Postgres schema name), which made a naive
+    # grep report every healthy run as WRAPPED.
+    echo "$MSG" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin); k=set(d)
+    if 'payload' in k and 'after' not in k: print('BAD wire format WRAPPED ({schema,payload}) - set value.converter.schemas.enable=false; consumers parse NULL')
+    elif 'after' in k or 'before' in k:     print('OK wire format unwrapped (after at top level)')
+    else:                                    print('BAD unexpected envelope, top-level keys: '+','.join(sorted(k))[:60])
+except Exception as e: print('BAD could not parse message: '+str(e)[:50])
+" 2>/dev/null | while read -r line; do
+      case "$line" in OK*) ok "${line#OK }";; *) bad "${line#BAD }";; esac
+    done
     echo "$MSG" | python3 -c "
 import json,sys
 try:
