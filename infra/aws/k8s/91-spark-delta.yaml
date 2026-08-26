@@ -3,10 +3,15 @@
 # jobs/_shared/delta_tables.py) so there's no ordering dependency. COMPACTION is
 # IN-pipeline (Optimized Writes + Auto Compaction via table props AND session confs)
 # — mirrors Paimon self-compaction; only VACUUM is a separate job (93-maintenance.yaml).
-# S3 via IRSA. NOTE: no S3DynamoDBLogStore — each table has exactly ONE streaming
-# writer and VACUUM does not write commits, so the default single-driver log store
-# is correct. The S3DynamoDBLogStore class also needs the AWS SDK **v1**
-# (com.amazonaws.services.dynamodbv2), which this SDK-v2 image does not carry.
+# S3 via IRSA.
+# TEMPORARY: S3DynamoDBLogStore is disabled, NOT deliberately dropped. It is the
+# only thing that makes Delta commits safe for concurrent writers on S3 (S3 has no
+# atomic put-if-absent, so the default S3SingleDriverLogStore is safe for ONE
+# driver only). It was disabled solely to unblock the run: delta-storage-s3-dynamodb
+# is compiled against the AWS SDK v1 (com.amazonaws.services.dynamodbv2) and this
+# image carries only SDK v2, so every driver hit NoClassDefFoundError.
+# RESTORE IT — see to-do "RESTORE the Delta DynamoDB log store". Do not treat the
+# current single-writer assumption as a design decision.
 ---
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
