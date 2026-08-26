@@ -249,6 +249,61 @@ Hypotheses / open questions to verify:
 
 ---
 
+## Objective 5 — Serialization format as a measured dimension (JSON vs Avro)
+
+**Why this is an objective and not a footnote.** Every engine currently consumes the
+same Debezium **JSON** topic, which makes the engine-vs-engine comparison fair —
+serialization is a shared upstream constant, so it cancels out of the relative
+ranking. But it does not disappear from the numbers:
+
+- **JSON parse cost is common-mode.** It sits inside every engine's measured latency.
+  It does not bias A against B, but it inflates all absolute figures and *compresses
+  the gaps between engines* — two engines that differ by 20% in real work can look
+  10% apart once both carry the same fixed parsing tax.
+- **Payload size is ~3–5× Avro's.** That is more Kafka I/O, more network, more page
+  cache, and more broker CPU — none of which is the lake engine under test.
+- **It gets worse with rate.** At 1k/s the tax is small. At 10k/30k a materially
+  larger share of what we measure is Kafka + JSON parsing rather than Iceberg vs
+  Delta vs Paimon vs Fluss. A high-rate run where all four engines look suspiciously
+  similar is the signal that common-mode cost is dominating.
+
+**So run it twice and record both.** Rather than treating serialization as a confound
+to be argued away, make it the second axis of the matrix:
+
+| | Iceberg | Delta | Paimon | Fluss |
+|---|---|---|---|---|
+| **JSON** | ✅ current | ✅ | ✅ | ✅ |
+| **Avro** | pending | pending | pending | pending |
+
+Holding everything else identical (rate, cluster size, duration, node types), the two
+result sets answer two different questions:
+
+1. **Within a format** — the engine ranking, with the format's tax as a constant.
+2. **Across formats** — how much of a CDC lakehouse pipeline's latency is actually
+   serialization. That is a genuinely useful finding in its own right, and it is
+   invisible if only one format is ever measured.
+
+It also tests whether the ranking is *stable* across formats. If Avro reorders the
+engines, the JSON ranking was partly an artifact of parsing cost — worth knowing
+before drawing conclusions from either set alone.
+
+**Recording:** results are written per run to
+`s3://<warehouse>/benchmarks/<run_id>/wire_format=<json|avro>/`, so the two sets stay
+distinguishable and directly comparable. The `wire_format` workflow input labels the
+run; do not compare across runs that differ in anything else.
+
+**Implementation:** Avro requires a Schema Registry (Apicurio — Apache 2.0; Confluent's
+is Community License) plus a converter swap on Debezium; `decimal.handling.mode` then
+becomes `precise`, using Avro's native decimal logical type instead of the string
+encoding JSON forces. Flink has first-class `debezium-avro-confluent`; Spark is the
+awkward side — `from_avro` does not understand the Confluent wire format (5-byte magic
++ schema id), so it needs ABRiS or manual byte-stripping. See the deploy to-do list.
+
+**Results:** _(pending — JSON set not yet complete either; Iceberg and Fluss have never
+been observed writing data files)_
+
+---
+
 ## Decisions & open questions
 
 - [ ] Region for deployment.

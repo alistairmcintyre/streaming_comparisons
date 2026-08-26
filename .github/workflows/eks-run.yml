@@ -31,6 +31,11 @@ on:
         description: "Wipe lake tables + streaming checkpoints before the run (fresh benchmark; leaves tfstate/teardown/ECR untouched)"
         type: boolean
         default: true
+      wire_format:
+        description: "CDC serialization under test — labels the results so JSON and Avro sets stay comparable (Objective 5)"
+        type: choice
+        options: ["json", "avro"]
+        default: "json"
 
 permissions:
   id-token: write      # OIDC
@@ -164,6 +169,15 @@ jobs:
             done
           done
 
+      - name: Guard — wire_format must be implemented
+        run: |
+          if [ "${{ inputs.wire_format }}" = "avro" ]; then
+            echo "avro is not implemented yet: it needs a Schema Registry (Apicurio), a"
+            echo "Debezium converter swap, and Avro-capable consumers (Spark needs ABRiS)."
+            echo "See AWS_OBJECTIVES.md Objective 5 and the deploy to-do list."
+            exit 1
+          fi
+
       - name: Render + apply manifests
         run: |
           export TRADES_PER_SEC="${{ inputs.trades_per_sec }}"
@@ -230,7 +244,11 @@ jobs:
         run: |
           # latency Parquet is already flushed by the exporter; run the count-reconciliation
           # (Athena) and write results next to it. See infra/aws/README.md.
-          echo "TODO: athena reconciliation query → s3://${WAREHOUSE_BUCKET}/benchmarks/${RUN_ID}/"
+          # Partitioned by wire_format so the JSON and Avro result sets (Objective 5)
+          # stay distinguishable and directly comparable. Only ever compare runs that
+          # differ in wire_format alone — same rate, duration, cluster size.
+          RESULTS="s3://${WAREHOUSE_BUCKET}/benchmarks/${RUN_ID}/wire_format=${{ inputs.wire_format }}"
+          echo "TODO: athena reconciliation query → ${RESULTS}/"
 
       # Teardown policy (the 2.5h EventBridge kill-switch ALWAYS backstops):
       #   on-success → destroy only if the whole run succeeded (keeps a failed
