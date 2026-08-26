@@ -278,7 +278,15 @@ jobs:
           # while the control plane is alive makes Karpenter launch replacements
           # (seen live 2026-08-25). Karpenter nodes are NOT in tf state, so leftovers
           # are cleaned up AFTER the destroy.
-          terraform destroy -auto-approve -input=false \
+          # An interrupted destroy (timeout, expired creds, killed shell) leaves the
+          # DynamoDB state lock HELD, and every later attempt dies with "Error
+          # acquiring the state lock" while the steps after it still report success.
+          # That silently stranded a VPC + EIP twice. Clear it, then destroy.
+          LID=$(terraform plan -refresh=false -lock-timeout=0s \
+                  -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" 2>&1 \
+                | grep -oE '[0-9a-f]{8}-[0-9a-f-]{27}' | head -1 || true)
+          [ -n "$LID" ] && terraform force-unlock -force "$LID" || true
+          terraform destroy -auto-approve -input=false -lock-timeout=300s \
             -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
             echo "first destroy pass failed — sweeping blockers, then retrying"
           # Terminate leftover cluster EC2 (Karpenter is dead now; they stay dead)
@@ -298,10 +306,18 @@ jobs:
             echo "destroy still failing — EventBridge kill switch will tear down at the 2.5h mark"
           # Sweep CSI-provisioned EBS orphans (PVCs; reclaimPolicy Delete, but the
           # cluster is gone before they're deleted → orphaned).
-          VOLS=$(aws ec2 describe-volumes --region "$AWS_REGION" \
-            --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" "Name=status,Values=available" \
-            --query 'Volumes[].VolumeId' --output text)
-          for v in $VOLS; do aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v" || true; done
+          # CSI-provisioned volumes do NOT all carry kubernetes.io/cluster/<name>: some
+          # only have KubernetesCluster or ebs.csi.aws.com/cluster-name. Filtering on
+          # the first key alone left 190GiB of Kafka/Postgres/Fluss volumes billing
+          # after a teardown that reported success. Match every variant.
+          for key in "tag:kubernetes.io/cluster/$CN" "tag:KubernetesCluster" "tag:ebs.csi.aws.com/cluster-name"; do
+            case "$key" in *cluster/$CN) VAL=owned ;; *) VAL="$CN" ;; esac
+            for v in $(aws ec2 describe-volumes --region "$AWS_REGION" \
+                --filters "Name=$key,Values=$VAL" "Name=status,Values=available" \
+                --query 'Volumes[].VolumeId' --output text); do
+              aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v" || true
+            done
+          done
           # Sweep EKS control-plane log groups. EKS auto-creates /aws/eks/$CN/cluster
           # when control-plane logging is on; an interrupted/forced destroy can leave it
           # behind and out of state, and the NEXT apply then fails CreateLogGroup with

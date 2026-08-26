@@ -85,10 +85,15 @@ resource "aws_codebuild_project" "teardown" {
             - terraform destroy -auto-approve -input=false
             # 3) sweep CSI-provisioned EBS orphans (PVCs; cluster gone before delete)
             - |
-              for v in $(aws ec2 describe-volumes --region "$AWS_REGION" \
-                --filters "Name=tag:kubernetes.io/cluster/$CLUSTER_NAME,Values=owned" "Name=status,Values=available" \
-                --query 'Volumes[].VolumeId' --output text); do
-                aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v" || true
+              # CSI volumes carry the cluster under several different tag keys;
+              # matching only kubernetes.io/cluster/<name> leaves most of them behind.
+              for key in "tag:kubernetes.io/cluster/$CLUSTER_NAME" "tag:KubernetesCluster" "tag:ebs.csi.aws.com/cluster-name"; do
+                case "$key" in *cluster/$CLUSTER_NAME) VAL=owned ;; *) VAL="$CLUSTER_NAME" ;; esac
+                for v in $(aws ec2 describe-volumes --region "$AWS_REGION" \
+                    --filters "Name=$key,Values=$VAL" "Name=status,Values=available" \
+                    --query 'Volumes[].VolumeId' --output text); do
+                  aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v" || true
+                done
               done
             # 4) sweep EKS control-plane log groups (auto-created by EKS; a forced/partial
             #    destroy leaves them out of state → next apply fails CreateLogGroup)
