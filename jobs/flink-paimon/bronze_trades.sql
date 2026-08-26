@@ -22,7 +22,7 @@ CREATE TEMPORARY TABLE kafka_trades_src (
         symbol      STRING,
         side        STRING,
         quantity    INT,
-        price       DOUBLE,
+        price       DECIMAL(12,4),
         executed_at STRING
     >,
     `source` ROW<

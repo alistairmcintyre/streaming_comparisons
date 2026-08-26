@@ -15,7 +15,7 @@ CREATE CATALOG fluss_catalog WITH (
 CREATE TEMPORARY TABLE kafka_trades_src (
     op       STRING,
     `after`  ROW<trade_id BIGINT, account_id BIGINT, symbol STRING, side STRING,
-                 quantity INT, price DOUBLE, executed_at STRING>,
+                 quantity INT, price DECIMAL(12,4), executed_at STRING>,
     `source` ROW<ts_ms BIGINT>,
     ts_ms    BIGINT
 ) WITH (

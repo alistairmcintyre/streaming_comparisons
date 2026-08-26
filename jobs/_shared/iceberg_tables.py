@@ -26,12 +26,12 @@ _STATEMENTS = [
     f"CREATE NAMESPACE IF NOT EXISTS {_CAT}.gold",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.bronze.trades_spark (
         op STRING, trade_id BIGINT, account_id BIGINT, symbol STRING, side STRING,
-        quantity INT, price DOUBLE, executed_at TIMESTAMP, event_ts TIMESTAMP,
+        quantity INT, price DECIMAL(12,4), executed_at TIMESTAMP, event_ts TIMESTAMP,
         ingest_ts TIMESTAMP, kafka_offset BIGINT, kafka_partition INT)
       USING iceberg PARTITIONED BY (days(executed_at)) TBLPROPERTIES ({_APPEND_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.trades_spark (
         trade_id BIGINT, account_id BIGINT, symbol STRING, side STRING, quantity INT,
-        price DOUBLE, executed_at TIMESTAMP, event_ts TIMESTAMP, ingest_ts TIMESTAMP)
+        price DECIMAL(12,4), executed_at TIMESTAMP, event_ts TIMESTAMP, ingest_ts TIMESTAMP)
       USING iceberg PARTITIONED BY (days(executed_at)) TBLPROPERTIES ({_APPEND_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.accounts_spark (
         account_id BIGINT NOT NULL, name STRING, country STRING, tier STRING,
@@ -39,7 +39,7 @@ _STATEMENTS = [
       USING iceberg TBLPROPERTIES ({_MOR_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.gold.open_positions_spark (
         account_id BIGINT NOT NULL, symbol STRING NOT NULL, net_quantity BIGINT,
-        net_notional DOUBLE, trade_count BIGINT, status STRING, country STRING,
+        net_notional DECIMAL(38,4), trade_count BIGINT, status STRING, country STRING,
         tier STRING, commit_ts TIMESTAMP)
       USING iceberg PARTITIONED BY (symbol) TBLPROPERTIES ({_MOR_PROPS})""",
 ]

@@ -78,8 +78,9 @@ spec:
     max.batch.size: 8192
     # Debezium requires max.queue.size > max.batch.size (default queue is 8192).
     max.queue.size: 32768
-    # `price` is NUMERIC in Postgres. Debezium's default decimal.handling.mode=precise
-    # emits it as base64-encoded bytes (Connect Decimal), but every job schema types
-    # price as DoubleType, so it would parse as NULL and silently poison the gold
-    # aggregates (net_notional = quantity * price). Emit plain doubles instead.
-    decimal.handling.mode: double
+    # `price` is NUMERIC(12,4) in Postgres — money, so it must stay exact.
+    # `precise` (the default) emits base64 Connect Decimal bytes, which the JSON
+    # consumers cannot decode; `double` parses but is LOSSY, and the error compounds
+    # in net_notional = SUM(quantity * price) over millions of rows. `string` keeps
+    # the exact decimal and the jobs cast it to DECIMAL(12,4).
+    decimal.handling.mode: string

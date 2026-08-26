@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS fluss_catalog.trades_db.trades (
     symbol      STRING,
     side        STRING,
     quantity    INT,
-    price       DOUBLE,
+    price       DECIMAL(12,4),
     -- TIMESTAMP(6): Iceberg's native micro precision. Paimon's Iceberg-compat
     -- REJECTS precision < 4 (TIMESTAMP(3) → the tiering commit throws
     -- "only support timestamp type with precision from 4 to 9" and no Iceberg
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS fluss_catalog.trades_db.open_positions (
     account_id   BIGINT,
     symbol       STRING,
     net_quantity BIGINT,
-    net_notional DOUBLE,
+    net_notional DECIMAL(38,4),
     trade_count  BIGINT,
     PRIMARY KEY (account_id, symbol) NOT ENFORCED
 ) WITH (

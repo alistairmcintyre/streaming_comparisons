@@ -13,7 +13,7 @@ table (fine for ephemeral benchmark runs; a long-lived table needs explicit migr
 import os
 from delta.tables import DeltaTable
 from pyspark.sql.types import (
-    StructType, StructField, StringType, LongType, IntegerType, DoubleType, TimestampType,
+    StructType, StructField, StringType, LongType, IntegerType, DecimalType, TimestampType,
 )
 
 _BASE = os.environ.get("DELTA_WAREHOUSE", "s3a://warehouse/delta")
@@ -35,7 +35,7 @@ def create_bronze_trades(spark):
         StructField("op", StringType()), StructField("trade_id", LongType()),
         StructField("account_id", LongType()), StructField("symbol", StringType()),
         StructField("side", StringType()), StructField("quantity", IntegerType()),
-        StructField("price", DoubleType()), StructField("executed_at", TimestampType()),
+        StructField("price", DecimalType(12, 4)), StructField("executed_at", TimestampType()),
         StructField("event_ts", TimestampType()), StructField("ingest_ts", TimestampType()),
         StructField("kafka_offset", LongType()), StructField("kafka_partition", IntegerType()),
     ])
@@ -54,7 +54,7 @@ def create_silver_trades(spark):
     schema = StructType([
         StructField("trade_id", LongType(), False), StructField("account_id", LongType()),
         StructField("symbol", StringType()), StructField("side", StringType()),
-        StructField("quantity", IntegerType()), StructField("price", DoubleType()),
+        StructField("quantity", IntegerType()), StructField("price", DecimalType(12, 4)),
         StructField("executed_at", TimestampType()), StructField("event_ts", TimestampType()),
         StructField("ingest_ts", TimestampType()),
     ])
@@ -90,7 +90,7 @@ def create_gold_open_positions(spark):
         return  # exists: properties are converged by _converge_properties()
     schema = StructType([
         StructField("account_id", LongType(), False), StructField("symbol", StringType(), False),
-        StructField("net_quantity", LongType()), StructField("net_notional", DoubleType()),
+        StructField("net_quantity", LongType()), StructField("net_notional", DecimalType(38, 4)),
         StructField("trade_count", LongType()), StructField("status", StringType()),
         StructField("country", StringType()), StructField("tier", StringType()),
         StructField("commit_ts", TimestampType()),

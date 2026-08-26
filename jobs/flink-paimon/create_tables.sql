@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS paimon.bronze.trades (
     symbol            STRING,
     side              STRING,
     quantity          INT,
-    price             DOUBLE,
+    price             DECIMAL(12,4),
     executed_at       TIMESTAMP(6),
     event_ts          TIMESTAMP(6),
     ingest_ts         TIMESTAMP(6),
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS paimon.silver.trades (
     symbol            STRING,
     side              STRING,
     quantity          INT,
-    price             DOUBLE,
+    price             DECIMAL(12,4),
     executed_at       TIMESTAMP(6),
     event_ts          TIMESTAMP(6),
     ingest_ts         TIMESTAMP(6),
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS paimon.gold.open_positions (
     account_id    BIGINT NOT NULL,
     symbol        STRING NOT NULL,
     net_quantity  BIGINT,
-    net_notional  DOUBLE,
+    net_notional  DECIMAL(38,4),
     trade_count   BIGINT,
     PRIMARY KEY (account_id, symbol) NOT ENFORCED
 ) WITH (

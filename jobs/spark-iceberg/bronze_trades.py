@@ -7,7 +7,7 @@ from pyspark.sql import SparkSession
 from iceberg_tables import ensure_all  # in-pipeline DDL
 from pyspark.sql.functions import col, from_json, current_timestamp, to_timestamp
 from pyspark.sql.types import (
-    StructType, StructField, StringType, LongType, IntegerType, DoubleType,
+    StructType, StructField, StringType, LongType, IntegerType, DecimalType,
 )
 
 KAFKA_BROKERS   = os.environ.get("KAFKA_BROKERS", "kafka:9092")
@@ -22,7 +22,7 @@ PAYLOAD = StructType([
     StructField("symbol",      StringType(),  True),
     StructField("side",        StringType(),  True),
     StructField("quantity",    IntegerType(), True),
-    StructField("price",       DoubleType(),  True),
+    StructField("price",       StringType(),  True),   # exact decimal as string
     StructField("executed_at", StringType(),  True),
 ])
 SOURCE = StructType([StructField("ts_ms", LongType(), True)])
@@ -60,7 +60,7 @@ def main():
                 col("env.after.symbol").alias("symbol"),
                 col("env.after.side").alias("side"),
                 col("env.after.quantity").alias("quantity"),
-                col("env.after.price").alias("price"),
+                col("env.after.price").cast(DecimalType(12, 4)).alias("price"),
                 to_timestamp(col("env.after.executed_at")).alias("executed_at"),
                 (col("env.source.ts_ms") / 1000).cast("timestamp").alias("event_ts"),
                 current_timestamp().alias("ingest_ts"),
