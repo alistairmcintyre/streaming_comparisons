@@ -19,6 +19,12 @@ aws eks update-kubeconfig --region $REGION --name $CLUSTER
 curl -sSL -o ~/kubectl https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl && chmod +x ~/kubectl
 alias k=~/kubectl
 
+── 1a. RUN THIS FIRST — checks every stage at once ────────────────────────────
+KUBECTL=~/kubectl ./infra/aws/scripts/validate-run.sh
+# Reports ALL broken stages together instead of one per run. Run it ~5 min after
+# the manifests apply, then again 10 min later (the second run proves data is
+# GROWING, not merely present). Everything below is for drilling into a FAIL.
+
 ── 1. CLUSTER + PODS OVERVIEW ─────────────────────────────────────────────────
 k get nodes                          # expect: all Ready, v1.34.x
 k get pods -A | grep -vE 'Running|Completed'   # expect: EMPTY (nothing unhealthy)
@@ -80,6 +86,25 @@ k -n spark get pods | grep -E 'driver|exec'
 ── 7. FLUSS CLUSTER ───────────────────────────────────────────────────────────
 k -n fluss get pods    # expect: coordinator, tablet-server-0, zookeeper-0 Running
 k -n fluss logs deploy/fluss-coordinator --tail=20   # no repeated ERRORs
+
+# FLUSS WROTE NO DATA FILES (open as of 2026-08-26). Tiering CREATED the Paimon
+# tables (schemas exist) but no data landed. That proves tiering connected and had
+# permissions — it does NOT prove Fluss holds any rows to tier. The source config is
+# byte-identical to flink-paimon's, which wrote 5.3M rows, so the read path is fine
+# and the problem is the Fluss SINK or Fluss storage. Two checks settle it:
+#
+# (a) does Fluss ITSELF have rows?  (empty => sink problem, not tiering)
+k -n flink exec deploy/fluss-flink -- /opt/flink/bin/sql-client.sh -f /dev/stdin <<'SQL'
+CREATE CATALOG fluss_catalog WITH ('type'='fluss','bootstrap.servers'='fluss-coordinator.fluss.svc:9123');
+SELECT count(*) FROM fluss_catalog.trades_db.trades;
+SQL
+#
+# (b) is the bronze job emitting records into the sink?
+JID=$(k -n flink exec deploy/fluss-flink -- curl -s localhost:8081/jobs/overview \
+      | python3 -c "import json,sys;print([j['jid'] for j in json.load(sys.stdin)['jobs'] if 'trades' in j['name']][0])")
+k -n flink exec deploy/fluss-flink -- curl -s localhost:8081/jobs/$JID | python3 -m json.tool | grep -A3 write-records
+# rows in Fluss + no lake files  -> tiering is the problem
+# no rows in Fluss               -> the sink is the problem; check tablet-server logs
 
 ── 8. S3 LAKE OUTPUT (the actual point of it all) ─────────────────────────────
 # Paimon bucket — fluss datalake tiering + flink-paimon warehouse:
