@@ -48,7 +48,7 @@ CREATE TEMPORARY TABLE kafka_customers_src (
     'properties.group.id'          = 'flink-bronze-customers',
     'scan.startup.mode'            = 'earliest-offset',
     'format'                       = 'json',
-    'json.ignore-parse-errors'     = 'true'
+    'json.ignore-parse-errors'     = 'false'
 );
 
 INSERT INTO rest.bronze.customers_flink

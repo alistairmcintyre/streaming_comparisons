@@ -40,6 +40,17 @@ spec:
     # `after` parses as null, every row is filtered out, and the pipelines commit
     # empty batches forever. docker-compose already sets these (VALUE_CONVERTER_
     # SCHEMAS_ENABLE=false) — this is the local→AWS gap.
+    # Dead-letter queue. Kafka Connect is the ONE layer here with real DLQ support:
+    # a record that cannot be converted/serialised goes to `debezium-dlq` with the
+    # failure reason in its headers, instead of killing the task or vanishing.
+    # errors.tolerance=all applies to conversion/transform errors only — genuine
+    # connector failures (lost DB connection, invalid slot) still fail loudly.
+    errors.tolerance: all
+    errors.deadletterqueue.topic.name: debezium-dlq
+    errors.deadletterqueue.topic.replication.factor: 3
+    errors.deadletterqueue.context.headers.enable: true
+    errors.log.enable: true
+    errors.log.include.messages: false   # payloads may contain PII; headers carry the cause
     key.converter: org.apache.kafka.connect.json.JsonConverter
     value.converter: org.apache.kafka.connect.json.JsonConverter
     key.converter.schemas.enable: false

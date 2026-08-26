@@ -92,6 +92,13 @@ aws s3 ls s3://streaming-comparison-amc-paimon/ --recursive | tail -20
 aws s3 ls s3://streaming-comparison-amc-warehouse/ | grep -vE 'tfstate|teardown'
 # expect: iceberg/ and delta/ prefixes with recent objects
 
+── 8b. DEAD-LETTER QUEUE (must be EMPTY) ──────────────────────────────────────
+k -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh \
+  --bootstrap-server localhost:9092 --topic debezium-dlq
+# expect: no output or offset 0. Non-zero = Debezium is rejecting records and the
+# run's numbers are not trustworthy. Inspect with print.headers=true to see the cause.
+# See ERROR_HANDLING.md.
+
 ── 9. LATENCY + GRAFANA ───────────────────────────────────────────────────────
 k -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh \
   --bootstrap-server localhost:9092 --topic pipeline_latency

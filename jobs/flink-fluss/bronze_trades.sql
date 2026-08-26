@@ -25,7 +25,7 @@ CREATE TEMPORARY TABLE kafka_trades_src (
     'properties.group.id'          = 'flink-fluss-bronze-trades',
     'scan.startup.mode'            = 'earliest-offset',
     'format'                       = 'json',
-    'json.ignore-parse-errors'     = 'true'${KAFKA_EXTRA_OPTS}
+    'json.ignore-parse-errors'     = 'false'${KAFKA_EXTRA_OPTS}
 );
 
 INSERT INTO fluss_catalog.trades_db.trades

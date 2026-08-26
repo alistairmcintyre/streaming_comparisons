@@ -42,7 +42,7 @@ CREATE TEMPORARY TABLE cdc_customers (
     'scan.startup.mode'                 = 'earliest-offset',
     'format'                            = 'debezium-json',
     'debezium-json.schema-include'      = 'false',
-    'debezium-json.ignore-parse-errors' = 'true'
+    'debezium-json.ignore-parse-errors' = 'false'
 );
 
 INSERT INTO rest.silver.customers_flink_direct /*+ OPTIONS('upsert-enabled'='true') */

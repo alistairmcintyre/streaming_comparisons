@@ -27,6 +27,10 @@ on:
         description: "Skip image build+push (reuse images already in ECR) — fast deploy iterations"
         type: boolean
         default: false
+      clean_lake:
+        description: "Wipe lake tables + streaming checkpoints before the run (fresh benchmark; leaves tfstate/teardown/ECR untouched)"
+        type: boolean
+        default: true
 
 permissions:
   id-token: write      # OIDC
@@ -126,6 +130,39 @@ jobs:
           helm upgrade --install spark-operator spark-operator/spark-operator -n spark --create-namespace --wait \
             --set 'spark.jobNamespaces={spark}'
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -n monitoring --create-namespace --wait
+
+      # A run must start from an empty lake or it is not a clean benchmark: stale
+      # tables carry the PREVIOUS build's schema and table properties, and Delta /
+      # Paimon both refuse (or silently ignore) a changed definition on an existing
+      # table — that cost two separate debugging sessions. Stale Spark/Flink
+      # checkpoints are worse: they resume at offsets from an older Kafka whose
+      # topic has been recreated, so the pipelines consume nothing and commit empty
+      # batches forever while looking perfectly healthy.
+      # SURGICAL: only the pipeline's own output prefixes. tfstate/ and teardown/
+      # live in the same warehouse bucket and must survive.
+      - name: Clean lake (tables + checkpoints)
+        if: ${{ inputs.clean_lake }}
+        run: |
+          for p in delta iceberg _chk; do
+            echo "wiping s3://$WAREHOUSE_BUCKET/$p/"
+            aws s3 rm "s3://$WAREHOUSE_BUCKET/$p/" --recursive --only-show-errors || true
+          done
+          for p in paimon fluss _flink_chk; do
+            echo "wiping s3://$PAIMON_BUCKET/$p/"
+            aws s3 rm "s3://$PAIMON_BUCKET/$p/" --recursive --only-show-errors || true
+          done
+          # Guard: these must still be here afterwards.
+          for keep in tfstate teardown; do
+            aws s3 ls "s3://$WAREHOUSE_BUCKET/$keep/" >/dev/null 2>&1 \
+              && echo "  OK preserved: $keep/" \
+              || { echo "FATAL: $keep/ missing after clean — aborting"; exit 1; }
+          done
+          # Glue holds the Iceberg table definitions; drop them so the new schema applies.
+          for db in bronze silver gold; do
+            for t in $(aws glue get-tables --database-name "$db" --query 'TableList[].Name' --output text 2>/dev/null); do
+              aws glue delete-table --database-name "$db" --name "$t" 2>/dev/null && echo "  dropped glue $db.$t" || true
+            done
+          done
 
       - name: Render + apply manifests
         run: |

@@ -38,7 +38,7 @@ CREATE TEMPORARY TABLE kafka_trades_src (
     'properties.group.id'          = 'flink-paimon-bronze-trades',
     'scan.startup.mode'            = 'earliest-offset',
     'format'                       = 'json',
-    'json.ignore-parse-errors'     = 'true'${KAFKA_EXTRA_OPTS}
+    'json.ignore-parse-errors'     = 'false'${KAFKA_EXTRA_OPTS}
 );
 
 INSERT INTO paimon.bronze.trades

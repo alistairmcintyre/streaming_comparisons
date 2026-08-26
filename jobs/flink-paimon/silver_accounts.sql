@@ -29,7 +29,7 @@ CREATE TEMPORARY TABLE kafka_accounts_src (
     'properties.group.id'          = 'flink-paimon-silver-accounts',
     'scan.startup.mode'            = 'earliest-offset',
     'format'                       = 'json',
-    'json.ignore-parse-errors'     = 'true'${KAFKA_EXTRA_OPTS}
+    'json.ignore-parse-errors'     = 'false'${KAFKA_EXTRA_OPTS}
 );
 
 INSERT INTO paimon.silver.accounts
