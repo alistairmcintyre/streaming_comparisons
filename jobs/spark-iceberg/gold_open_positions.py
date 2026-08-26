@@ -15,6 +15,7 @@ gold_open_positions_reconcile.py. In a no-failure run the fold is exact.
 exactly-once state — cheap incremental, but you buy correctness with a reconcile.)
 """
 import os
+from iceberg_tables import ensure_all  # in-pipeline DDL
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, when, lit, sum as _sum, count as _count, broadcast
 

@@ -54,7 +54,7 @@ spec:
             - { name: JOBMANAGER_RPC_ADDRESS, value: "fluss-flink-rest.flink.svc" }
             - { name: FLINK_JOBMANAGER_PORT, value: "8081" }
             - { name: FLUSS_BOOTSTRAP, value: "fluss-coordinator.fluss.svc:9123" }
-            - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+            - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
             - { name: FLUSS_PAIMON_WAREHOUSE, value: "s3://${PAIMON_BUCKET}/fluss/paimon" }
             - { name: DATALAKE_FORMAT, value: "paimon" }
             - { name: S3_ACCESS_KEY, value: "${S3_ACCESS_KEY}" }

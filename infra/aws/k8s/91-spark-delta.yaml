@@ -3,7 +3,10 @@
 # jobs/_shared/delta_tables.py) so there's no ordering dependency. COMPACTION is
 # IN-pipeline (Optimized Writes + Auto Compaction via table props AND session confs)
 # — mirrors Paimon self-compaction; only VACUUM is a separate job (93-maintenance.yaml).
-# S3 via IRSA; DynamoDB LogStore serializes the writer vs VACUUM on S3.
+# S3 via IRSA. NOTE: no S3DynamoDBLogStore — each table has exactly ONE streaming
+# writer and VACUUM does not write commits, so the default single-driver log store
+# is correct. The S3DynamoDBLogStore class also needs the AWS SDK **v1**
+# (com.amazonaws.services.dynamodbv2), which this SDK-v2 image does not carry.
 ---
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
@@ -22,9 +25,6 @@ spec:
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
     "spark.databricks.delta.optimizeWrite.enabled": "true"
     "spark.databricks.delta.autoCompact.enabled": "true"
-    "spark.delta.logStore.s3a.impl": "io.delta.storage.S3DynamoDBLogStore"
-    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.tableName": "${DELTA_LOGSTORE_TABLE}"
-    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.region": "${AWS_REGION}"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-delta-jobs } }
@@ -34,7 +34,7 @@ spec:
     cores: 1
     memory: "2g"
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -47,7 +47,7 @@ spec:
     memory: "2g"
     serviceAccount: lake
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -72,9 +72,6 @@ spec:
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
     "spark.databricks.delta.optimizeWrite.enabled": "true"
     "spark.databricks.delta.autoCompact.enabled": "true"
-    "spark.delta.logStore.s3a.impl": "io.delta.storage.S3DynamoDBLogStore"
-    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.tableName": "${DELTA_LOGSTORE_TABLE}"
-    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.region": "${AWS_REGION}"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-delta-jobs } }
@@ -84,7 +81,7 @@ spec:
     cores: 1
     memory: "2g"
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -97,7 +94,7 @@ spec:
     memory: "2g"
     serviceAccount: lake
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -122,9 +119,6 @@ spec:
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
     "spark.databricks.delta.optimizeWrite.enabled": "true"
     "spark.databricks.delta.autoCompact.enabled": "true"
-    "spark.delta.logStore.s3a.impl": "io.delta.storage.S3DynamoDBLogStore"
-    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.tableName": "${DELTA_LOGSTORE_TABLE}"
-    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.region": "${AWS_REGION}"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-delta-jobs } }
@@ -134,7 +128,7 @@ spec:
     cores: 1
     memory: "2g"
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -147,7 +141,7 @@ spec:
     memory: "2g"
     serviceAccount: lake
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -172,9 +166,6 @@ spec:
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
     "spark.databricks.delta.optimizeWrite.enabled": "true"
     "spark.databricks.delta.autoCompact.enabled": "true"
-    "spark.delta.logStore.s3a.impl": "io.delta.storage.S3DynamoDBLogStore"
-    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.tableName": "${DELTA_LOGSTORE_TABLE}"
-    "spark.io.delta.storage.S3DynamoDBLogStore.ddb.region": "${AWS_REGION}"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-delta-jobs } }
@@ -184,7 +175,7 @@ spec:
     cores: 1
     memory: "2g"
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -197,7 +188,7 @@ spec:
     memory: "2g"
     serviceAccount: lake
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: DELTA_WAREHOUSE, value: "s3a://${WAREHOUSE_BUCKET}/delta" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: PYTHONPATH, value: "/opt/shared" }

@@ -3,6 +3,7 @@ Spark Structured Streaming: Kafka accounts (Debezium) → Iceberg silver.account
 SCD1 current-view dimension via MERGE (batch-read downstream by gold for enrichment).
 """
 import os
+from iceberg_tables import ensure_all  # in-pipeline DDL
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, from_json, current_timestamp, to_timestamp, coalesce, row_number,

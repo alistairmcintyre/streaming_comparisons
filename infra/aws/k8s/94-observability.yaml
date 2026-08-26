@@ -27,7 +27,7 @@ spec:
           image: "${ECR_REGISTRY}/streaming-comparison/latency-exporter:latest"
           ports: [{ name: metrics, containerPort: 8000 }]
           env:
-            - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+            - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
             - { name: LATENCY_TOPIC, value: "pipeline_latency" }
             - { name: RUN_ID, value: "${RUN_ID}" }
             - { name: S3_BENCHMARK_PREFIX, value: "s3://${WAREHOUSE_BUCKET}/benchmarks/${RUN_ID}/latency" }

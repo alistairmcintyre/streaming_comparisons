@@ -64,6 +64,10 @@ before it, so a "fixed" pipeline usually just means the next layer became reacha
 | 36 | Paimon still wrote `hive-catalog` after the fix | Paimon persists table options INTO the S3 schema file; `CREATE TABLE IF NOT EXISTS` will not update them → drop the (data-free) stale tables so they are recreated |
 | 37 | Duplicate Paimon jobs per table | the submitter Job was re-run without cancelling the previous jobs → cancel duplicates (two writers per table conflict on commit) |
 | 38 | All silver-accounts pipelines failed on a missing Kafka topic | `gen_accounts.py` existed but was never deployed, so `accounts` stayed empty and Debezium never created the topic → add a `generator-accounts` Deployment (`6985436`) |
+| 39 | Every Spark driver: `ConfigException: No resolvable bootstrap urls` | jobs read `KAFKA_BROKERS` (default `kafka:9092`) but the manifests set `KAFKA_BOOTSTRAP`, so all 8 silently used the compose-era default → rename in the Spark manifests (same class as #22; Flink's submit.sh genuinely reads `KAFKA_BOOTSTRAP`) |
+| 40 | `gold_open_positions` + `silver_accounts` (both engines): `NameError: name 'ensure_all' is not defined` | 4 job files call `ensure_all(spark)` without importing it — a pre-existing repo bug, not AWS-specific → add `from <engine>_tables import ensure_all` |
+| 41 | Delta drivers: `NoClassDefFoundError com/amazonaws/services/dynamodbv2/...` | `delta-storage-s3-dynamodb` is compiled against the AWS SDK **v1**, absent from this SDK-v2 image → drop the `S3DynamoDBLogStore` config entirely: one streaming writer per table and VACUUM writes no commits, so the default single-driver log store is correct (this reverses the jar added in #34) |
+| 42 | One app kept the old env var after a bulk patch | a `kubectl replace` loop skipped an app whose fetch failed mid-loop → always re-verify the whole set, not the loop's echo output |
 
 ## Recurring gotchas (cost us time more than once)
 
@@ -71,3 +75,5 @@ before it, so a "fixed" pipeline usually just means the next layer became reacha
 - `terraform destroy` piped through `grep` looks hung — it is block-buffered; check `aws eks describe-cluster`, not the pipe.
 - `pgrep -f <pattern>` inside a script whose own command line contains that pattern kills the script's own shell; use `pgrep -x`.
 - Destroying with `-refresh=false` leaves stale entries in state; reconcile with one refresh-enabled destroy before the next run.
+- `busybox nslookup` does NOT apply search domains the way glibc/Java do: it returned NXDOMAIN for `svc.kafka.svc` and sent me chasing a DNS problem that did not exist (`getent` inside the real image resolved it fine). Test DNS with the resolver the app actually uses.
+- Two bugs of the same shape (#22, #39): a manifest sets one env-var name while the code reads another, and a *compose-era default* in the code hides the mismatch instead of failing loudly.

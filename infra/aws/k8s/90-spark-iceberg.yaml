@@ -51,7 +51,7 @@ spec:
     cores: 1
     memory: "2g"
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: ICEBERG_CATALOG, value: "rest" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -64,7 +64,7 @@ spec:
     memory: "2g"
     serviceAccount: lake
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: ICEBERG_CATALOG, value: "rest" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -99,7 +99,7 @@ spec:
     cores: 1
     memory: "2g"
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: ICEBERG_CATALOG, value: "rest" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -112,7 +112,7 @@ spec:
     memory: "2g"
     serviceAccount: lake
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: ICEBERG_CATALOG, value: "rest" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -147,7 +147,7 @@ spec:
     cores: 1
     memory: "2g"
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: ICEBERG_CATALOG, value: "rest" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -160,7 +160,7 @@ spec:
     memory: "2g"
     serviceAccount: lake
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: ICEBERG_CATALOG, value: "rest" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -195,7 +195,7 @@ spec:
     cores: 1
     memory: "2g"
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: ICEBERG_CATALOG, value: "rest" }
       - { name: PYTHONPATH, value: "/opt/shared" }
@@ -208,7 +208,7 @@ spec:
     memory: "2g"
     serviceAccount: lake
     env:
-      - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+      - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
       - { name: CHECKPOINT_BASE, value: "s3a://${WAREHOUSE_BUCKET}/_chk" }
       - { name: ICEBERG_CATALOG, value: "rest" }
       - { name: PYTHONPATH, value: "/opt/shared" }

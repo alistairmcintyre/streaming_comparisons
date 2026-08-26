@@ -6,6 +6,7 @@ Debezium changelog directly and MERGEs (this is the *dimension*; it's batch-read
 downstream by the gold job for enrichment, so it does NOT need CDF).
 """
 import os
+from delta_tables import ensure_all  # in-pipeline DDL
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, from_json, current_timestamp, to_timestamp, coalesce, row_number,

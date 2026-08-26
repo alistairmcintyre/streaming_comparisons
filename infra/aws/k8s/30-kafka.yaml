@@ -1,5 +1,5 @@
 # OSS Kafka via Strimzi (KRaft, no ZooKeeper). In-cluster PLAINTEXT :9092 →
-# KAFKA_AUTH=none, bootstrap trades-kafka-bootstrap.kafka.svc:9092. 5–10 MB/s at
+# KAFKA_AUTH=none, bootstrap trades-kafka-bootstrap.kafka.svc.cluster.local:9092. 5–10 MB/s at
 # 10k msg/s is trivial; single-AZ so no cross-AZ replication cost. Prometheus
 # metrics exposed for the live dashboard.
 apiVersion: kafka.strimzi.io/v1

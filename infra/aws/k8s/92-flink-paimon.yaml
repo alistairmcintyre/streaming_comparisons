@@ -40,7 +40,7 @@ spec:
             - { name: AWS_REGION, value: "${AWS_REGION}" }
             - { name: JOBMANAGER_RPC_ADDRESS, value: "flink-paimon-rest.flink.svc" }
             - { name: FLINK_JOBMANAGER_PORT, value: "8081" }
-            - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
+            - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
             - { name: PAIMON_WAREHOUSE, value: "s3://${PAIMON_BUCKET}/paimon" }
             # SQL sets state.checkpoints.dir = ${FLINK_CHECKPOINT_BASE}/<job>/ — unset,
             # it renders a scheme-less path and every INSERT fails with

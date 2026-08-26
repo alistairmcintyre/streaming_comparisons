@@ -14,6 +14,7 @@ Idempotency: foreachBatch is at-least-once and the counters aren't idempotent, s
 each MERGE is stamped with (txnAppId, txnVersion=batchId) → a replayed batch is a no-op.
 """
 import os
+from delta_tables import ensure_all  # in-pipeline DDL
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, when, lit, sum as _sum, count as _count, broadcast
 

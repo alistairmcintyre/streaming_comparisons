@@ -74,7 +74,7 @@ metadata:
   namespace: fluss
 data:
   AWS_REGION: "${AWS_REGION}"
-  KAFKA_BOOTSTRAP: "trades-kafka-bootstrap.kafka.svc:9092"
+  KAFKA_BOOTSTRAP: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092"
   FLUSS_BOOTSTRAP: "fluss-coordinator.fluss.svc:9123"
   FLUSS_PAIMON_WAREHOUSE: "s3://${PAIMON_BUCKET}/fluss/paimon"
   FLUSS_REMOTE_DATA_DIR: "s3://${PAIMON_BUCKET}/fluss/remote-data"
