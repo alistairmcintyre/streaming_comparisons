@@ -42,7 +42,7 @@ spec:
     "spark.sql.catalog.rest.warehouse": "s3://${WAREHOUSE_BUCKET}/iceberg"
     "spark.sql.catalog.rest.io-impl": "org.apache.iceberg.aws.s3.S3FileIO"
     "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
-    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-iceberg-jobs } }
     - { name: shared, configMap: { name: spark-shared } }
@@ -59,9 +59,9 @@ spec:
       - { name: jobs, mountPath: /opt/jobs }
       - { name: shared, mountPath: /opt/shared }
   executor:
-    instances: 2
-    cores: 2
-    memory: "4g"
+    instances: 1
+    cores: 1
+    memory: "2g"
     serviceAccount: lake
     env:
       - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
@@ -90,7 +90,7 @@ spec:
     "spark.sql.catalog.rest.warehouse": "s3://${WAREHOUSE_BUCKET}/iceberg"
     "spark.sql.catalog.rest.io-impl": "org.apache.iceberg.aws.s3.S3FileIO"
     "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
-    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-iceberg-jobs } }
     - { name: shared, configMap: { name: spark-shared } }
@@ -107,9 +107,9 @@ spec:
       - { name: jobs, mountPath: /opt/jobs }
       - { name: shared, mountPath: /opt/shared }
   executor:
-    instances: 2
-    cores: 2
-    memory: "4g"
+    instances: 1
+    cores: 1
+    memory: "2g"
     serviceAccount: lake
     env:
       - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
@@ -138,7 +138,7 @@ spec:
     "spark.sql.catalog.rest.warehouse": "s3://${WAREHOUSE_BUCKET}/iceberg"
     "spark.sql.catalog.rest.io-impl": "org.apache.iceberg.aws.s3.S3FileIO"
     "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
-    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-iceberg-jobs } }
     - { name: shared, configMap: { name: spark-shared } }
@@ -155,9 +155,9 @@ spec:
       - { name: jobs, mountPath: /opt/jobs }
       - { name: shared, mountPath: /opt/shared }
   executor:
-    instances: 2
-    cores: 2
-    memory: "4g"
+    instances: 1
+    cores: 1
+    memory: "2g"
     serviceAccount: lake
     env:
       - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
@@ -186,7 +186,7 @@ spec:
     "spark.sql.catalog.rest.warehouse": "s3://${WAREHOUSE_BUCKET}/iceberg"
     "spark.sql.catalog.rest.io-impl": "org.apache.iceberg.aws.s3.S3FileIO"
     "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
-    "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-iceberg-jobs } }
     - { name: shared, configMap: { name: spark-shared } }
@@ -203,9 +203,9 @@ spec:
       - { name: jobs, mountPath: /opt/jobs }
       - { name: shared, mountPath: /opt/shared }
   executor:
-    instances: 2
-    cores: 2
-    memory: "4g"
+    instances: 1
+    cores: 1
+    memory: "2g"
     serviceAccount: lake
     env:
       - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc:9092" }
