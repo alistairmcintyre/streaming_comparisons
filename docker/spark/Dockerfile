@@ -9,11 +9,14 @@ ENV ICEBERG_VERSION=1.11.0 \
     KAFKA_SPARK_VERSION=4.0.4 \
     KAFKA_CLIENTS_VERSION=3.9.1 \
     HADOOP_AWS_VERSION=3.4.1 \
-    AWS_SDK_BUNDLE_VERSION=2.24.6
+    AWS_SDK_BUNDLE_VERSION=2.31.78
 
 # ── Iceberg + AWS bundle (S3FileIO) + Kafka connector JARs ─────────────────
 # iceberg-aws-bundle provides the AWS SDK v2 for Iceberg's S3FileIO; hadoop-aws
 # + the standalone AWS SDK v2 bundle serve S3A (streaming checkpoints).
+# NOTE: both jars put software.amazon.awssdk on the classpath, so the standalone
+# bundle must not be OLDER than what iceberg-aws-bundle was built against — 2.24.6
+# lacks RetryMode.ADAPTIVE_V2 and GlueCatalog init died with NoSuchFieldError.
 RUN curl -fsSL -o /opt/spark/jars/iceberg-spark-runtime-${SPARK_VERSION}_${SCALA_VERSION}-${ICEBERG_VERSION}.jar \
       https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-${SPARK_VERSION}_${SCALA_VERSION}/${ICEBERG_VERSION}/iceberg-spark-runtime-${SPARK_VERSION}_${SCALA_VERSION}-${ICEBERG_VERSION}.jar \
  && curl -fsSL -o /opt/spark/jars/iceberg-aws-bundle-${ICEBERG_VERSION}.jar \

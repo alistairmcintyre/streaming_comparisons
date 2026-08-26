@@ -12,10 +12,15 @@ ENV DELTA_VERSION=4.0.0 \
     AWS_SDK_BUNDLE_VERSION=2.24.6
 
 # ── Delta Lake (delta-spark + delta-storage; storage is NOT bundled) ────────
+# delta-storage-s3-dynamodb carries io.delta.storage.S3DynamoDBLogStore, which the
+# AWS manifests configure for multi-writer safety — it is a SEPARATE artifact from
+# delta-storage, and without it every driver died with ClassNotFoundException.
 RUN curl -fsSL -o /opt/spark/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
       https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
  && curl -fsSL -o /opt/spark/jars/delta-storage-${DELTA_VERSION}.jar \
-      https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar
+      https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar \
+ && curl -fsSL -o /opt/spark/jars/delta-storage-s3-dynamodb-${DELTA_VERSION}.jar \
+      https://repo1.maven.org/maven2/io/delta/delta-storage-s3-dynamodb/${DELTA_VERSION}/delta-storage-s3-dynamodb-${DELTA_VERSION}.jar
 
 # ── Kafka connector ────────────────────────────────────────────────────────
 RUN curl -fsSL -o /opt/spark/jars/spark-sql-kafka-0-10_${SCALA_VERSION}-${KAFKA_SPARK_VERSION}.jar \

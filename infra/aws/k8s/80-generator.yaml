@@ -38,3 +38,40 @@ spec:
           resources:
             requests: { cpu: "1", memory: 512Mi }
             limits:   { cpu: "2", memory: 1Gi }
+---
+# Accounts dimension generator (SCD1): seeds 1000 accounts, then trickles slow
+# changes. Without it the `accounts` table stays empty, Debezium never creates
+# app.public.accounts, and every silver-accounts pipeline (Paimon/Iceberg/Delta)
+# fails on a missing Kafka topic — while trades reference account_id 1..1000.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: generator-accounts, namespace: streaming }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: generator-accounts } }
+  template:
+    metadata: { labels: { app: generator-accounts } }
+    spec:
+      enableServiceLinks: false
+      volumes:
+        - name: src
+          configMap: { name: generator-src }
+      containers:
+        - name: generator
+          image: ${ECR_REGISTRY}/streaming-comparison/generator:latest
+          workingDir: /app
+          command: ["python", "gen_accounts.py"]
+          volumeMounts:
+            - { name: src, mountPath: /app }
+          env:
+            - { name: POSTGRES_HOST, value: postgres.streaming.svc }
+            - { name: POSTGRES_PORT, value: "5432" }
+            - { name: POSTGRES_USER, value: app }
+            - { name: POSTGRES_DB, value: appdb }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: postgres, key: POSTGRES_PASSWORD } } }
+            - { name: SEED_ACCOUNTS, value: "1000" }
+            - { name: MAX_ACCOUNT_ID, value: "1000" }
+            - { name: EVENTS_PER_SEC, value: "5" }   # dimension: deliberately slow
+          resources:
+            requests: { cpu: "100m", memory: 256Mi }
+            limits:   { cpu: "500m", memory: 512Mi }
