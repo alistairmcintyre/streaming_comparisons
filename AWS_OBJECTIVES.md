@@ -292,12 +292,25 @@ before drawing conclusions from either set alone.
 distinguishable and directly comparable. The `wire_format` workflow input labels the
 run; do not compare across runs that differ in anything else.
 
-**Implementation:** Avro requires a Schema Registry (Apicurio — Apache 2.0; Confluent's
-is Community License) plus a converter swap on Debezium; `decimal.handling.mode` then
-becomes `precise`, using Avro's native decimal logical type instead of the string
-encoding JSON forces. Flink has first-class `debezium-avro-confluent`; Spark is the
-awkward side — `from_avro` does not understand the Confluent wire format (5-byte magic
-+ schema id), so it needs ABRiS or manual byte-stripping. See the deploy to-do list.
+**Implementation:** Avro requires a Schema Registry plus a converter swap on Debezium;
+`decimal.handling.mode` then becomes `precise`, using Avro's native decimal logical
+type instead of the string encoding JSON forces.
+
+Registry choice — **Apicurio, not AWS Glue Schema Registry** (evaluated 2026-08-26).
+Glue looks attractive because it is managed, but its Flink integration
+(`schema-registry-flink-serde`) is **DataStream-only**: the jar registers no Flink
+table factory, so there is no SQL format, and our Fluss/Paimon pipelines are pure SQL.
+`flink-avro-confluent-registry` does register `DebeziumAvroFormatFactory`, giving
+`'format' = 'debezium-avro-confluent'` directly — and Apicurio speaks the
+Confluent-compatible API, so that works against it unchanged. Glue also uses its own
+18-byte wire prefix rather than Confluent's 5-byte one.
+
+Spark is the awkward side either way — OSS Spark has no registry integration at all
+(`from_avro` takes a literal schema). For a frozen-schema benchmark the pragmatic route
+is stripping the 5-byte Confluent prefix and pinning the writer schema; ABRiS is the
+fuller option but is Scala-first, which our PySpark jobs would have to reach through
+py4j. Note `spark-avro` is not currently in the Spark images at all. See the deploy
+to-do list.
 
 **Results:** _(pending — JSON set not yet complete either; Iceberg and Fluss have never
 been observed writing data files)_
