@@ -19,7 +19,18 @@ from pyspark.sql.types import (
 _BASE = os.environ.get("DELTA_WAREHOUSE", "s3a://warehouse/delta")
 
 
+
+def _is_delta(spark, rel):
+    """True if a Delta table already exists at this location."""
+    try:
+        return DeltaTable.isDeltaTable(spark, f"{_BASE}/{rel}")
+    except Exception:
+        return False
+
+
 def create_bronze_trades(spark):
+    if _is_delta(spark, "bronze/trades"):
+        return  # exists: properties are converged by _converge_properties()
     schema = StructType([
         StructField("op", StringType()), StructField("trade_id", LongType()),
         StructField("account_id", LongType()), StructField("symbol", StringType()),
@@ -32,10 +43,14 @@ def create_bronze_trades(spark):
         .tableName("delta_bronze_trades").addColumns(schema)
         .location(f"{_BASE}/bronze/trades").clusterBy("executed_at")
         .property("delta.enableDeletionVectors", "false")
+        .property("delta.autoOptimize.optimizeWrite", "true")
+        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
 
 
 def create_silver_trades(spark):
+    if _is_delta(spark, "silver/trades"):
+        return  # exists: properties are converged by _converge_properties()
     schema = StructType([
         StructField("trade_id", LongType(), False), StructField("account_id", LongType()),
         StructField("symbol", StringType()), StructField("side", StringType()),
@@ -47,10 +62,14 @@ def create_silver_trades(spark):
         .tableName("delta_silver_trades").addColumns(schema)
         .location(f"{_BASE}/silver/trades").clusterBy("executed_at")
         .property("delta.enableDeletionVectors", "false")
+        .property("delta.autoOptimize.optimizeWrite", "true")
+        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
 
 
 def create_silver_accounts(spark):
+    if _is_delta(spark, "silver/accounts"):
+        return  # exists: properties are converged by _converge_properties()
     schema = StructType([
         StructField("account_id", LongType(), False), StructField("name", StringType()),
         StructField("country", StringType()), StructField("tier", StringType()),
@@ -61,10 +80,14 @@ def create_silver_accounts(spark):
         .tableName("delta_silver_accounts").addColumns(schema)
         .location(f"{_BASE}/silver/accounts").clusterBy("account_id")
         .property("delta.enableDeletionVectors", "true")
+        .property("delta.autoOptimize.optimizeWrite", "true")
+        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
 
 
 def create_gold_open_positions(spark):
+    if _is_delta(spark, "gold/open_positions"):
+        return  # exists: properties are converged by _converge_properties()
     schema = StructType([
         StructField("account_id", LongType(), False), StructField("symbol", StringType(), False),
         StructField("net_quantity", LongType()), StructField("net_notional", DoubleType()),
@@ -76,6 +99,8 @@ def create_gold_open_positions(spark):
         .tableName("delta_gold_open_positions").addColumns(schema)
         .location(f"{_BASE}/gold/open_positions").clusterBy("symbol", "account_id")
         .property("delta.enableDeletionVectors", "true")
+        .property("delta.autoOptimize.optimizeWrite", "true")
+        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
 
 

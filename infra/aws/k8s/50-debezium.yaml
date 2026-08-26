@@ -33,6 +33,17 @@ spec:
     config.storage.replication.factor: 3
     offset.storage.replication.factor: 3
     status.storage.replication.factor: 3
+    # Connect's JsonConverter defaults to schemas.enable=TRUE, which wraps every
+    # record as {"schema":{...},"payload":{...}}. Every consumer here expects the
+    # payload at the top level: the Spark jobs parse op/after directly, and Flink's
+    # debezium-json format defaults to schema-include=false. With the default on,
+    # `after` parses as null, every row is filtered out, and the pipelines commit
+    # empty batches forever. docker-compose already sets these (VALUE_CONVERTER_
+    # SCHEMAS_ENABLE=false) — this is the local→AWS gap.
+    key.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    key.converter.schemas.enable: false
+    value.converter.schemas.enable: false
   resources:
     requests: { cpu: "1", memory: 1Gi }
     limits:   { cpu: "2", memory: 2Gi }
@@ -67,3 +78,8 @@ spec:
     max.batch.size: 8192
     # Debezium requires max.queue.size > max.batch.size (default queue is 8192).
     max.queue.size: 32768
+    # `price` is NUMERIC in Postgres. Debezium's default decimal.handling.mode=precise
+    # emits it as base64-encoded bytes (Connect Decimal), but every job schema types
+    # price as DoubleType, so it would parse as NULL and silently poison the gold
+    # aggregates (net_notional = quantity * price). Emit plain doubles instead.
+    decimal.handling.mode: double
