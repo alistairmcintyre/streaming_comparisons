@@ -32,8 +32,6 @@ def create_bronze_trades(spark):
         .tableName("delta_bronze_trades").addColumns(schema)
         .location(f"{_BASE}/bronze/trades").clusterBy("executed_at")
         .property("delta.enableDeletionVectors", "false")
-        .property("delta.autoOptimize.optimizeWrite", "true")
-        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
 
 
@@ -49,8 +47,6 @@ def create_silver_trades(spark):
         .tableName("delta_silver_trades").addColumns(schema)
         .location(f"{_BASE}/silver/trades").clusterBy("executed_at")
         .property("delta.enableDeletionVectors", "false")
-        .property("delta.autoOptimize.optimizeWrite", "true")
-        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
 
 
@@ -65,8 +61,6 @@ def create_silver_accounts(spark):
         .tableName("delta_silver_accounts").addColumns(schema)
         .location(f"{_BASE}/silver/accounts").clusterBy("account_id")
         .property("delta.enableDeletionVectors", "true")
-        .property("delta.autoOptimize.optimizeWrite", "true")
-        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
 
 
@@ -82,9 +76,30 @@ def create_gold_open_positions(spark):
         .tableName("delta_gold_open_positions").addColumns(schema)
         .location(f"{_BASE}/gold/open_positions").clusterBy("symbol", "account_id")
         .property("delta.enableDeletionVectors", "true")
-        .property("delta.autoOptimize.optimizeWrite", "true")
-        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
+
+
+# Table properties we want to hold on EVERY layer. createIfNotExists() FAILS with
+# DELTA_CREATE_TABLE_WITH_DIFFERENT_PROPERTY when a table already exists with a
+# different property set, so changing this list would break every restart against
+# tables created by an earlier build. Converge with ALTER TABLE instead: create is
+# for new tables, ALTER makes existing ones match.
+_TABLE_PROPERTIES = {
+    "delta.autoOptimize.optimizeWrite": "true",
+    "delta.autoOptimize.autoCompact": "true",
+}
+
+_TABLE_PATHS = ["bronze/trades", "silver/trades", "silver/accounts", "gold/open_positions"]
+
+
+def _converge_properties(spark):
+    """Make existing tables match _TABLE_PROPERTIES (idempotent, safe on new tables)."""
+    props = ", ".join(f"'{k}' = '{v}'" for k, v in _TABLE_PROPERTIES.items())
+    for rel in _TABLE_PATHS:
+        try:
+            spark.sql(f"ALTER TABLE delta.`{_BASE}/{rel}` SET TBLPROPERTIES ({props})")
+        except Exception as e:  # table may not exist yet on a first run
+            print(f"skip property converge for {rel}: {str(e)[:160]}", flush=True)
 
 
 def ensure_all(spark):
@@ -92,3 +107,4 @@ def ensure_all(spark):
     create_silver_trades(spark)
     create_silver_accounts(spark)
     create_gold_open_positions(spark)
+    _converge_properties(spark)
