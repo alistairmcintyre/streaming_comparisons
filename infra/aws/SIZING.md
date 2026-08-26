@@ -18,8 +18,8 @@ Two hard rules, both learned the painful way:
 | | **1k/s (measured)** | **10k/s (estimate)** | **30k/s (estimate)** |
 |---|---|---|---|
 | **Total vCPU demand** | ~33 | ~90–110 | ~230–280 |
-| **NodePool `limits.cpu`** | 28¹ | 96 | 256 |
-| **EC2 quota needed** (on-demand, L-1216C47A) | 32 | 128 | 320 |
+| **NodePool `limits.cpu`** | 64¹ | 96 | 256 |
+| **EC2 quota needed** (on-demand, L-1216C47A) | 128 ✅ | 128 ✅ | 320 (request needed) |
 | **Generator** `TRADES_PER_SEC` / batch | 1000 / 500 | 10000 / 2000 | 30000 / 5000 |
 | Generator cpu req | 1 | 2 | 4 (or 2 replicas) |
 | **Kafka** brokers | 3 | 3 | 5 |
@@ -32,8 +32,10 @@ Two hard rules, both learned the painful way:
 | **Fluss** tablet cpu req / limit | 1 / 4 | 2 / 8 | 4 / 16 |
 | Checkpoint interval | 10 s | 10 s | 30 s² |
 
-¹ 28 = 32 quota − ~4 held by the EKS managed nodegroup. Karpenter's cap covers only
-the nodes it manages.
+¹ Was 28 while the account quota was the default 32. The quota was raised to 128
+on-demand AND 128 spot on 2026-08-26, so 64 now fits the full 1k/s workload with
+maintenance running rather than suspended. Karpenter's cap covers only the nodes it
+manages; the EKS managed nodegroup holds ~4 vCPU on top.
 ² Longer checkpoints at high rate: commit overhead per interval grows with volume,
 and sub-30s intervals start to dominate p99 latency.
 
@@ -74,7 +76,11 @@ otherwise Iceberg's numbers flatter it relative to Delta/Paimon.
 ## Before raising the rate — checklist
 
 1. Request the EC2 quota increase (on-demand L-1216C47A **and** spot L-34B43A08) and
-   wait for it to be granted, not just submitted.
+   wait for it to be granted, not just submitted. Both are at **128** as of
+   2026-08-26, which covers 1k and 10k; 30k needs another increase.
+   NOTE: a granted request shows as `CASE_CLOSED` and the new value takes ~30 min to
+   appear in `get-service-quota` — closed does NOT mean refused, so read the case
+   correspondence rather than inferring from the API.
 2. Raise `limits.cpu` in `10-karpenter.yaml` to the new value ≤ quota.
 3. Raise Kafka partitions on `app.public.trades` (they cannot be reduced later).
 4. Apply the column above for the target rate.
