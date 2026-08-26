@@ -33,6 +33,7 @@ def create_bronze_trades(spark):
         .location(f"{_BASE}/bronze/trades").clusterBy("executed_at")
         .property("delta.enableDeletionVectors", "false")
         .property("delta.autoOptimize.optimizeWrite", "true")
+        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
 
 
@@ -49,6 +50,7 @@ def create_silver_trades(spark):
         .location(f"{_BASE}/silver/trades").clusterBy("executed_at")
         .property("delta.enableDeletionVectors", "false")
         .property("delta.autoOptimize.optimizeWrite", "true")
+        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
 
 
@@ -64,6 +66,7 @@ def create_silver_accounts(spark):
         .location(f"{_BASE}/silver/accounts").clusterBy("account_id")
         .property("delta.enableDeletionVectors", "true")
         .property("delta.autoOptimize.optimizeWrite", "true")
+        .property("delta.autoOptimize.autoCompact", "true")
         .execute())
 
 

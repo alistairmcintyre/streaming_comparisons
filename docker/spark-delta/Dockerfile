@@ -9,16 +9,34 @@ ENV DELTA_VERSION=4.0.0 \
     KAFKA_CLIENTS_VERSION=3.9.1 \
     SCALA_VERSION=2.13 \
     HADOOP_AWS_VERSION=3.4.1 \
-    AWS_SDK_BUNDLE_VERSION=2.24.6
+    AWS_SDK_BUNDLE_VERSION=2.24.6 \
+    AWS_SDK_V1_VERSION=1.12.788 \
+    JACKSON_VERSION=2.18.6
 
 # ── Delta Lake (delta-spark + delta-storage; storage is NOT bundled) ────────
-# S3DynamoDBLogStore (delta-storage-s3-dynamodb) is deliberately NOT installed: it is
-# compiled against the AWS SDK **v1**, which this SDK-v2 image does not carry, and it
-# is unnecessary here — one streaming writer per table, and VACUUM writes no commits.
+# S3DynamoDBLogStore is REQUIRED for correctness on S3: S3 has no atomic
+# put-if-absent, so Delta's default S3SingleDriverLogStore only serialises commits
+# from ONE driver, and VACUUM runs as a separate application that DOES commit
+# (verified on Delta 4.0.0: it writes VACUUM START + VACUUM END versions).
+# The class is compiled against the AWS SDK **v1**, so v1 must sit alongside the v2
+# bundle used by S3A/Iceberg — different packages (com.amazonaws vs
+# software.amazon.awssdk), so they coexist. jackson-dataformat-cbor is required by
+# the v1 DynamoDB client's CBOR protocol and is NOT in the base Spark image;
+# httpclient/httpcore/jackson-databind/joda-time already are.
 RUN curl -fsSL -o /opt/spark/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
       https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
  && curl -fsSL -o /opt/spark/jars/delta-storage-${DELTA_VERSION}.jar \
-      https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar
+      https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar \
+ && curl -fsSL -o /opt/spark/jars/delta-storage-s3-dynamodb-${DELTA_VERSION}.jar \
+      https://repo1.maven.org/maven2/io/delta/delta-storage-s3-dynamodb/${DELTA_VERSION}/delta-storage-s3-dynamodb-${DELTA_VERSION}.jar \
+ && curl -fsSL -o /opt/spark/jars/aws-java-sdk-dynamodb-${AWS_SDK_V1_VERSION}.jar \
+      https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-dynamodb/${AWS_SDK_V1_VERSION}/aws-java-sdk-dynamodb-${AWS_SDK_V1_VERSION}.jar \
+ && curl -fsSL -o /opt/spark/jars/aws-java-sdk-core-${AWS_SDK_V1_VERSION}.jar \
+      https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-core/${AWS_SDK_V1_VERSION}/aws-java-sdk-core-${AWS_SDK_V1_VERSION}.jar \
+ && curl -fsSL -o /opt/spark/jars/jmespath-java-${AWS_SDK_V1_VERSION}.jar \
+      https://repo1.maven.org/maven2/com/amazonaws/jmespath-java/${AWS_SDK_V1_VERSION}/jmespath-java-${AWS_SDK_V1_VERSION}.jar \
+ && curl -fsSL -o /opt/spark/jars/jackson-dataformat-cbor-${JACKSON_VERSION}.jar \
+      https://repo1.maven.org/maven2/com/fasterxml/jackson/dataformat/jackson-dataformat-cbor/${JACKSON_VERSION}/jackson-dataformat-cbor-${JACKSON_VERSION}.jar
 
 # ── Kafka connector ────────────────────────────────────────────────────────
 RUN curl -fsSL -o /opt/spark/jars/spark-sql-kafka-0-10_${SCALA_VERSION}-${KAFKA_SPARK_VERSION}.jar \
