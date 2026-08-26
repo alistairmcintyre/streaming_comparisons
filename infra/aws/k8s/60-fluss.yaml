@@ -29,7 +29,7 @@ kind: Service
 metadata: { name: fluss-coordinator, namespace: fluss }
 spec:
   selector: { app: fluss-coordinator }
-  ports: [{ port: 9123 }]
+  ports: [{ name: client, port: 9123 }, { name: internal, port: 9124 }]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -49,8 +49,15 @@ spec:
             - name: FLUSS_PROPERTIES
               value: |
                 zookeeper.address: fluss-zookeeper.fluss.svc:2181
-                bind.listeners: INTERNAL://0.0.0.0:0, CLIENT://0.0.0.0:9123
-                advertised.listeners: CLIENT://fluss-coordinator.fluss.svc:9123
+                # INTERNAL must be BOUND to a fixed port and ADVERTISED with a
+                # resolvable address. With `INTERNAL://0.0.0.0:0` and no advertised
+                # entry it registered in ZooKeeper as
+                # INTERNAL://0:0:0:0:0:0:0:0%0:<ephemeral> — the IPv6 any-address,
+                # which nothing can dial. External clients were unaffected (they use
+                # CLIENT), which is why writes worked while the tiering client
+                # reported "Alive tablet server is empty".
+                bind.listeners: INTERNAL://0.0.0.0:9124, CLIENT://0.0.0.0:9123
+                advertised.listeners: INTERNAL://fluss-coordinator.fluss.svc:9124, CLIENT://fluss-coordinator.fluss.svc:9123
                 internal.listener.name: INTERNAL
                 remote.data.dir: /fluss-remote-data
                 datalake.format: paimon
@@ -60,7 +67,7 @@ spec:
                 datalake.paimon.s3.access-key: ${S3_ACCESS_KEY}
                 datalake.paimon.s3.secret-key: ${S3_SECRET_KEY}
                 s3.region: ${AWS_REGION}
-          ports: [{ containerPort: 9123 }]
+          ports: [{ containerPort: 9123 }, { containerPort: 9124 }]
           volumeMounts: [{ name: remote, mountPath: /fluss-remote-data }]
           resources: { requests: { cpu: "500m", memory: 1Gi }, limits: { cpu: "2", memory: 2Gi } }
       volumes:
@@ -85,8 +92,11 @@ spec:
             - name: FLUSS_PROPERTIES
               value: |
                 zookeeper.address: fluss-zookeeper.fluss.svc:2181
-                bind.listeners: INTERNAL://0.0.0.0:0, CLIENT://0.0.0.0:9123
-                advertised.listeners: CLIENT://fluss-tablet-server.fluss.svc:9123
+                # See the coordinator above: INTERNAL needs a fixed port and a
+                # resolvable advertised address, or it registers the unusable
+                # IPv6 any-address in ZooKeeper.
+                bind.listeners: INTERNAL://0.0.0.0:9124, CLIENT://0.0.0.0:9123
+                advertised.listeners: INTERNAL://fluss-tablet-server.fluss.svc:9124, CLIENT://fluss-tablet-server.fluss.svc:9123
                 internal.listener.name: INTERNAL
                 tablet-server.id: 0
                 kv.snapshot.interval: 0s
@@ -99,7 +109,7 @@ spec:
                 datalake.paimon.s3.access-key: ${S3_ACCESS_KEY}
                 datalake.paimon.s3.secret-key: ${S3_SECRET_KEY}
                 s3.region: ${AWS_REGION}
-          ports: [{ containerPort: 9123 }]
+          ports: [{ containerPort: 9123 }, { containerPort: 9124 }]
           volumeMounts:
             - { name: remote, mountPath: /fluss-remote-data }
             - { name: data, mountPath: /tmp/fluss/data }
@@ -119,4 +129,4 @@ metadata: { name: fluss-tablet-server, namespace: fluss }
 spec:
   clusterIP: None
   selector: { app: fluss-tablet-server }
-  ports: [{ port: 9123 }]
+  ports: [{ name: client, port: 9123 }, { name: internal, port: 9124 }]
