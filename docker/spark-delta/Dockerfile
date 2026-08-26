@@ -23,6 +23,10 @@ ENV DELTA_VERSION=4.0.0 \
 # software.amazon.awssdk), so they coexist. jackson-dataformat-cbor is required by
 # the v1 DynamoDB client's CBOR protocol and is NOT in the base Spark image;
 # httpclient/httpcore/jackson-databind/joda-time already are.
+# aws-java-sdk-sts is REQUIRED on EKS: IRSA authenticates via a web-identity token
+# exchanged through STS, and the v1 SDK fails with "To use assume role profiles the
+# aws-java-sdk-sts module must be on the class path" without it. Static credentials
+# hide this, so verify with IRSA (in-cluster), not with env-var creds.
 RUN curl -fsSL -o /opt/spark/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
       https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
  && curl -fsSL -o /opt/spark/jars/delta-storage-${DELTA_VERSION}.jar \
@@ -35,6 +39,8 @@ RUN curl -fsSL -o /opt/spark/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.
       https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-core/${AWS_SDK_V1_VERSION}/aws-java-sdk-core-${AWS_SDK_V1_VERSION}.jar \
  && curl -fsSL -o /opt/spark/jars/jmespath-java-${AWS_SDK_V1_VERSION}.jar \
       https://repo1.maven.org/maven2/com/amazonaws/jmespath-java/${AWS_SDK_V1_VERSION}/jmespath-java-${AWS_SDK_V1_VERSION}.jar \
+ && curl -fsSL -o /opt/spark/jars/aws-java-sdk-sts-${AWS_SDK_V1_VERSION}.jar \
+      https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-sts/${AWS_SDK_V1_VERSION}/aws-java-sdk-sts-${AWS_SDK_V1_VERSION}.jar \
  && curl -fsSL -o /opt/spark/jars/jackson-dataformat-cbor-${JACKSON_VERSION}.jar \
       https://repo1.maven.org/maven2/com/fasterxml/jackson/dataformat/jackson-dataformat-cbor/${JACKSON_VERSION}/jackson-dataformat-cbor-${JACKSON_VERSION}.jar
 

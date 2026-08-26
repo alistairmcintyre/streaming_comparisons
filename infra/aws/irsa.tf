@@ -53,6 +53,17 @@ resource "aws_iam_role_policy" "workload" {
         Resource = "*"
       },
       {
+        # Delta's S3DynamoDBLogStore serialises commits through this table. Without
+        # these the driver authenticates fine via IRSA but dies on DescribeTable.
+        Sid    = "DeltaLogStore"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:DescribeTable", "dynamodb:GetItem", "dynamodb:PutItem",
+          "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query"
+        ]
+        Resource = aws_dynamodb_table.delta_logstore.arn
+      },
+      {
         Sid      = "Athena"
         Effect   = "Allow"
         Action   = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:GetWorkGroup", "athena:StopQueryExecution"]
