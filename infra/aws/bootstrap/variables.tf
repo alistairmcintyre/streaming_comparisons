@@ -30,6 +30,6 @@ variable "ecr_repos" {
   type = list(string)
   default = [
     "fluss-server", "fluss-flink", "generator", "kafka-connect",
-    "spark-iceberg", "spark-delta", "flink-paimon", "latency-exporter"
+    "spark-iceberg", "spark-delta", "spark-hudi", "flink-paimon", "latency-exporter"
   ]
 }
