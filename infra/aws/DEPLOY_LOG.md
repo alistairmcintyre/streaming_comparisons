@@ -68,6 +68,8 @@ before it, so a "fixed" pipeline usually just means the next layer became reacha
 | 40 | `gold_open_positions` + `silver_accounts` (both engines): `NameError: name 'ensure_all' is not defined` | 4 job files call `ensure_all(spark)` without importing it — a pre-existing repo bug, not AWS-specific → add `from <engine>_tables import ensure_all` |
 | 41 | Delta drivers: `NoClassDefFoundError com/amazonaws/services/dynamodbv2/...` | `delta-storage-s3-dynamodb` is compiled against the AWS SDK **v1**, absent from this SDK-v2 image → **temporarily** disable the `S3DynamoDBLogStore` config to unblock (reverses the jar added in #34). NOT a design decision: the DynamoDB log store is what makes Delta commits safe for concurrent writers on S3, and restoring it is an open to-do |
 | 42 | One app kept the old env var after a bulk patch | a `kubectl replace` loop skipped an app whose fetch failed mid-loop → always re-verify the whole set, not the loop's echo output |
+| 43 | Pods Pending ~15 min; Karpenter loops "could not schedule pod" / "failed launching nodeclaim" | NOT a k8s problem: EC2 rejected every launch with `VcpuLimitExceeded: current vCPU limit of 32`. The NodePool cap (64) was above the ACCOUNT quota, so Karpenter created NodeClaims that could never launch → align the NodePool cap with the real quota, and raise both together via Service Quotas (L-1216C47A on-demand, L-34B43A08 spot) |
+| 44 | All nodes launched on-demand, spot quota unused | on-demand and spot are SEPARATE 32-vCPU quotas; spot was reported UnfulfillableCapacity for the chosen types, so everything fell back to on-demand and burned the on-demand quota alone → widen the instance-type set so spot has more chance to fill, doubling usable headroom |
 
 ## Recurring gotchas (cost us time more than once)
 
@@ -76,4 +78,5 @@ before it, so a "fixed" pipeline usually just means the next layer became reacha
 - `pgrep -f <pattern>` inside a script whose own command line contains that pattern kills the script's own shell; use `pgrep -x`.
 - Destroying with `-refresh=false` leaves stale entries in state; reconcile with one refresh-enabled destroy before the next run.
 - `busybox nslookup` does NOT apply search domains the way glibc/Java do: it returned NXDOMAIN for `svc.kafka.svc` and sent me chasing a DNS problem that did not exist (`getent` inside the real image resolved it fine). Test DNS with the resolver the app actually uses.
+- Karpenter reporting `karpenter.sh/initialized In [true]` / `registered In [true]` inside a "no instance type has enough resources" error means it is only considering EXISTING nodes — the real failure is in `failed launching nodeclaim`, not the scheduling message. Always read both.
 - Two bugs of the same shape (#22, #39): a manifest sets one env-var name while the code reads another, and a *compose-era default* in the code hides the mismatch instead of failing loudly.

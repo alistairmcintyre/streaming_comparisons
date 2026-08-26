@@ -29,7 +29,13 @@ spec:
           operator: Gt
           values: ["5"]
   limits:
-    cpu: "64"                                 # cap the run's blast radius
+    # MUST NOT exceed the account's EC2 vCPU quota, or Karpenter loops:
+    # create NodeClaim -> RunInstances fails VcpuLimitExceeded -> delete -> retry.
+    # eu-west-1 on-demand standard quota is 32 vCPU; the EKS managed nodegroup
+    # already holds ~4, so cap Karpenter below the remainder. Raise this ONLY
+    # together with a Service Quotas increase (L-1216C47A on-demand /
+    # L-34B43A08 spot) — see AWS_OBJECTIVES/to-dos.
+    cpu: "28"                                 # cap the run's blast radius
   disruption:
     consolidationPolicy: WhenEmptyOrUnderutilized
     consolidateAfter: 2m
