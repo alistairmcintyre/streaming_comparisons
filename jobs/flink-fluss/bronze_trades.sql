@@ -15,7 +15,7 @@ CREATE CATALOG fluss_catalog WITH (
 CREATE TEMPORARY TABLE kafka_trades_src (
     op       STRING,
     `after`  ROW<trade_id BIGINT, account_id BIGINT, symbol STRING, side STRING,
-                 quantity INT, price DECIMAL(12,4), executed_at STRING>,
+                 quantity INT, price STRING, executed_at STRING>,   -- price: exact decimal as STRING
     `source` ROW<ts_ms BIGINT>,
     ts_ms    BIGINT
 ) WITH (
@@ -35,7 +35,7 @@ SELECT
     `after`.symbol,
     `after`.side,
     `after`.quantity,
-    `after`.price,
+    CAST(`after`.price AS DECIMAL(12,4)),
     TO_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z''')
 FROM kafka_trades_src
 WHERE `after`.trade_id IS NOT NULL;

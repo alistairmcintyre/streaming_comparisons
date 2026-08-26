@@ -22,7 +22,7 @@ CREATE TEMPORARY TABLE kafka_trades_src (
         symbol      STRING,
         side        STRING,
         quantity    INT,
-        price       DECIMAL(12,4),
+        price       STRING,          -- exact decimal as STRING (decimal.handling.mode=string)
         executed_at STRING
     >,
     `source` ROW<
@@ -49,7 +49,7 @@ SELECT
     `after`.symbol                                                      AS symbol,
     `after`.side                                                        AS side,
     `after`.quantity                                                    AS quantity,
-    `after`.price                                                       AS price,
+    CAST(`after`.price AS DECIMAL(12,4))                                AS price,
     TO_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z''') AS executed_at,
     TO_TIMESTAMP_LTZ(`source`.ts_ms, 3)                                AS event_ts,
     CURRENT_TIMESTAMP                                                   AS ingest_ts,
