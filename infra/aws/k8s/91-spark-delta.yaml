@@ -12,6 +12,8 @@ spec:
   type: Python
   mode: cluster
   image: "${ECR_REGISTRY}/streaming-comparison/spark-delta:latest"
+  # :latest is mutable — without Always, nodes reuse a stale cached layer
+  imagePullPolicy: Always
   mainApplicationFile: "local:///opt/jobs/bronze_trades.py"
   sparkVersion: "3.5.1"
   restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
@@ -60,6 +62,8 @@ spec:
   type: Python
   mode: cluster
   image: "${ECR_REGISTRY}/streaming-comparison/spark-delta:latest"
+  # :latest is mutable — without Always, nodes reuse a stale cached layer
+  imagePullPolicy: Always
   mainApplicationFile: "local:///opt/jobs/silver_trades.py"
   sparkVersion: "3.5.1"
   restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
@@ -108,6 +112,8 @@ spec:
   type: Python
   mode: cluster
   image: "${ECR_REGISTRY}/streaming-comparison/spark-delta:latest"
+  # :latest is mutable — without Always, nodes reuse a stale cached layer
+  imagePullPolicy: Always
   mainApplicationFile: "local:///opt/jobs/silver_accounts.py"
   sparkVersion: "3.5.1"
   restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
@@ -156,6 +162,8 @@ spec:
   type: Python
   mode: cluster
   image: "${ECR_REGISTRY}/streaming-comparison/spark-delta:latest"
+  # :latest is mutable — without Always, nodes reuse a stale cached layer
+  imagePullPolicy: Always
   mainApplicationFile: "local:///opt/jobs/gold_open_positions.py"
   sparkVersion: "3.5.1"
   restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }

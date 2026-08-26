@@ -1,5 +1,15 @@
 #!/bin/bash
 set -e
+# On Kubernetes the Spark Operator runs this image as `driver`/`executor` and passes
+# every setting via --properties-file. Hand those args to Spark's own k8s entrypoint:
+# without this, the compose-oriented spark-submit below swallows them and dies with
+# "Failed to get main class in JAR ... /opt/spark/work-dir (Is a directory)" — and it
+# would also force --master local[2] plus MinIO creds. Compose passes NO args and
+# drives the run through JOB_FILE, so it falls through to the block below unchanged.
+case "$1" in
+  driver|executor|driver-py|driver-r) exec /opt/entrypoint.sh "$@" ;;
+esac
+
 
 # Delta Lake Spark configuration.
 # Delta takes over spark_catalog (the default catalog).

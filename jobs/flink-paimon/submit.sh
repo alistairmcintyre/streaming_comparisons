@@ -38,11 +38,14 @@ if [ "${DEPLOY_ENV}" = "aws" ]; then
   PAIMON_S3_OPTS=",
     's3.access-key' = '${S3_ACCESS_KEY}',
     's3.secret-key' = '${S3_SECRET_KEY}'"
-  # Register Iceberg metadata in Glue so Athena can query it; legacy manifests
-  # are required by Athena's Iceberg manifest reader.
+  # Iceberg metadata written NEXT TO the data in S3 (hadoop-catalog). The
+  # hive-catalog/Glue committer needs Hive-metastore + Glue-client jars that the
+  # flink-paimon image does not carry -> every commit died with
+  # NoClassDefFoundError org/apache/hadoop/hive/metastore/api/NoSuchObjectException.
+  # Athena can still read these tables by registering them at the metadata location;
+  # add the jars later if automatic Glue registration is wanted.
   PAIMON_ICEBERG_OPTS=",
-    'metadata.iceberg.storage' = 'hive-catalog',
-    'metadata.iceberg.hive-client-class' = 'com.amazonaws.glue.catalog.metastore.AWSCatalogMetastoreClient',
+    'metadata.iceberg.storage' = 'hadoop-catalog',
     'metadata.iceberg.manifest-legacy-version' = 'true'"
 else
   PAIMON_S3_OPTS=",
