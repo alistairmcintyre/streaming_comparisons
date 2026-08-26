@@ -70,24 +70,21 @@ for spec in "bronze:trades_delta:delta/bronze/trades" \
     && echo "  registered ${db}.${tbl}" || echo "  FAILED ${db}.${tbl}"
 done
 
-# ── Hudi → Glue ──────────────────────────────────────────────────────────────
-# A MOR table exposes _ro (base files only, STALE) and _rt (merges log files,
-# CURRENT). Register the CURRENT view — a correctness check against _ro would quietly
-# compare stale data and make Hudi look wrong.
-echo "== hudi =="
-for spec in "bronze:trades_hudi:hudi/bronze/trades" \
-            "silver:trades_hudi:hudi/silver/trades" \
-            "silver:accounts_hudi:hudi/silver/accounts" \
-            "gold:open_positions_hudi:hudi/gold/open_positions"; do
-  db="${spec%%:*}"; rest="${spec#*:}"; tbl="${rest%%:*}"; path="${rest#*:}"
-  loc="s3://${WAREHOUSE_BUCKET}/${path}"
-  if ! aws s3 ls "${loc}/.hoodie/" >/dev/null 2>&1; then
-    echo "  skip ${db}.${tbl} — no .hoodie yet"; continue
-  fi
-  athena_sql "CREATE EXTERNAL TABLE IF NOT EXISTS \`${db}\`.\`${tbl}\`
-              LOCATION '${loc}'
-              TBLPROPERTIES ('table_type' = 'HUDI')" \
-    && echo "  registered ${db}.${tbl}" || echo "  FAILED ${db}.${tbl}"
+# ── Hudi: registers ITSELF, so only verify ───────────────────────────────────
+# Hudi syncs to Glue on every commit via AwsGlueCatalogSyncTool (hudi-aws-bundle,
+# enabled in jobs/_shared/hudi_tables.py). That is why there is no CREATE TABLE here:
+# unlike Delta (Athena DDL) and Paimon (external metadata_location pointer), Hudi
+# needs no external registration and cannot go stale.
+# A MERGE_ON_READ table syncs as TWO Glue tables — _ro (base files only, STALE) and
+# _rt (merges log files, CURRENT). Query _rt; _ro will look fast and return old data.
+echo "== hudi (self-registered via Glue sync) =="
+for spec in "bronze:trades_hudi" "silver:trades_hudi" "silver:accounts_hudi" \
+            "gold:open_positions_hudi"; do
+  db="${spec%%:*}"; tbl="${spec#*:}"
+  FOUND=$(aws glue get-tables --database-name "$db" \
+          --query "TableList[?starts_with(Name, '${tbl}')].Name" --output text 2>/dev/null)
+  if [ -n "$FOUND" ]; then echo "  ok ${db}: $FOUND"
+  else echo "  MISSING ${db}.${tbl}(_ro/_rt) — Hudi Glue sync did not run: check hudi-aws-bundle is in the image and the workload role has glue:*Table*"; fi
 done
 
 # ── Paimon's Iceberg metadata → Glue ─────────────────────────────────────────

@@ -41,6 +41,32 @@ _COMMON = {
 }
 
 
+# Hudi registers ITSELF in Glue on every commit via AwsGlueCatalogSyncTool
+# (hudi-aws-bundle). That is better than pointing Glue at a metadata file after the
+# fact: there is no pointer to go stale, which is exactly what broke Paimon's Athena
+# visibility. For a MERGE_ON_READ table the sync creates TWO Glue tables:
+#   <table>_ro  read-optimised — base files only, STALE
+#   <table>_rt  real-time      — merges log files, CURRENT   <- use this one
+_SYNC_TOOL = "org.apache.hudi.aws.sync.AwsGlueCatalogSyncTool"
+
+
+def _sync(database, table, partition_fields=""):
+    o = {
+        "hoodie.datasource.meta.sync.enable": "true",
+        "hoodie.meta.sync.client.tool.class": _SYNC_TOOL,
+        "hoodie.datasource.hive_sync.enable": "true",
+        "hoodie.datasource.hive_sync.database": database,
+        "hoodie.datasource.hive_sync.table": table,
+        "hoodie.datasource.hive_sync.use_jdbc": "false",
+        "hoodie.datasource.hive_sync.support_timestamp": "true",
+        "hoodie.datasource.hive_sync.partition_fields": partition_fields,
+    }
+    o["hoodie.datasource.hive_sync.partition_extractor_class"] = (
+        "org.apache.hudi.hive.MultiPartKeysValueExtractor" if partition_fields
+        else "org.apache.hudi.hive.NonPartitionedExtractor")
+    return o
+
+
 def _opts(table_name, recordkey, precombine, partitionpath="", operation="upsert",
           extra=None):
     o = dict(_COMMON)
@@ -65,19 +91,21 @@ def _opts(table_name, recordkey, precombine, partitionpath="", operation="upsert
 # — the correct choice for immutable executions and much cheaper at 1k+/s.
 def bronze_trades_opts():
     return _opts("hudi_bronze_trades", "trade_id", "executed_at",
-                 partitionpath="executed_date", operation="insert")
+                 partitionpath="executed_date", operation="insert",
+                 extra=_sync("bronze", "trades_hudi", "executed_date"))
 
 
 # silver trades: same grain, but deduplicated on trade_id, so upsert.
 def silver_trades_opts():
     return _opts("hudi_silver_trades", "trade_id", "executed_at",
-                 partitionpath="executed_date", operation="upsert")
+                 partitionpath="executed_date", operation="upsert",
+                 extra=_sync("silver", "trades_hudi", "executed_date"))
 
 
 # silver accounts: SCD1 dimension, latest row per account wins.
 def silver_accounts_opts():
     return _opts("hudi_silver_accounts", "account_id", "source_updated_at",
-                 operation="upsert")
+                 operation="upsert", extra=_sync("silver", "accounts_hudi"))
 
 
 # gold: net book per (account_id, symbol). Compound key, partitioned by symbol so the
@@ -85,5 +113,6 @@ def silver_accounts_opts():
 def gold_positions_opts():
     return _opts("hudi_gold_open_positions", "account_id,symbol", "commit_ts",
                  partitionpath="symbol", operation="upsert",
-                 extra={"hoodie.datasource.write.keygenerator.class":
+                 extra={**_sync("gold", "open_positions_hudi", "symbol"),
+                        "hoodie.datasource.write.keygenerator.class":
                         "org.apache.hudi.keygen.ComplexKeyGenerator"})

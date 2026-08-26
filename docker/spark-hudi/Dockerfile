@@ -11,7 +11,15 @@ ENV HUDI_VERSION=1.2.0 \
 
 # ── Hudi bundle (Spark 4.0 build) ──────────────────────────────────────────
 RUN curl -fsSL -o /opt/spark/jars/hudi-spark4.0-bundle_${SCALA_VERSION}-${HUDI_VERSION}.jar \
-      https://repo1.maven.org/maven2/org/apache/hudi/hudi-spark4.0-bundle_${SCALA_VERSION}/${HUDI_VERSION}/hudi-spark4.0-bundle_${SCALA_VERSION}-${HUDI_VERSION}.jar
+      https://repo1.maven.org/maven2/org/apache/hudi/hudi-spark4.0-bundle_${SCALA_VERSION}/${HUDI_VERSION}/hudi-spark4.0-bundle_${SCALA_VERSION}-${HUDI_VERSION}.jar \
+ && curl -fsSL -o /opt/spark/jars/hudi-aws-bundle-${HUDI_VERSION}.jar \
+      https://repo1.maven.org/maven2/org/apache/hudi/hudi-aws-bundle/${HUDI_VERSION}/hudi-aws-bundle-${HUDI_VERSION}.jar
+
+# hudi-aws-bundle carries org.apache.hudi.aws.sync.AwsGlueCatalogSyncTool, which the
+# spark bundle does NOT contain (verified: no org/apache/hudi/aws/sync/* in it). It is
+# what lets Hudi register itself in Glue on every commit, so Athena can read the
+# tables. Self-registration beats an external pointer: no stale metadata_location, the
+# problem that broke Paimon's Athena visibility.
 
 # ── Kafka connector ────────────────────────────────────────────────────────
 RUN curl -fsSL -o /opt/spark/jars/spark-sql-kafka-0-10_${SCALA_VERSION}-${KAFKA_SPARK_VERSION}.jar \
