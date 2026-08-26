@@ -38,6 +38,15 @@ _COMMON = {
     "hoodie.clean.automatic": "true",
     "hoodie.cleaner.commits.retained": "10",
     "hoodie.datasource.write.hive_style_partitioning": "true",
+    # ATTEMPTED Athena compatibility — CURRENTLY INEFFECTIVE, kept as intent.
+    # Hudi 1.2.0 writes table version 9 with timeline layout 2 (the LSM timeline under
+    # .hoodie/timeline/), which Athena's Hudi reader cannot parse: every query fails
+    # with a bare HIVE_UNKNOWN_ERROR, _ro and _rt alike. This setting asks for the
+    # legacy version 6 / flat timeline, and it IS reaching the driver (verified in the
+    # mounted file) but Hudi ignores it and still writes v9. Left in place because it
+    # documents the intent and may be honoured by a later Hudi; do NOT assume Athena
+    # can read these tables — query Hudi via Spark. See DEPLOY_LOG #55.
+    "hoodie.write.table.version": "6",
 }
 
 
