@@ -99,6 +99,13 @@ k -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh \
 # run's numbers are not trustworthy. Inspect with print.headers=true to see the cause.
 # See ERROR_HANDLING.md.
 
+── 8c. QUERY THE LAKE FROM YOUR LAPTOP (no Athena needed) ─────────────────────
+./infra/aws/scripts/query-lake-local.sh                 # interactive DuckDB shell
+./infra/aws/scripts/query-lake-local.sh "SELECT count(*) FROM delta_gold_positions"
+# Reads Delta (incl. deletion vectors, which Athena REFUSES), Iceberg, and Paimon
+# (via the Iceberg metadata it writes). DECIMAL precision is preserved.
+# Needs the duckdb binary — see the script header for the one-line download.
+
 ── 9. LATENCY + GRAFANA ───────────────────────────────────────────────────────
 k -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh \
   --bootstrap-server localhost:9092 --topic pipeline_latency
