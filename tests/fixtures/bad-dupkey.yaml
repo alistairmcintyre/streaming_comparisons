@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dup
+data:
+  a: "1"
+data:
+  a: "2"

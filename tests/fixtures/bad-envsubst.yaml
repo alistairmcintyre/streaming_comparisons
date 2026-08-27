@@ -1,0 +1,12 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: eaten-by-envsubst
+spec:
+  groups:
+    - name: x
+      rules:
+        - alert: A
+          expr: up == 0
+          annotations:
+            summary: "{{ $labels.pod }} is down"

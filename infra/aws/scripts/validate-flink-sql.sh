@@ -42,8 +42,13 @@ export KAFKA_BOOTSTRAP="localhost:9092"
 export KAFKA_EXTRA_OPTS=""
 SUBST='${PAIMON_WAREHOUSE} ${PAIMON_S3_OPTS} ${PAIMON_ICEBERG_OPTS} ${PAIMON_FULL_COMPACT_INTERVAL} ${FLINK_CHECKPOINT_BASE} ${KAFKA_BOOTSTRAP} ${KAFKA_EXTRA_OPTS}'
 
+# JOBS_DIR is parameterised so the test-suite can point this at a deliberately broken
+# fixture and assert the checker FAILS. A checker nobody has watched fail is a checker
+# nobody knows works — which is how "at least one job submitted" shipped and passed
+# with 3 of 4.
+JOBS_DIR="${JOBS_DIR:-jobs/flink-paimon}"
 mkdir -p "$WORK/sql"
-for f in jobs/flink-paimon/*.sql; do
+for f in "$JOBS_DIR"/*.sql; do
   envsubst "$SUBST" < "$f" > "$WORK/sql/$(basename "$f")"
 done
 
@@ -72,7 +77,7 @@ for f in bronze_trades.sql silver_trades.sql silver_accounts.sql gold_open_posit
 done
 INNER
 
-echo "== compiling jobs/flink-paimon/*.sql against a local Flink =="
+echo "== compiling $JOBS_DIR/*.sql against a local Flink =="
 docker run --rm -v "$WORK/sql:/sql:ro" -v "$WORK/run.sh:/run.sh:ro" \
   --entrypoint bash "$IMG" /run.sh > "$WORK/out.txt" 2>&1
 

@@ -1,7 +1,7 @@
 .PHONY: up down build wait create-tables register-connectors seed sql \
         start-generators start-spark start-flink start-compactor start-customers-only \
         start-delta start-hudi start-paimon start-flink-paimon \
-        integration-test ui logs status all clean logs-spark logs-delta logs-hudi logs-paimon logs-flink-paimon
+        integration-test ui logs status all clean logs-spark logs-delta logs-hudi logs-paimon logs-flink-paimon test test-all
 
 # ─── Bring up infrastructure ────────────────────────────────────────────────
 
@@ -197,3 +197,16 @@ down:
 clean:
 	docker compose down -v
 	@echo "All containers and volumes removed."
+
+
+# ── pre-deploy checks ───────────────────────────────────────────────────────
+# Run after every change. `test` is seconds and needs nothing; `test-all` adds the
+# Flink SQL compile (Docker, ~3 min). Both also verify each CHECKER can still fail
+# against a known-bad fixture — several checks written on 2026-08-27 were themselves
+# broken in ways that made them silently pass, which is how ~$42 of clusters went on
+# bugs that were free to catch.
+test:
+	./tests/run-checks.sh
+
+test-all:
+	./tests/run-checks.sh --all

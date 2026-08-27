@@ -1,0 +1,7 @@
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: pipeline_latency
+  namespace: kafka
+spec:
+  partitions: 1
