@@ -35,3 +35,17 @@ RUN curl -fsSL -o /opt/flink/lib/paimon-flink-1.20-1.4.2.jar \
       https://repo1.maven.org/maven2/org/apache/paimon/paimon-s3/1.4.2/paimon-s3-1.4.2.jar \
  && curl -fsSL -o /opt/flink/lib/flink-shaded-hadoop-2-uber-2.8.3-10.0.jar \
       https://repo1.maven.org/maven2/org/apache/flink/flink-shaded-hadoop-2-uber/2.8.3-10.0/flink-shaded-hadoop-2-uber-2.8.3-10.0.jar
+
+# ── S3 filesystem plugin for Flink's OWN filesystem (s3://) ─────────────────
+# paimon-s3 above is Paimon's FileIO — it does NOT register a Flink FileSystem, so
+# anything Flink itself opens on s3:// (HA blob store, savepoints, checkpoints) fails
+# with:
+#   UnsupportedFileSystemSchemeException: Could not find a file system implementation
+#   for scheme 's3'   ...at KubernetesHaServicesFactory.createHAServices
+# which crash-looped the JobManager the moment Kubernetes HA was enabled. flink-paimon
+# already carries this (see docker/flink-paimon/Dockerfile); the fluss image never did,
+# because nothing here had opened s3:// through Flink before.
+# Must live in plugins/, not lib/, or Flink will not load it.
+RUN mkdir -p /opt/flink/plugins/s3-fs-hadoop \
+ && curl -fsSL -o /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-1.20.5.jar \
+      https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.5/flink-s3-fs-hadoop-1.20.5.jar

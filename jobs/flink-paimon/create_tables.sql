@@ -76,7 +76,14 @@ CREATE TABLE IF NOT EXISTS paimon.silver.trades (
 ) WITH (
     'bucket'                           = '4',
     'merge-engine'                     = 'first-row',
-    'changelog-producer'               = 'none',
+    -- 'lookup', NOT 'none'. SchemaValidation ACCEPTS none, but a streaming read of
+    -- that combination fails at runtime:
+    --   First row streaming reading is not supported. You can use 'lookup' or
+    --   'full-compaction' changelog producer to support streaming reading.
+    -- The gold job streams from this table, so none silently cost us the gold job on
+    -- the first live run — schema-valid, runtime-invalid. lookup pays for changelog
+    -- generation at compaction; that is the price of a first-row table you can stream.
+    'changelog-producer'               = 'lookup',
     'file.format'                      = 'parquet',
     'compaction.optimization-interval' = '${PAIMON_FULL_COMPACT_INTERVAL}',
     -- SNAPSHOT RETENTION, declared rather than inherited. Paimon expires snapshots in
