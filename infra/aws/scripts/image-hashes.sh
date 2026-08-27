@@ -14,8 +14,11 @@
 # skip_build=true, inherited images with no kafka module, and the Spark latency emit
 # failed silently on all three engines for the rest of the day.
 #
-#   image-hashes.sh            -> "<image> <hash>" per line
-#   image-hashes.sh <image>    -> just that image's hash
+# Emits "<image> <hash> <dockerfile> <context>" — the workflow drives BOTH the
+# staleness check and the build from this one list, so they cannot drift apart.
+#
+#   image-hashes.sh            -> every image
+#   image-hashes.sh <image>    -> just that one
 set -uo pipefail
 
 # image:dockerfile:context — must mirror the bp() calls in eks-run.yml
@@ -44,5 +47,5 @@ want="${1:-}"
 echo "$SPECS" | while IFS=: read -r img df ctx; do
   [ -z "$img" ] && continue
   [ -n "$want" ] && [ "$want" != "$img" ] && continue
-  printf '%s %s\n' "$img" "$(hash_one "$df" "$ctx")"
+  printf '%s %s %s %s\n' "$img" "$(hash_one "$df" "$ctx")" "$df" "$ctx"
 done

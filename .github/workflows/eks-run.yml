@@ -29,10 +29,6 @@ on:
       run_id:
         description: "Stable id → shared state/names so re-apply is INCREMENTAL"
         default: "iter"
-      skip_build:
-        description: "Skip image build+push (reuse images already in ECR) — fast deploy iterations"
-        type: boolean
-        default: false
       clean_lake:
         description: "Wipe lake tables + streaming checkpoints before the run (fresh benchmark; leaves tfstate/teardown/ECR untouched)"
         type: boolean
@@ -191,59 +187,54 @@ jobs:
           echo "DELTA_LOGSTORE_TABLE=$(terraform output -raw delta_logstore_table)" >> "$GITHUB_ENV"
           echo "ECR_REGISTRY=${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
 
-      # skip_build reuses whatever sits in ECR. On 2026-08-27 that silently meant images
-      # built 29 SECONDS BEFORE the commit that added kafka-python: three runs inherited
-      # them and the Spark latency emit failed all day with "No module named 'kafka'".
-      # Nothing broke loudly — the images were just old.
-      # Same idea as Docker keying a layer on the content it touches, lifted to the whole
-      # image: if ECR has no tag matching the current build inputs, skip_build is a lie.
-      - name: Guard — skip_build must not reuse stale images
-        if: ${{ inputs.skip_build }}
-        run: |
-          STALE=""
-          while read -r img h; do
-            [ -z "$img" ] && continue
-            if aws ecr describe-images --region "$AWS_REGION" \
-                 --repository-name "$PROJECT/$img" --image-ids imageTag="$h" >/dev/null 2>&1; then
-              echo "  current   $img ($h)"
-            else
-              echo "  STALE     $img — ECR has nothing built from the current sources ($h)"
-              STALE="$STALE $img"
-            fi
-          done < <(./infra/aws/scripts/image-hashes.sh)
-          if [ -n "$STALE" ]; then
-            echo; echo "skip_build=true would run images that do NOT match these sources:$STALE"
-            echo "Re-run with skip_build=false."; exit 1
-          fi
-          echo "all images match their sources — skip_build is safe"
-
-      - name: Build + push images to ECR
-        if: ${{ !inputs.skip_build }}
+      # No skip_build input. The workflow works it out: each image is tagged with a
+      # content hash of its build inputs, so "is ECR's image the image these sources
+      # build?" is an equality test, not a judgment call. Build what is stale, reuse
+      # what is not. This is Docker's layer cache one level up, at the whole image.
+      #
+      # skip_build used to be a manual flag, and on 2026-08-27 it silently reused images
+      # pushed 29 SECONDS before the commit that added kafka-python — three runs
+      # inherited them and the Spark latency emit failed all day with "No module named
+      # 'kafka'". A flag that means "trust me" was the wrong shape for this.
+      - name: Images — build only what changed
         run: |
           aws ecr get-login-password --region "$AWS_REGION" \
             | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-          # Source-built Fluss images (main / FIP-27)
-          git clone --depth 1 https://github.com/apache/fluss "$FLUSS_SRC" || true
-          FLUSS_SRC="$FLUSS_SRC" docker/fluss/build-fluss.sh
-          # Tag with BOTH :latest (what the manifests reference) and :<content-hash> of
-          # the build inputs. The hash tag is what makes staleness provable: if ECR has
-          # the tag for the current sources, the image IS those sources. Manifests keep
-          # using :latest, so nothing else has to change.
-          bp() {
-            H=$(./infra/aws/scripts/image-hashes.sh "$1" | awk '{print $2}')
-            docker build -t "$ECR_REGISTRY/$PROJECT/$1:latest" -t "$ECR_REGISTRY/$PROJECT/$1:$H" -f "$2" "$3" \
-              && docker push "$ECR_REGISTRY/$PROJECT/$1:latest" \
-              && docker push "$ECR_REGISTRY/$PROJECT/$1:$H"
-          }
-          bp fluss-server     docker/fluss/Dockerfile             docker/fluss
-          bp fluss-flink      docker/fluss-flink/Dockerfile       docker/fluss-flink
-          bp generator        docker/generator/Dockerfile         docker/generator
-          bp latency-exporter docker/latency-exporter/Dockerfile  docker/latency-exporter
-          bp flink-paimon     docker/flink-paimon/Dockerfile      docker/flink-paimon
-          # Spark images stay job-agnostic (jobs mounted via ConfigMap); own context
-          bp spark-iceberg    docker/spark/Dockerfile             docker/spark
-          bp spark-delta      docker/spark-delta/Dockerfile       docker/spark-delta
-          bp spark-hudi       docker/spark-hudi/Dockerfile        docker/spark-hudi
+
+          NEED=""
+          while read -r img h df ctx; do
+            [ -z "$img" ] && continue
+            MAN=$(aws ecr batch-get-image --region "$AWS_REGION" --repository-name "$PROJECT/$img" \
+                    --image-ids imageTag="$h" --query 'images[0].imageManifest' --output text 2>/dev/null || true)
+            if [ -n "$MAN" ] && [ "$MAN" != "None" ]; then
+              # Reused — but :latest must POINT AT this image. Otherwise a revert to an
+              # older hash leaves :latest on the newer build and the manifests, which
+              # reference :latest, silently run the wrong thing. Re-tagging is a
+              # metadata-only call: no rebuild, no layer upload.
+              aws ecr put-image --region "$AWS_REGION" --repository-name "$PROJECT/$img" \
+                --image-tag latest --image-manifest "$MAN" >/dev/null 2>&1 || true
+              echo "  reuse   $img ($h)"
+            else
+              echo "  build   $img ($h)"
+              NEED="$NEED $img"
+            fi
+          done < <(./infra/aws/scripts/image-hashes.sh)
+
+          if [ -z "$NEED" ]; then echo "all images current — nothing to build"; exit 0; fi
+
+          # Fluss images are built from source; only pay for the clone if one is stale.
+          case "$NEED" in
+            *fluss*) git clone --depth 1 https://github.com/apache/fluss "$FLUSS_SRC" || true
+                     FLUSS_SRC="$FLUSS_SRC" docker/fluss/build-fluss.sh ;;
+          esac
+
+          while read -r img h df ctx; do
+            case " $NEED " in *" $img "*) ;; *) continue ;; esac
+            echo "== building $img =="
+            docker build -t "$ECR_REGISTRY/$PROJECT/$img:latest" -t "$ECR_REGISTRY/$PROJECT/$img:$h" -f "$df" "$ctx"
+            docker push "$ECR_REGISTRY/$PROJECT/$img:latest"
+            docker push "$ECR_REGISTRY/$PROJECT/$img:$h"
+          done < <(./infra/aws/scripts/image-hashes.sh)
 
       - name: Kubeconfig + operators
         run: |
