@@ -11,7 +11,7 @@ from pyspark.sql.types import (
     StructType, StructField, StringType, LongType, IntegerType, DecimalType,
 )
 from hudi_tables import BRONZE_TRADES, bronze_trades_opts
-from latency import emit_commit_latency
+from latency import observe_event_time, attach_latency_listener
 
 KAFKA_BROKERS   = os.environ.get("KAFKA_BROKERS", "kafka:9092")
 TOPIC           = "app.public.trades"
@@ -70,15 +70,16 @@ def main():
                 col("kafka_offset"), col("kafka_partition"))
               .withColumn("executed_date", to_date(col("executed_at"))))
 
-    # foreachBatch so latency is emitted AFTER the commit (Hudi MOR: after the inline
-    # compaction the write triggers, which is the cost we want inside the measurement).
-    def write_and_emit(batch_df, batch_id):
-        (batch_df.write.format("hudi").options(**bronze_trades_opts())
-            .mode("append").save(BRONZE_TRADES))
-        emit_commit_latency(batch_df, "hudi-bronze")
+    # observe() costs no extra action; the listener emits after each batch COMMITS
+    # (for Hudi MOR that includes the inline compaction the write triggers).
+    attach_latency_listener(spark, "hudi-bronze")
+    observed = observe_event_time(parsed)
 
-    (parsed.writeStream.foreachBatch(write_and_emit)
+    (observed.writeStream.format("hudi")
+        .options(**bronze_trades_opts())
+        .option("path", BRONZE_TRADES)
         .option("checkpointLocation", CHECKPOINT_PATH)
+        .outputMode("append")
         .trigger(processingTime="10 seconds")
         .start().awaitTermination())
 

@@ -2,54 +2,105 @@
 Per-pipeline latency emit — feeds the `pipeline_latency` topic that
 docker/latency-exporter consumes for the "Pipeline Comparison — Live" dashboard.
 
-WHERE THE CLOCK STOPS, AND WHY IT MATTERS
-Emit happens AFTER the engine's write call returns, i.e. after the batch is
-COMMITTED and queryable — not while records are being processed. Commit is where the
-engines actually differ: Delta compacts inline, Paimon self-compacts in the writer,
-Hudi does inline MOR compaction, Iceberg defers to a separate rewrite job. Measuring
-at processing time would hide precisely the differences this benchmark exists to
-show.
+APPROACH: Dataset.observe() + StreamingQueryListener.
 
-Event shape (what exporter.py expects):
-    {"pipeline": "<engine>-<layer>", "executed_at_ms": <source event>, "ingest_ts_ms": <commit>}
-delay = ingest_ts_ms - executed_at_ms  → source event to queryable-in-lake.
+`observe()` attaches a named aggregate to the query, computed as part of the pass
+Spark is ALREADY making over the batch — no extra action, no recomputation. The
+listener's onQueryProgress then fires once the batch has COMMITTED, and reads those
+metrics off the progress event.
 
-SAMPLED, deliberately. At 1k/s across five engines, emitting every record would add
-5k msg/s of measurement traffic to the very Kafka the pipelines are reading — the
-observer changing the thing observed. LATENCY_SAMPLE_N takes 1 row per batch by
-default, which at a 10s trigger is ~6 points/minute/pipeline: plenty for
-histogram_quantile, negligible load.
+This replaced a foreachBatch that wrote sampled rows to Kafka. That version took a
+SECOND Spark action on an uncached batch_df, so every batch re-ran the Kafka read and
+JSON parse purely to emit telemetry — roughly doubling the work in the job whose
+latency is being measured. It also forced the native streaming sink to be
+restructured. observe() has neither problem: the sink stays
+`.format("delta").start()` exactly as it was.
 
-Never let telemetry break a pipeline: every failure here is swallowed and logged.
+WHERE THE CLOCK STOPS
+  event time  : max(executed_at) observed during the batch — the newest SOURCE event
+  commit time : when onQueryProgress fires, i.e. after the batch is committed
+  delay       = commit time − observed max event time
+Commit is the meaningful boundary: Delta compacts inline, Paimon self-compacts, Hudi
+does inline MOR compaction, Iceberg defers to a rewrite job. Measuring during
+processing would hide exactly those differences.
+
+Emitting from the listener uses a plain Kafka producer, NOT Spark — the listener runs
+on the driver and a Spark action inside it risks deadlock.
+
+Every failure is swallowed and logged: telemetry must never break a pipeline.
 """
+import json
 import os
 import time
 
+OBSERVE_NAME = "pipeline_latency_obs"
+
 _TOPIC = os.environ.get("LATENCY_TOPIC", "pipeline_latency")
 _BROKERS = os.environ.get("KAFKA_BROKERS", "kafka:9092")
-_SAMPLE_N = int(os.environ.get("LATENCY_SAMPLE_N", "1"))
 _ENABLED = os.environ.get("LATENCY_EMIT_ENABLED", "true").lower() != "false"
 
 
-def emit_commit_latency(batch_df, pipeline, event_time_col="executed_at"):
-    """Call AFTER the write returns, inside foreachBatch. batch_df is the rows just
-    committed; `event_time_col` is the SOURCE event time carried on each row."""
+def observe_event_time(df, event_time_col="executed_at"):
+    """Attach the observation to the streaming DataFrame. Costs no extra action."""
+    from pyspark.sql.functions import max as _max, count as _count, col
+    return df.observe(
+        OBSERVE_NAME,
+        _max(col(event_time_col)).alias("max_event_ts"),
+        _count(col(event_time_col)).alias("rows"),
+    )
+
+
+def _make_listener(pipeline):
+    from pyspark.sql.streaming import StreamingQueryListener
+
+    class _LatencyListener(StreamingQueryListener):
+        def __init__(self):
+            self._producer = None
+
+        def _kafka(self):
+            if self._producer is None:
+                from kafka import KafkaProducer
+                self._producer = KafkaProducer(
+                    bootstrap_servers=_BROKERS.split(","),
+                    value_serializer=lambda v: json.dumps(v).encode(),
+                    linger_ms=200, retries=2,
+                )
+            return self._producer
+
+        def onQueryStarted(self, event):
+            pass
+
+        def onQueryTerminated(self, event):
+            pass
+
+        def onQueryProgress(self, event):
+            # Fires AFTER the batch commits — this is the measurement point.
+            try:
+                obs = (event.progress.observedMetrics or {}).get(OBSERVE_NAME)
+                if obs is None:
+                    return
+                max_ev = obs["max_event_ts"]
+                if max_ev is None or not obs["rows"]:
+                    return                       # empty batch: nothing to time
+                commit_ms = int(time.time() * 1000)
+                event_ms = int(max_ev.timestamp() * 1000)
+                self._kafka().send(_TOPIC, {
+                    "pipeline": pipeline,
+                    "executed_at_ms": event_ms,
+                    "ingest_ts_ms": commit_ms,
+                })
+            except Exception as e:
+                print(f"[latency] emit failed for {pipeline}: {str(e)[:160]}", flush=True)
+
+    return _LatencyListener()
+
+
+def attach_latency_listener(spark, pipeline):
+    """Register the post-commit emitter. Call once, before .start()."""
     if not _ENABLED:
         return
     try:
-        from pyspark.sql.functions import col, lit, to_json, struct
-        commit_ms = int(time.time() * 1000)          # the write has returned = committed
-        sample = batch_df.select(col(event_time_col).alias("_ev")).limit(_SAMPLE_N)
-        payload = (sample
-                   .filter(col("_ev").isNotNull())
-                   .select(to_json(struct(
-                       lit(pipeline).alias("pipeline"),
-                       (col("_ev").cast("double") * 1000).cast("long").alias("executed_at_ms"),
-                       lit(commit_ms).alias("ingest_ts_ms"),
-                   )).alias("value")))
-        (payload.write.format("kafka")
-            .option("kafka.bootstrap.servers", _BROKERS)
-            .option("topic", _TOPIC)
-            .save())
-    except Exception as e:                            # telemetry must never break the pipeline
-        print(f"[latency] emit failed for {pipeline}: {str(e)[:160]}", flush=True)
+        spark.streams.addListener(_make_listener(pipeline))
+        print(f"[latency] listener attached for {pipeline}", flush=True)
+    except Exception as e:
+        print(f"[latency] could not attach listener: {str(e)[:160]}", flush=True)

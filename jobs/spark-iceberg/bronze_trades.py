@@ -5,7 +5,7 @@ Immutable executions → plain append; downstream reads it as an append stream.
 import os
 from pyspark.sql import SparkSession
 from iceberg_tables import ensure_all  # in-pipeline DDL
-from latency import emit_commit_latency
+from latency import observe_event_time, attach_latency_listener
 from pyspark.sql.functions import col, from_json, current_timestamp, to_timestamp
 from pyspark.sql.types import (
     StructType, StructField, StringType, LongType, IntegerType, DecimalType,
@@ -67,14 +67,14 @@ def main():
                 current_timestamp().alias("ingest_ts"),
                 col("kafka_offset"), col("kafka_partition")))
 
-    # foreachBatch so latency is emitted AFTER the commit, not during processing.
-    def write_and_emit(batch_df, batch_id):
-        (batch_df.write.format("iceberg").mode("append")
-            .option("fanout-enabled", "true").save(TABLE))
-        emit_commit_latency(batch_df, "iceberg-bronze")
+    # observe() costs no extra action; the listener emits after each batch COMMITS.
+    attach_latency_listener(spark, "iceberg-bronze")
+    observed = observe_event_time(parsed)
 
-    (parsed.writeStream.foreachBatch(write_and_emit)
+    (observed.writeStream.format("iceberg").outputMode("append")
+        .option("path", TABLE)
         .option("checkpointLocation", CHECKPOINT_PATH)
+        .option("fanout-enabled", "true")
         .trigger(processingTime="10 seconds")
         .start().awaitTermination())
 

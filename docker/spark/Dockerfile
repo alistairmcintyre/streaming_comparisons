@@ -35,7 +35,9 @@ RUN curl -fsSL -o /opt/spark/jars/iceberg-spark-runtime-${SPARK_VERSION}_${SCALA
       https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/${AWS_SDK_BUNDLE_VERSION}/bundle-${AWS_SDK_BUNDLE_VERSION}.jar
 
 # Python deps for PySpark jobs
-RUN pip install --no-cache-dir pyspark==4.0.4
+# kafka-python: the StreamingQueryListener emits post-commit latency from the
+# DRIVER, where a Spark action would risk deadlock — so it needs a plain client.
+RUN pip install --no-cache-dir pyspark==4.0.4 kafka-python==2.0.2
 
 # Entrypoint: JOB_FILE env var specifies which job to run. On k8s the SparkApplication
 # mounts jobs/_shared via ConfigMaps at /opt/jobs + /opt/shared (see infra/aws/k8s),

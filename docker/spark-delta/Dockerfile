@@ -63,7 +63,9 @@ RUN curl -fsSL -o /opt/spark/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
 # pyspark + delta-spark's Python module (delta.tables) — the DDL uses the
 # DeltaTable builder API; the JARs alone don't provide the Python package.
 # Pinned to DELTA_VERSION so the Python module matches the runtime JARs.
-RUN pip install --no-cache-dir pyspark==4.0.4 delta-spark==${DELTA_VERSION}
+# kafka-python: the StreamingQueryListener emits post-commit latency from the
+# DRIVER, where a Spark action would risk deadlock — so it needs a plain client.
+RUN pip install --no-cache-dir pyspark==4.0.4 delta-spark==${DELTA_VERSION} kafka-python==2.0.2
 
 COPY entrypoint.sh /opt/spark/entrypoint.sh
 RUN chmod +x /opt/spark/entrypoint.sh

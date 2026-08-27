@@ -7,7 +7,7 @@ no MERGE, and a plain readStream downstream is fine (append snapshots).
 import os
 from pyspark.sql import SparkSession
 from delta_tables import ensure_all  # in-pipeline DDL
-from latency import emit_commit_latency
+from latency import observe_event_time, attach_latency_listener
 from pyspark.sql.functions import col, from_json, current_timestamp, to_timestamp
 from pyspark.sql.types import (
     StructType, StructField, StringType, LongType, IntegerType, DecimalType,
@@ -70,16 +70,12 @@ def main():
                 current_timestamp().alias("ingest_ts"),
                 col("kafka_offset"), col("kafka_partition")))
 
-    # foreachBatch so latency can be emitted AFTER the write returns (= committed and
-    # queryable). Delta's txnAppId/txnVersion keep the append idempotent across the
-    # at-least-once replay foreachBatch allows.
-    def write_and_emit(batch_df, batch_id):
-        batch_df.sparkSession.conf.set("spark.databricks.delta.write.txnAppId", "bronze-trades-delta")
-        batch_df.sparkSession.conf.set("spark.databricks.delta.write.txnVersion", str(batch_id))
-        batch_df.write.format("delta").mode("append").save(TABLE_PATH)
-        emit_commit_latency(batch_df, "delta-bronze")
+    # observe() costs no extra action; the listener emits after each batch COMMITS.
+    attach_latency_listener(spark, "delta-bronze")
+    observed = observe_event_time(parsed)
 
-    (parsed.writeStream.foreachBatch(write_and_emit)
+    (observed.writeStream.format("delta").outputMode("append")
+        .option("path", TABLE_PATH)
         .option("checkpointLocation", CHECKPOINT_PATH)
         .trigger(processingTime="10 seconds")
         .start().awaitTermination())
