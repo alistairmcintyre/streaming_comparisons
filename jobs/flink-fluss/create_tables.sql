@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS fluss_catalog.silver.trades (
     -- default PK table emits a full retracting changelog. Flink then plans MIN/MAX in
     -- gold as a single scalar per key instead of a retractable multiset of every value
     -- ever seen — O(keys) instead of O(rows). See gold_open_positions.sql.
+    -- NB: first_row does not support DELETE. table.delete.behavior is left UNSET on
+    -- purpose — it then defaults to 'ignore' for this merge engine. Setting it to
+    -- 'allow' explicitly makes TableDescriptorValidation throw at create time. Trades
+    -- are immutable executions and are never deleted, so ignore is correct.
     'table.merge-engine'              = 'first_row',
     'table.datalake.enabled'          = 'true',
     'table.datalake.freshness'        = '30s',

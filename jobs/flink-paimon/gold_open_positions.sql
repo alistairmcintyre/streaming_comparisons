@@ -51,13 +51,10 @@
 --     or MinWithRetractAggFunction, whose accumulator holds MapView<T, Long> — every
 --     distinct timestamp ever seen for that key, with a count. Neither scans; one is
 --     bounded and one is not, and the source's DECLARED changelog mode picks it.
---   * The accounts LEFT JOIN is also keyed, not a scan. All JoinRecordStateViews
---     variants use ValueState/MapState scoped to the join key: accounts' unique key
---     IS the join key -> JoinKeyContainsUniqueKey -> ValueState, one point read per
---     enrichment. The gold side is MapState<symbol, row> under each account_id.
---     Consequence worth knowing: an accounts update re-emits every position for that
---     account. Bounded by symbols-per-account, but a bulk dimension refresh produces
---     a burst of gold rewrites.
+--   * There is NO dimension join any more. When there was, it cost a second full
+--     copy of the book: a regular streaming join materialises BOTH inputs
+--     (StreamingJoinOperator keeps leftRecordStateView + rightRecordStateView),
+--     so gold state was 2x book + accounts. Enrichment moved to query time.
 --   * The source is read ONCE in full, then incrementally. Paimon's scan.mode='latest-full' is
 --     "produces a snapshot upon first startup, and continue to read the latest
 --     changes" (CoreOptions$StartupMode).

@@ -32,11 +32,15 @@ echo "  postgres trades (final): ${PG:-unavailable}"
 
 echo "== 2. wait for CDC + every consumer group to drain =="
 lag_total() {
-  # Sum lag across all consumer groups. `describe --all-groups` prints a LAG column;
-  # '-' appears for partitions with no committed offset, which are not lag.
+  # Sum the LAG column across all consumer groups. Columns are:
+  #   $1 GROUP  $2 TOPIC  $3 PARTITION  $4 CURRENT-OFFSET  $5 LOG-END-OFFSET  $6 LAG
+  # LAG is $6, NOT $5. Summing $5 sums the log end offsets, which never reach zero, so
+  # the drain would always time out and every run would be recorded as mid-flight.
+  # The numeric guard also drops the per-group header rows and the '-' placeholder
+  # printed for partitions with no committed offset.
   $KUBECTL -n kafka exec "$BROKER_POD" -- bin/kafka-consumer-groups.sh \
     --bootstrap-server localhost:9092 --describe --all-groups 2>/dev/null \
-    | awk '$5 ~ /^[0-9]+$/ {s+=$5} END {print s+0}'
+    | awk '$6 ~ /^[0-9]+$/ {s+=$6} END {print s+0}'
 }
 
 deadline=$(( $(date +%s) + QUIESCE_TIMEOUT ))

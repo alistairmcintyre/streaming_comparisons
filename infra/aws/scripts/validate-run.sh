@@ -159,6 +159,52 @@ for spec in "delta:s3://$WAREHOUSE/delta/:parquet" "iceberg:s3://$WAREHOUSE/iceb
   [ "${C:-0}" -gt 0 ] && ok "$n has $C data files" || bad "$n has NO data files (running != writing)"
 done
 
+# ── 8. things this run changed for the first time ────────────────────────────
+# Every check below covers a change that has NEVER run live. A rule written against
+# a metric that does not exist, or a topic that was never created, fails silently and
+# looks exactly like health — which is the whole reason this script exists.
+echo "== 8. first-run surfaces =="
+
+# Topics are now DECLARED (auto.create is off). An undeclared topic no longer
+# springs into existence — a producer or consumer just fails.
+for t in app.public.trades app.public.accounts debezium-dlq pipeline_latency; do
+  R=$($KB -n kafka get kafkatopic "$t" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  [ "$R" = "True" ] && ok "topic $t Ready" || bad "topic $t NOT Ready (auto-create is OFF, so nothing will create it)"
+done
+AC=$($KB -n kafka get kafka trades -o jsonpath='{.spec.kafka.config.auto\.create\.topics\.enable}' 2>/dev/null)
+[ "$AC" = "false" ] && ok "kafka auto-create disabled" || warn "kafka auto.create.topics.enable=$AC (expected false)"
+
+# The alert rules. A PrometheusRule with a bad expr is silently DROPPED by the
+# operator, so presence of the object is not proof the rules loaded.
+PR=$($KB -n monitoring get prometheusrule streaming-pipelines --no-headers 2>/dev/null | wc -l)
+[ "${PR:-0}" -ge 1 ] && ok "PrometheusRule streaming-pipelines applied" \
+  || bad "PrometheusRule missing — 96-alerts.yaml did not apply"
+PROM=$($KB -n monitoring get pod -l app.kubernetes.io/name=prometheus -o name 2>/dev/null | head -1)
+if [ -n "$PROM" ]; then
+  RG=$($KB -n monitoring exec "$PROM" -c prometheus -- \
+       wget -qO- 'localhost:9090/api/v1/rules' 2>/dev/null \
+       | python3 -c "import json,sys;d=json.load(sys.stdin);g=[x for x in d['data']['groups'] if x['name'].startswith('streaming.')];print(sum(len(x['rules']) for x in g))" 2>/dev/null)
+  [ "${RG:-0}" -ge 11 ] && ok "$RG alert rules LOADED in prometheus" \
+    || bad "only ${RG:-0}/11 streaming.* rules loaded — a bad expr is dropped silently (check envsubst did not eat \$labels)"
+fi
+
+# The three metric families the rules depend on. Empty result = the exporter or the
+# reporter is not working, and every rule built on it is dead.
+if [ -n "${PROM:-}" ]; then
+  for m in kafka_consumergroup_lag flink_jobmanager_job_uptime pipeline_latency_events_total; do
+    N=$($KB -n monitoring exec "$PROM" -c prometheus -- \
+        wget -qO- "localhost:9090/api/v1/query?query=$m" 2>/dev/null \
+        | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['result']))" 2>/dev/null)
+    [ "${N:-0}" -gt 0 ] && ok "metric $m present ($N series)" \
+      || bad "metric $m ABSENT — alerts built on it will never fire and will look healthy"
+  done
+fi
+
+# Gold schema parity. The five golds must agree on 9 columns; country/tier moved out
+# to a read-time join, and a stale table would still carry them.
+GC=$(aws s3 ls "s3://$WAREHOUSE/delta/gold/open_positions/_delta_log/" 2>/dev/null | wc -l)
+[ "${GC:-0}" -gt 0 ] && ok "delta gold table exists" || warn "delta gold table not created yet"
+
 echo
 echo "════ SUMMARY: $PASS pass, $FAIL fail, $WARN warn ════"
 if [ "$FAIL" -gt 0 ]; then

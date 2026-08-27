@@ -222,7 +222,15 @@ jobs:
             --from-file=jobs/_shared/latency.py \
             --dry-run=client -o yaml | kubectl apply -f -
           for f in $(ls infra/aws/k8s/*.yaml | sort); do
-            envsubst < "$f" | kubectl apply -f -
+            # 96-alerts.yaml is applied WITHOUT envsubst. Prometheus annotations use Go
+            # templating ({{ $labels.pod }}, {{ $value }}), and envsubst treats
+            # $labels/$value as unset shell variables and substitutes EMPTY — so every
+            # alert would load with a meaningless message, or fail to load at all,
+            # silently. It has no ${...} placeholders, so it needs no substitution.
+            case "$(basename "$f")" in
+              96-alerts.yaml) kubectl apply -f "$f" ;;
+              *)              envsubst < "$f" | kubectl apply -f - ;;
+            esac
           done
           # Apply ONLY the ConfigMap wrapper — the raw dashboard .json has no
           # apiVersion/kind and kubectl cannot apply it. This used to be
