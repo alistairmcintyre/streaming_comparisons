@@ -11,6 +11,16 @@ spec:
   serviceAccount: lake
   flinkConfiguration:
     taskmanager.numberOfTaskSlots: "6"
+    # HIGH AVAILABILITY. This is the fix that matters. These are SESSION clusters, and
+    # without HA a JobManager restart loses every submitted job PERMANENTLY — they do
+    # not come back, and the submitter Job has already completed so nothing resubmits
+    # them. That is exactly what happened on the first live run: the operator recreated
+    # the JM and both engines silently went to zero jobs while the pods looked healthy.
+    # With Kubernetes HA the JM recovers its job graphs from the HA metadata plus the
+    # last checkpoint, so a restart costs seconds instead of the whole pipeline.
+    high-availability.type: kubernetes
+    high-availability.storageDir: "s3://${PAIMON_BUCKET}/_flink_ha/paimon"
+    kubernetes.cluster-id: "flink-paimon"
     # RECOVERY + UPGRADE PATH. These are SESSION clusters (many SQL jobs on one
     # cluster), so the operator's `job.upgradeMode: savepoint` does not apply — that is
     # an Application-mode feature. The equivalent for this topology is: keep checkpoints

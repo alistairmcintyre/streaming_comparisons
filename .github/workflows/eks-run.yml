@@ -18,8 +18,14 @@ on:
       destroy_mode:
         description: "When to terraform destroy (EventBridge 2.5h kill-switch always backstops)"
         type: choice
-        options: ["on-success", "never", "always"]
-        default: "on-success"   # iteration-friendly: keep the cluster on failure
+        options: ["always", "on-success", "never"]
+        # ALWAYS. `on-success` kept a failed run's cluster alive for debugging, which
+        # cost two idle clusters in one day — a run that fails at minute 10 then bills
+        # until the 2.5h kill switch. Safe to destroy now only because the diagnostics
+        # bundle below is collected FIRST: the evidence that made the failures
+        # debuggable (submitter logs, JM logs, operator events, prometheus targets)
+        # is uploaded as a workflow artifact before anything is torn down.
+        default: "always"
       run_id:
         description: "Stable id → shared state/names so re-apply is INCREMENTAL"
         default: "iter"
@@ -137,7 +143,24 @@ jobs:
           kubectl create namespace kafka --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply --server-side --force-conflicts -f 'https://strimzi.io/install/latest?namespace=kafka'
           kubectl -n kafka rollout status deploy/strimzi-cluster-operator --timeout=300s
-          helm upgrade --install flink-operator flink-operator/flink-kubernetes-operator -n flink --create-namespace --wait
+          # The operator's REST client timeout defaults to 10s (verified in the chart's
+          # conf/flink-conf.yaml). Under load a JobManager takes longer than that to
+          # answer, the SessionObserver logs "REST service in session cluster timed out",
+          # and the operator RECREATES a JM that was perfectly healthy — killing every
+          # job on it. Raising these stops the operator mistaking slow for dead; HA in
+          # 70-/92-flink-*.yaml is what makes a restart survivable if it happens anyway.
+          cat > /tmp/flink-operator-values.yaml <<'YAML'
+          defaultConfiguration:
+            create: true
+            append: true
+            flink-conf.yaml: |+
+              kubernetes.operator.flink.client.timeout: 60 s
+              kubernetes.operator.observer.rest-ready.delay: 30 s
+              kubernetes.operator.observer.progress-check.interval: 30 s
+              kubernetes.operator.deployment.readiness.timeout: 10 min
+          YAML
+          helm upgrade --install flink-operator flink-operator/flink-kubernetes-operator -n flink --create-namespace --wait \
+            -f /tmp/flink-operator-values.yaml
           # jobNamespaces MUST include spark: the chart default watches `default`
           # only, so SparkApplications in the spark ns are silently ignored
           # (status <none>, no driver pods, no events).
@@ -296,13 +319,40 @@ jobs:
           export QUIESCED="${{ steps.quiesce.outcome == 'success' && 'true' || 'false' }}"
           infra/aws/scripts/snapshot-results.sh
 
+      # Collect BEFORE destroy. destroy_mode is `always` now, so this is the only
+      # chance to keep what makes a failed run debuggable — every bug found on the
+      # first live run came from a log or an API listing that dies with the cluster.
+      - name: Collect diagnostics (pre-destroy)
+        if: always()
+        continue-on-error: true
+        run: KUBECTL=kubectl ./infra/aws/scripts/collect-diagnostics.sh diagnostics
+
+      - name: Upload diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ github.run_id }}
+          path: diagnostics/
+          retention-days: 14
+          if-no-files-found: warn
+
       # Teardown policy (the 2.5h EventBridge kill-switch ALWAYS backstops):
       #   on-success → destroy only if the whole run succeeded (keeps a failed
-      #                cluster up for debugging + incremental re-apply). DEFAULT.
+      #                cluster up for debugging + incremental re-apply).
       #   never      → never destroy here; rely on the 2.5h kill-switch.
-      #   always     → destroy no matter what (original behaviour).
+      #   always     → destroy on success, failure AND cancellation. DEFAULT, because
+      #                keeping a failed cluster for debugging cost two idle clusters in
+      #                one day. The diagnostics bundle uploaded just above is what makes
+      #                that safe: the logs and API listings that made those failures
+      #                debuggable now outlive the cluster.
       - name: Terraform destroy
-        if: ${{ inputs.destroy_mode == 'always' || (inputs.destroy_mode == 'on-success' && success()) }}
+        # always() matters as much as destroy_mode here. Without it a CANCELLED run
+        # skips this step entirely and the cluster bills until the 2.5h kill switch —
+        # which is what happened on 2026-08-27 and needed a manual teardown workflow.
+        # With always() wrapping it, `destroy_mode: always` means always: success,
+        # failure, and cancellation alike.
+        if: ${{ always() && (inputs.destroy_mode == 'always' || (inputs.destroy_mode == 'on-success' && success())) }}
         working-directory: ${{ env.TF_DIR }}
         run: |
           CN="sc-${RUN_ID}"
