@@ -70,6 +70,11 @@ metadata:
 spec:
   selector:
     matchLabels:
-      strimzi.io/kind: KafkaExporter
+      # The exporter pod carries strimzi.io/kind=Kafka (the CR kind that OWNS it), NOT
+      # KafkaExporter — verified live: strimzi.io/component-type=kafka-exporter is the
+      # label that identifies it. The wrong selector matched nothing, so
+      # kafka_consumergroup_lag had zero series and every lag alert was inert while
+      # looking perfectly healthy.
+      strimzi.io/component-type: kafka-exporter
       strimzi.io/cluster: trades
   podMetricsEndpoints: [{ targetPort: 9404, interval: 15s }]

@@ -59,9 +59,13 @@ echo "== 3. debezium -> kafka =="
 CST=$($KB -n kafka get kafkaconnector pg-app -o jsonpath='{.status.connectorStatus.connector.state}' 2>/dev/null)
 [ "$CST" = "RUNNING" ] && ok "connector pg-app RUNNING" || bad "connector pg-app state=${CST:-missing}"
 if [ "$EXEC_OK" = 1 ]; then
-  OFF=$($KB -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic app.public.trades 2>/dev/null | cut -d: -f3)
+  # SUM across partitions: app.public.trades is 6 partitions now (31-kafka-topics.yaml),
+  # so kafka-get-offsets prints 6 lines. `cut` alone yields a multi-line value and
+  # `[ ... -gt 0 ]` dies with "integer expression expected" — reporting a topic holding
+  # 800k messages as empty.
+  OFF=$($KB -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic app.public.trades 2>/dev/null | awk -F: '{s+=$3} END {print s+0}')
   [ "${OFF:-0}" -gt 0 ] && ok "app.public.trades offset=$OFF" || bad "app.public.trades has NO messages"
-  DLQ=$($KB -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic debezium-dlq 2>/dev/null | cut -d: -f3)
+  DLQ=$($KB -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic debezium-dlq 2>/dev/null | awk -F: '{s+=$3} END {print s+0}')
   [ -z "${DLQ:-}" ] || [ "${DLQ:-0}" = 0 ] && ok "DLQ empty" || bad "DLQ has $DLQ records — Debezium is REJECTING messages"
   # WIRE FORMAT: the bug that cost hours. Everything downstream silently produces
   # empty batches if `after` is not top-level or price is not an exact decimal.
@@ -167,7 +171,9 @@ echo "== 8. first-run surfaces =="
 
 # Topics are now DECLARED (auto.create is off). An undeclared topic no longer
 # springs into existence — a producer or consumer just fails.
-for t in app.public.trades app.public.accounts debezium-dlq pipeline_latency; do
+# NOTE these are k8s RESOURCE names. The Kafka topic is pipeline_latency but the
+# resource must be pipeline-latency — '_' is illegal in an RFC 1123 name.
+for t in app.public.trades app.public.accounts debezium-dlq pipeline-latency; do
   R=$($KB -n kafka get kafkatopic "$t" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
   [ "$R" = "True" ] && ok "topic $t Ready" || bad "topic $t NOT Ready (auto-create is OFF, so nothing will create it)"
 done
@@ -179,26 +185,35 @@ AC=$($KB -n kafka get kafka trades -o jsonpath='{.spec.kafka.config.auto\.create
 PR=$($KB -n monitoring get prometheusrule streaming-pipelines --no-headers 2>/dev/null | wc -l)
 [ "${PR:-0}" -ge 1 ] && ok "PrometheusRule streaming-pipelines applied" \
   || bad "PrometheusRule missing — 96-alerts.yaml did not apply"
-PROM=$($KB -n monitoring get pod -l app.kubernetes.io/name=prometheus -o name 2>/dev/null | head -1)
-if [ -n "$PROM" ]; then
-  RG=$($KB -n monitoring exec "$PROM" -c prometheus -- \
-       wget -qO- 'localhost:9090/api/v1/rules' 2>/dev/null \
-       | python3 -c "import json,sys;d=json.load(sys.stdin);g=[x for x in d['data']['groups'] if x['name'].startswith('streaming.')];print(sum(len(x['rules']) for x in g))" 2>/dev/null)
-  [ "${RG:-0}" -ge 11 ] && ok "$RG alert rules LOADED in prometheus" \
-    || bad "only ${RG:-0}/11 streaming.* rules loaded — a bad expr is dropped silently (check envsubst did not eat \$labels)"
-fi
+PROXY="/api/v1/namespaces/monitoring/services/kube-prometheus-stack-prometheus:9090/proxy/api/v1"
+# The prometheus container is distroless — it has no wget/curl, so `kubectl exec` can
+# never work here and an exec-based check fails identically whether or not the rules
+# loaded. Query through the apiserver proxy instead.
+promq() { timeout 25 $KB get --raw "${PROXY}$1" 2>/dev/null; }
 
-# The three metric families the rules depend on. Empty result = the exporter or the
-# reporter is not working, and every rule built on it is dead.
-if [ -n "${PROM:-}" ]; then
-  for m in kafka_consumergroup_lag flink_jobmanager_job_uptime pipeline_latency_events_total; do
-    N=$($KB -n monitoring exec "$PROM" -c prometheus -- \
-        wget -qO- "localhost:9090/api/v1/query?query=$m" 2>/dev/null \
-        | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['result']))" 2>/dev/null)
-    [ "${N:-0}" -gt 0 ] && ok "metric $m present ($N series)" \
-      || bad "metric $m ABSENT — alerts built on it will never fire and will look healthy"
-  done
-fi
+RG=$(promq "/rules" | python3 -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print(-1); raise SystemExit
+g=[x for x in d['data']['groups'] if x['name'].startswith('streaming.')]
+print(sum(len(x['rules']) for x in g))" 2>/dev/null)
+case "${RG:--1}" in
+  -1|"") warn "could not reach prometheus to verify rules loaded (apiserver proxy timed out)" ;;
+  *) [ "$RG" -ge 11 ] && ok "$RG alert rules LOADED in prometheus" \
+       || bad "only $RG/11 streaming.* rules loaded — a bad expr is dropped silently" ;;
+esac
+
+for m in kafka_consumergroup_lag flink_jobmanager_job_uptime pipeline_latency_events_total; do
+  N=$(promq "/query?query=$m" | python3 -c "
+import json,sys
+try: print(len(json.load(sys.stdin)['data']['result']))
+except Exception: print(-1)" 2>/dev/null)
+  case "${N:--1}" in
+    -1|"") warn "could not query metric $m (prometheus unreachable)" ;;
+    0)     bad "metric $m ABSENT — alerts built on it will never fire and will look healthy" ;;
+    *)     ok "metric $m present ($N series)" ;;
+  esac
+done
 
 # Gold schema parity. The five golds must agree on 9 columns; country/tier moved out
 # to a read-time join, and a stale table would still carry them.

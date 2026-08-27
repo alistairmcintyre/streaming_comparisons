@@ -82,17 +82,6 @@ CREATE CATALOG paimon WITH (
     'warehouse' = '${PAIMON_WAREHOUSE}'${PAIMON_S3_OPTS}
 );
 
--- Live-dashboard telemetry only. The authoritative processing delay is
--- (commit_ts - last_updated_at) read out of gold.open_positions; this feeds the
--- Grafana panel and samples at PROCESSING time (Flink SQL has no post-commit hook).
-CREATE TEMPORARY TABLE latency_sink (
-    `value` STRING
-) WITH (
-    'connector'                    = 'kafka',
-    'topic'                        = 'pipeline_latency',
-    'properties.bootstrap.servers' = '${KAFKA_BOOTSTRAP}',
-    'format'                       = 'raw'${KAFKA_EXTRA_OPTS}
-);
 
 CREATE TEMPORARY VIEW gold_book AS
 SELECT
@@ -119,20 +108,14 @@ FROM (
     GROUP BY account_id, symbol
 ) p;
 
--- One STATEMENT SET so the fold is computed once and shared by both sinks.
-EXECUTE STATEMENT SET
-BEGIN
-
+-- Plain INSERT, NOT a STATEMENT SET with a latency emit alongside.
+-- A gold-hop emit was tried here and is INVALID: gold_book comes from a GROUP BY, so
+-- it is an UPDATING changelog, and the Kafka 'raw' latency_sink is append-only. Flink
+-- rejects it outright:
+--   TableException: Table sink 'latency_sink' doesn't support consuming update changes
+--   which is produced by node GroupAggregate(groupBy=[account_id, symbol], ...)
+-- That failure took down the whole statement set, so NO gold job was submitted at all.
+-- No loss: the authoritative gold-hop number is (commit_ts - last_updated_at) read out
+-- of the table itself, which is uniform across all five engines. The Kafka emit chain
+-- only feeds the live dashboard, and bronze/silver still emit into it.
 INSERT INTO paimon.gold.open_positions SELECT * FROM gold_book;
-
--- Gold-hop latency. Sampled on account_id (the fold's key) rather than trade_id,
--- because a gold row is an aggregate and has no single trade to sample on.
-INSERT INTO latency_sink
-SELECT
-    '{"pipeline":"paimon-gold","executed_at_ms":'
-    || CAST(UNIX_TIMESTAMP(DATE_FORMAT(last_updated_at, 'yyyy-MM-dd HH:mm:ss')) * 1000 AS STRING)
-    || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING) || '}'
-FROM gold_book
-WHERE MOD(account_id, 97) = 0;
-
-END;

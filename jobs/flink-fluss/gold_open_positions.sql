@@ -72,18 +72,7 @@ CREATE CATALOG fluss_catalog WITH (
     'bootstrap.servers' = '${FLUSS_BOOTSTRAP}'
 );
 
-CREATE TEMPORARY TABLE latency_sink (
-    `value` STRING
-) WITH (
-    'connector'                    = 'kafka',
-    'topic'                        = 'pipeline_latency',
-    'properties.bootstrap.servers' = '${KAFKA_BOOTSTRAP}',
-    'format'                       = 'raw'${KAFKA_EXTRA_OPTS}
-);
 
--- The fold feeds both the gold table and the live-dashboard latency emit from one
--- STATEMENT SET, so the aggregate is computed once and the telemetry costs nothing
--- beyond the emit itself.
 CREATE TEMPORARY VIEW gold_book AS
 SELECT
     p.account_id,
@@ -108,19 +97,14 @@ FROM (
     GROUP BY account_id, symbol
 ) p;
 
-EXECUTE STATEMENT SET
-BEGIN
-
+-- Plain INSERT, NOT a STATEMENT SET with a latency emit alongside.
+-- A gold-hop emit was tried here and is INVALID: gold_book comes from a GROUP BY, so
+-- it is an UPDATING changelog, and the Kafka 'raw' latency_sink is append-only. Flink
+-- rejects it outright:
+--   TableException: Table sink 'latency_sink' doesn't support consuming update changes
+--   which is produced by node GroupAggregate(groupBy=[account_id, symbol], ...)
+-- That failure took down the whole statement set, so NO gold job was submitted at all.
+-- No loss: the authoritative gold-hop number is (commit_ts - last_updated_at) read out
+-- of the table itself, which is uniform across all five engines. The Kafka emit chain
+-- only feeds the live dashboard, and bronze/silver still emit into it.
 INSERT INTO fluss_catalog.gold.open_positions SELECT * FROM gold_book;
-
--- Gold-hop latency. Sampled on account_id (the fold's key) rather than trade_id,
--- because a gold row is an aggregate and has no single trade to sample on.
-INSERT INTO latency_sink
-SELECT
-    '{"pipeline":"fluss-gold","executed_at_ms":'
-    || CAST(UNIX_TIMESTAMP(DATE_FORMAT(last_updated_at, 'yyyy-MM-dd HH:mm:ss')) * 1000 AS STRING)
-    || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING) || '}'
-FROM gold_book
-WHERE MOD(account_id, 97) = 0;
-
-END;
