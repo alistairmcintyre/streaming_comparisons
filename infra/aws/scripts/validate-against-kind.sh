@@ -72,11 +72,27 @@ kubectl get ns -o name | sed 's|^|  |'
 
 echo "== server dry-run every manifest =="
 # Placeholders: the webhook validates SHAPE and CONFIG KEYS, not secret values.
-export ECR_REGISTRY=placeholder.dkr.ecr.eu-west-1.amazonaws.com AWS_REGION=eu-west-1 \
-       PAIMON_BUCKET=placeholder-paimon WAREHOUSE_BUCKET=placeholder-warehouse \
-       S3_ACCESS_KEY=placeholder S3_SECRET_KEY=placeholder RUN_ID=validate \
-       POSTGRES_PASSWORD=placeholder DELTA_LOGSTORE_TABLE=placeholder \
-       NODE_AZ=eu-west-1a ACCOUNT=000000000000 PROJECT=streaming-comparison
+# Every ${VAR} the manifests reference gets a placeholder, DISCOVERED from the
+# manifests rather than hardcoded. A hand-maintained list drifts, and an unset var is
+# not a loud failure — envsubst silently substitutes EMPTY, producing a subtly invalid
+# manifest. That is exactly what happened here: EFS_ID was missing from the list, so
+# volumeHandle became "" and the PV was rejected for a reason that had nothing to do
+# with the manifest. Auto-discovery means a newly-introduced var can never do that again.
+for v in $(grep -rhoE '\$\{[A-Z_][A-Z0-9_]*\}' infra/aws/k8s/*.yaml | tr -d '${}' | sort -u); do
+  if [ -z "${!v:-}" ]; then
+    case "$v" in
+      EFS_ID)          export "$v=fs-0000000000000000" ;;   # must look like an EFS id
+      *ROLE_ARN)       export "$v=arn:aws:iam::000000000000:role/placeholder" ;;
+      ECR_REGISTRY)    export "$v=placeholder.dkr.ecr.eu-west-1.amazonaws.com" ;;
+      AWS_REGION)      export "$v=eu-west-1" ;;
+      NODE_AZ)         export "$v=eu-west-1a" ;;
+      TRADES_PER_SEC)  export "$v=1000" ;;
+      *BASE|*CHECKPOINT_BASE) export "$v=s3://placeholder/chk" ;;
+      *)               export "$v=placeholder" ;;
+    esac
+  fi
+done
+echo "  placeholders set for: $(grep -rhoE '\$\{[A-Z_][A-Z0-9_]*\}' infra/aws/k8s/*.yaml | tr -d '${}' | sort -u | tr '\n' ' ')"
 fails=0
 # `set -e` is OFF for the loop ON PURPOSE. A failing `out=$(...)` assignment aborts the
 # script under -e BEFORE `rc=$?` is read, so the first rejected manifest killed the run

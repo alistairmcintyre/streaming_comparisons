@@ -337,6 +337,18 @@ jobs:
             --from-file=jobs/_shared/hudi_tables.py \
             --from-file=jobs/_shared/latency.py \
             --dry-run=client -o yaml | kubectl apply -f -
+          # PHASE 0 — every ${VAR} the manifests reference must be SET and non-empty.
+          # envsubst does not fail on an unset variable, it substitutes EMPTY — which
+          # yields a manifest that is syntactically fine and semantically wrong. In
+          # validation this produced `volumeHandle: ""` and a rejected PersistentVolume;
+          # in a real apply it would create something subtly broken instead.
+          MISSING=""
+          for v in $(grep -rhoE '\$\{[A-Z_][A-Z0-9_]*\}' infra/aws/k8s/*.yaml | tr -d '${}' | sort -u); do
+            [ -n "${!v:-}" ] || MISSING="$MISSING $v"
+          done
+          [ -z "$MISSING" ] || { echo "UNSET manifest variables:$MISSING"; echo "envsubst would blank these — refusing to apply"; exit 1; }
+          echo "== all manifest variables are set =="
+
           # PHASE 1 — server dry-run EVERYTHING first, applying nothing. Admission
           # webhooks (the Flink operator's, Strimzi's) reject config the offline
           # pre-flight cannot see: `Forbidden Flink config key: kubernetes.cluster-id`
