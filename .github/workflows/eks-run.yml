@@ -252,6 +252,26 @@ jobs:
             --from-file=jobs/_shared/hudi_tables.py \
             --from-file=jobs/_shared/latency.py \
             --dry-run=client -o yaml | kubectl apply -f -
+          # PHASE 1 — server dry-run EVERYTHING first, applying nothing. Admission
+          # webhooks (the Flink operator's, Strimzi's) reject config the offline
+          # pre-flight cannot see: `Forbidden Flink config key: kubernetes.cluster-id`
+          # got through pre-flight and was only caught at apply time — after 70-*.yaml
+          # had already half-applied, leaving a submitter Job with no cluster and every
+          # manifest from 80-* onward never applied at all.
+          # Dry-running first means a rejection costs seconds and leaves NOTHING
+          # half-created. --validate=false skips openapi download, not the webhooks.
+          echo "== phase 1: server dry-run (no changes) =="
+          DRYFAIL=0
+          for f in $(ls infra/aws/k8s/*.yaml | sort); do
+            case "$(basename "$f")" in 96-alerts.yaml) R=$(kubectl apply --dry-run=server -f "$f" 2>&1) ;;
+                                       *)              R=$(envsubst < "$f" | kubectl apply --dry-run=server -f - 2>&1) ;; esac
+            # An "already exists"/immutable complaint on a re-apply is not a rejection.
+            if [ $? -ne 0 ] && ! echo "$R" | grep -qiE 'already exists|field is immutable'; then
+              echo "  REJECTED $(basename "$f"):"; echo "$R" | sed 's/^/      /'; DRYFAIL=1
+            fi
+          done
+          [ "$DRYFAIL" = 0 ] || { echo "manifests rejected by admission — nothing applied"; exit 1; }
+          echo "== phase 2: apply =="
           for f in $(ls infra/aws/k8s/*.yaml | sort); do
             # 96-alerts.yaml is applied WITHOUT envsubst. Prometheus annotations use Go
             # templating ({{ $labels.pod }}, {{ $value }}), and envsubst treats
