@@ -137,6 +137,18 @@ ERR=$($KB -n spark get pods --no-headers 2>/dev/null | grep -c Error)
 BEHIND=$($KB -n spark logs -l spark-role=driver --tail=200 --max-log-requests=10 2>/dev/null | grep -c 'falling behind')
 [ "${BEHIND:-0}" = 0 ] && ok "no microbatch overruns" || warn "$BEHIND 'falling behind' warnings — batches exceed the trigger (executor sizing?)"
 
+echo "== 6b. latency telemetry (feeds the Grafana dashboard) =="
+if [ "$EXEC_OK" = 1 ]; then
+  LAT=$($KB -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic pipeline_latency 2>/dev/null | awk -F: '{s+=$3} END {print s+0}')
+  [ "${LAT:-0}" -gt 0 ] && ok "pipeline_latency has $LAT events" \
+    || bad "pipeline_latency EMPTY — no pipeline is emitting; the Grafana dashboard will read No data"
+fi
+EXP=$($KB -n streaming get deploy latency-exporter -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+[ "${EXP:-0}" -ge 1 ] && ok "latency-exporter ready" \
+  || bad "latency-exporter not ready — check the ReplicaSet events (a missing serviceaccount shows there, NOT on the Deployment)"
+DASH=$($KB -n monitoring get configmap grafana-dashboard-pipeline-comparison --no-headers 2>/dev/null | wc -l)
+[ "${DASH:-0}" -ge 1 ] && ok "grafana dashboard ConfigMap present" || bad "grafana dashboard ConfigMap missing"
+
 echo "== 7. data files in S3 (the actual point) =="
 for spec in "delta:s3://$WAREHOUSE/delta/:parquet" "iceberg:s3://$WAREHOUSE/iceberg/:parquet" "hudi:s3://$WAREHOUSE/hudi/:parquet|log" "paimon:s3://$PAIMON/paimon/:parquet|orc|avro"; do
   n="${spec%%:*}"; rest="${spec#*:}"; path="${rest%:*}"; pat="${rest##*:}"

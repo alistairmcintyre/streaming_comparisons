@@ -219,6 +219,7 @@ jobs:
             --from-file=jobs/_shared/delta_tables.py \
             --from-file=jobs/_shared/iceberg_tables.py \
             --from-file=jobs/_shared/hudi_tables.py \
+            --from-file=jobs/_shared/latency.py \
             --dry-run=client -o yaml | kubectl apply -f -
           for f in $(ls infra/aws/k8s/*.yaml | sort); do
             envsubst < "$f" | kubectl apply -f -

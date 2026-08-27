@@ -57,3 +57,28 @@ SELECT
     CAST(NULL AS INT)                                                  AS kafka_partition
 FROM kafka_trades_src
 WHERE `after`.trade_id IS NOT NULL;
+
+-- ── Latency emit ────────────────────────────────────────────────────────────
+-- Feeds the `pipeline_latency` topic that docker/latency-exporter consumes.
+-- CAVEAT that matters when reading results: Flink SQL has no post-commit hook, so
+-- this samples at PROCESSING time, whereas the Spark engines emit after their write
+-- returns (post-commit). Flink numbers therefore EXCLUDE the sink commit while Spark
+-- numbers include it — compare within a family freely, across families with care.
+-- MOD 997 keeps this to ~0.1% of rows: emitting every record would add measurement
+-- traffic to the very Kafka the pipelines read from.
+CREATE TEMPORARY TABLE latency_sink (
+    `value` STRING
+) WITH (
+    'connector'                    = 'kafka',
+    'topic'                        = 'pipeline_latency',
+    'properties.bootstrap.servers' = '${KAFKA_BOOTSTRAP}',
+    'format'                       = 'raw'${KAFKA_EXTRA_OPTS}
+);
+
+INSERT INTO latency_sink
+SELECT
+    '{"pipeline":"paimon-bronze","executed_at_ms":'
+    || CAST(UNIX_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z''') * 1000 AS STRING)
+    || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING) || '}'
+FROM kafka_trades_src
+WHERE `after`.trade_id IS NOT NULL AND MOD(`after`.trade_id, 997) = 0;
