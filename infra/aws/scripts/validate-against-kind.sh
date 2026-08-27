@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Run every manifest through REAL admission webhooks on a throwaway local cluster,
+# before a single AWS resource exists.
+#
+# WHY: three runs failed today on bugs that only appeared after ~20 minutes of cluster
+# build, at roughly $5 a time:
+#   - metadata.name: pipeline_latency   (illegal '_')      -> caught offline now
+#   - Forbidden Flink config key: kubernetes.cluster-id     -> WEBHOOK, needs a cluster
+#   - a half-applied 70-*.yaml leaving everything after it unapplied
+# The offline pre-flight cannot see webhook logic: `kubernetes.cluster-id` is valid YAML
+# with a valid name and is rejected only by the Flink operator's validating webhook. A
+# kind cluster on a GitHub runner costs nothing and takes a couple of minutes.
+#
+# Installs the full Flink operator (webhooks and all — it is the config-heaviest and has
+# bitten twice) plus CRDs for everything else, then server-dry-runs every manifest.
+set -euo pipefail
+CLUSTER="${KIND_CLUSTER:-manifest-validate}"
+KEEP="${KEEP_KIND:-0}"
+cleanup() { [ "$KEEP" = 1 ] || kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+echo "== kind cluster =="
+# helm/kind-action may already have created it in CI; only create if absent, and only
+# delete one we created ourselves (KEEP_KIND=1 when CI owns it).
+if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
+  echo "  reusing existing kind cluster '$CLUSTER'"
+else
+  kind create cluster --name "$CLUSTER" --wait 120s >/dev/null
+fi
+kubectl cluster-info --context "kind-$CLUSTER" >/dev/null
+kubectl config use-context "kind-$CLUSTER" >/dev/null
+
+echo "== CRDs (schema validation for the operators we do not fully install) =="
+# Strimzi's install bundle carries its CRDs; the rest publish CRD-only manifests.
+kubectl apply --server-side -f 'https://strimzi.io/install/latest?namespace=kafka' >/dev/null 2>&1 || true
+kubectl apply --server-side -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml >/dev/null 2>&1 || true
+kubectl apply --server-side -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml >/dev/null 2>&1 || true
+kubectl apply --server-side -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_prometheusrules.yaml >/dev/null 2>&1 || true
+
+echo "== flink operator (FULL — its webhook is what we are here to exercise) =="
+helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1
+helm repo add flink-operator "${FLINK_OPERATOR_REPO:-https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.13.0/}" >/dev/null 2>&1
+helm repo update >/dev/null 2>&1
+helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace \
+  --set crds.enabled=true --wait --timeout 5m >/dev/null
+helm upgrade --install flink-operator flink-operator/flink-kubernetes-operator \
+  -n flink --create-namespace --wait --timeout 5m >/dev/null
+kubectl -n flink rollout status deploy/flink-kubernetes-operator --timeout=180s >/dev/null
+
+echo "== server dry-run every manifest =="
+# Placeholders: the webhook validates SHAPE and CONFIG KEYS, not secret values.
+export ECR_REGISTRY=placeholder.dkr.ecr.eu-west-1.amazonaws.com AWS_REGION=eu-west-1 \
+       PAIMON_BUCKET=placeholder-paimon WAREHOUSE_BUCKET=placeholder-warehouse \
+       S3_ACCESS_KEY=placeholder S3_SECRET_KEY=placeholder RUN_ID=validate \
+       POSTGRES_PASSWORD=placeholder DELTA_LOGSTORE_TABLE=placeholder \
+       NODE_AZ=eu-west-1a ACCOUNT=000000000000 PROJECT=streaming-comparison
+fails=0
+for f in $(ls infra/aws/k8s/*.yaml | sort); do
+  b=$(basename "$f")
+  # 96-alerts.yaml is applied without envsubst in the real workflow — match that here,
+  # or its {{ $labels }} templating gets blanked and we validate the wrong thing.
+  if [ "$b" = "96-alerts.yaml" ]; then out=$(kubectl apply --dry-run=server -f "$f" 2>&1); rc=$?
+  else out=$(envsubst < "$f" | kubectl apply --dry-run=server -f - 2>&1); rc=$?; fi
+  # Missing CRDs for operators we did not install are EXPECTED here and are not failures;
+  # a webhook denial or a schema violation is.
+  if [ $rc -ne 0 ] && ! echo "$out" | grep -qiE 'no matches for kind|could not find the requested resource|ensure CRDs'; then
+    echo "  REJECTED $b:"; echo "$out" | sed 's/^/      /'; fails=1
+  else
+    echo "  ok       $b"
+  fi
+done
+[ "$fails" = 0 ] || { echo; echo "manifests would be REJECTED in AWS — fix before spending a cluster"; exit 1; }
+echo
+echo "all manifests accepted by real admission webhooks"

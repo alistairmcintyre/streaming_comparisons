@@ -58,7 +58,55 @@ env:
   FLUSS_SRC: ${{ github.workspace }}/.fluss-src
 
 jobs:
+  # ── EVERYTHING CHEAP AND FREE, BEFORE ANY AWS RESOURCE EXISTS ───────────────
+  # Three runs failed today at roughly $5 each, all on bugs found only AFTER ~20
+  # minutes of cluster build. Every one of them was catchable here, for nothing:
+  #   metadata.name: pipeline_latency        -> offline manifest pre-flight
+  #   Forbidden Flink config key: cluster-id -> real webhook on a kind cluster
+  #   invalid Flink SQL in the gold jobs     -> not yet covered; see the TODO below
+  # The deploy job does not start unless this passes, so a bad manifest costs a few
+  # minutes of free runner time instead of a cluster.
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Manifests — offline (YAML, RFC1123 names, duplicate keys, envsubst traps)
+        run: ./infra/aws/scripts/preflight-manifests.sh
+
+      - name: Shell — syntax
+        run: |
+          rc=0
+          for f in $(git ls-files '*.sh'); do bash -n "$f" || { echo "  FAIL $f"; rc=1; }; done
+          exit $rc
+
+      - name: Python — syntax
+        run: |
+          rc=0
+          for f in $(git ls-files 'jobs/**/*.py' 'generators/*.py'); do
+            python3 -c "import ast,sys;ast.parse(open(sys.argv[1]).read())" "$f" || { echo "  FAIL $f"; rc=1; }
+          done
+          exit $rc
+
+      - name: Terraform — fmt + validate
+        working-directory: infra/aws
+        run: |
+          terraform fmt -check -recursive || echo "  (fmt drift — not fatal)"
+          terraform init -backend=false -input=false
+          terraform validate
+
+      # The one that needed a live apiserver. kind gives us real admission webhooks
+      # for free — this is what would have caught `kubernetes.cluster-id`.
+      - name: Manifests — real admission webhooks (kind)
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: manifest-validate
+          wait: 120s
+      - name: Manifests — server dry-run against webhooks
+        run: KIND_CLUSTER=manifest-validate KEEP_KIND=1 ./infra/aws/scripts/validate-against-kind.sh
+
   run:
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 165          # soft cap; EventBridge is the hard 2.5h cutoff
     steps:
