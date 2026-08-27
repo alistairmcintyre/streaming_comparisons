@@ -81,15 +81,19 @@ echo "== compiling $JOBS_DIR/*.sql against a local Flink =="
 docker run --rm -v "$WORK/sql:/sql:ro" -v "$WORK/run.sh:/run.sh:ro" \
   --entrypoint bash "$IMG" /run.sh > "$WORK/out.txt" 2>&1
 
-# Planning/validation failures. Runtime failures (no Kafka broker here) are EXPECTED
-# and must not fail the check — a job that compiled is a job whose SQL is valid.
+# Planning/validation failures. Runtime failures (no Kafka broker here) are EXPECTED and
+# must not fail the check — a job that compiled is a job whose SQL is valid.
+# The exclusion matches CONNECTION exception types, not the bare word 'kafka'. Excluding
+# any line mentioning kafka also swallows PLANNING errors about Kafka tables — which is
+# precisely bug #80's class (an append-only Kafka sink refusing an updating stream). The
+# real one was caught only because its message happened not to contain the word.
 # The SQL client ECHOES its input prefixed with '>' , and these files contain comments
 # quoting the very errors we grep for (written to document them). Matching those would
 # fail every run on its own documentation — the same trap as scanning YAML comments.
 # Strip echoed input and SQL comments first, then look for real planner output.
 PLAN_ERR=$(grep -vE '^\s*>|^\s*--' "$WORK/out.txt" \
            | grep -nE 'TableException|ValidationException|SqlParserException|Could not execute SQL' \
-           | grep -viE 'kafka|broker|timeout|UnknownHost|Connection refused' || true)
+           | grep -viE 'TimeoutException|UnknownHostException|ConnectException|Connection refused|Failed to send data to Kafka|NetworkException' || true)
 if [ -n "$PLAN_ERR" ]; then
   echo "SQL PLANNING ERRORS — these would have cost a cluster:"
   echo "$PLAN_ERR" | head -20 | sed 's/^/  /'

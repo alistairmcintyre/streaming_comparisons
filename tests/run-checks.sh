@@ -62,16 +62,26 @@ if [ -n "$ALL" ]; then
     d=$(mktemp -d); cp jobs/flink-paimon/*.sql "$d/"
     sed -i "s|=\s*.lookup.,|= \x27none\x27,|" "$d/create_tables.sql"
     JOBS_DIR="$d" ./infra/aws/scripts/validate-flink-sql.sh'
-  # #80 — an append-only sink fed by a GROUP BY
+  # #80 — an append-only sink fed by a GROUP BY. The SQL is written by python so the
+  # quoting does not depend on nested bash heredoc escaping; the first version emitted
+  # literal \x27 instead of quotes and therefore never reproduced the bug at all.
   expect "catches updating-stream into append sink" 1 bash -c '
     d=$(mktemp -d); cp jobs/flink-paimon/*.sql "$d/"
-    cat >> "$d/gold_open_positions.sql" <<EOF
+    python3 - "$d" <<PYEOF
+import sys, pathlib
+f = pathlib.Path(sys.argv[1]) / "gold_open_positions.sql"
+f.write_text(f.read_text() + """
 CREATE TEMPORARY TABLE probe_sink (\`value\` STRING) WITH (
-  \x27connector\x27=\x27kafka\x27, \x27topic\x27=\x27t\x27,
-  \x27properties.bootstrap.servers\x27=\x27localhost:9092\x27, \x27format\x27=\x27raw\x27);
+    '"'"'connector'"'"' = '"'"'kafka'"'"',
+    '"'"'topic'"'"' = '"'"'probe'"'"',
+    '"'"'properties.bootstrap.servers'"'"' = '"'"'localhost:9092'"'"',
+    '"'"'format'"'"' = '"'"'raw'"'"'
+);
 INSERT INTO probe_sink SELECT CAST(account_id AS STRING) FROM gold_book;
-EOF
+""")
+PYEOF
     JOBS_DIR="$d" ./infra/aws/scripts/validate-flink-sql.sh'
+
 else
   echo "  (skipping Docker checks — run with --all)"
 fi
