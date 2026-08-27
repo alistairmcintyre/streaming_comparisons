@@ -55,9 +55,11 @@ metadata:
   labels: { release: kube-prometheus-stack }
 spec:
   selector: { matchLabels: { type: flink-native-kubernetes } }
-  # targetPort, not port: the Flink operator does not name the reporter's container
-  # port, so a name-based selector matches nothing. 9249 is metrics.reporter.prom.port.
-  podMetricsEndpoints: [{ targetPort: 9249, interval: 5s }]
+  # `port: metrics` — the name declared by the podTemplate in 70-/92-flink-*.yaml.
+  # This previously used `targetPort: 9249`, which produced NO targets at all because
+  # nothing declared that port on the pod. Prometheus showed 78 healthy targets and
+  # not one of them was Flink, so every flink_* alert was inert while looking fine.
+  podMetricsEndpoints: [{ port: metrics, interval: 5s }]
 ---
 # Scrape the Strimzi Kafka Exporter (consumer lag + topic offsets). Strimzi labels the
 # exporter pod strimzi.io/kind=KafkaExporter and serves metrics on 9404.

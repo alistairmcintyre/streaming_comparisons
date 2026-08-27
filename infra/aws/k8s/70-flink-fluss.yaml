@@ -58,6 +58,14 @@ spec:
       containers:
         - name: flink-main-container
           volumeMounts: [{ name: remote, mountPath: /fluss-remote-data }]
+          # The metrics reporter binds 9249, but the Flink operator does NOT add it to
+          # the container spec — JM pods declare only 8081/6123/6124. A PodMonitor
+          # cannot select a port the pod never declares, so it produced ZERO targets
+          # and every flink_* metric was absent (verified live: Prometheus had 78
+          # healthy targets, not one of them Flink). Declaring it named makes the
+          # reporter scrapeable.
+          ports:
+            - { containerPort: 9249, name: metrics }
 ---
 # Submitter: renders SQL for aws + submits create/bronze/gold + starts tiering.
 apiVersion: batch/v1

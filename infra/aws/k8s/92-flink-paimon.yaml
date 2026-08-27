@@ -43,6 +43,17 @@ spec:
     s3.secret-key: "${S3_SECRET_KEY}"
     state.backend: rocksdb
     execution.checkpointing.interval: "10s"
+  # The metrics reporter binds 9249, but the Flink operator does NOT add it to the
+  # container spec — the JM pods declare only 8081/6123/6124. A PodMonitor cannot select
+  # a port the pod never declares, so it produced ZERO targets and every flink_* metric
+  # was absent (verified live: Prometheus had 78 healthy targets and not one was Flink).
+  # Declaring it here, named, is what makes the reporter scrapeable.
+  podTemplate:
+    spec:
+      containers:
+        - name: flink-main-container
+          ports:
+            - { containerPort: 9249, name: metrics }
   jobManager: { resource: { memory: "1600m", cpu: 1 } }
   taskManager: { resource: { memory: "4096m", cpu: 2 } }
   mode: native

@@ -58,6 +58,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # FIRST, before anything is provisioned. An invalid manifest was previously only
+      # discovered by applying it to a live cluster — ~25 minutes and a cluster's worth
+      # of money in. `metadata.name: pipeline_latency` (illegal '_') burned a deploy
+      # exactly that way, and it is catchable here in under a second, for free.
+      # Runs before OIDC on purpose: it needs no credentials and no AWS at all.
+      - name: Pre-flight — validate manifests
+        run: ./infra/aws/scripts/preflight-manifests.sh
+
       - name: Assume deploy role (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
