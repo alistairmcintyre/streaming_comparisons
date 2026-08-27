@@ -61,13 +61,18 @@ resource "aws_codebuild_project" "teardown" {
             - unzip -o /tmp/tf.zip -d /usr/local/bin
         build:
           commands:
-            # 1) full, dependency-ordered teardown FIRST. Deleting the EKS cluster
-            #    kills Karpenter — terminating EC2 while the control plane is alive
-            #    just makes Karpenter launch replacements (seen live 2026-08-25:
-            #    3 terminated -> 4 new within minutes).
+            # Three phases. Terminating EC2 while the control plane is ALIVE just makes
+            # Karpenter launch replacements (seen live 2026-08-25: 3 terminated -> 4 new
+            # within minutes) — but a FULL destroy first blocks on a security group those
+            # same nodes hold. So: kill the control plane, terminate, then destroy the
+            # rest. Same moves as before, ordered so neither blocks the other.
             - terraform init -input=false
-            - terraform destroy -auto-approve -input=false || true
-            # 2) NOW terminate any leftover cluster EC2 (Karpenter is dead, they stay dead)
+            # PHASE 1 — EKS only. Kills Karpenter so its nodes stop being replaced.
+            # A full destroy here blocks ~13 minutes on the node security group, whose
+            # ENIs belong to Karpenter instances that are NOT in Terraform state and are
+            # only terminated by the step queued behind it (seen live 2026-08-27).
+            - terraform destroy -target=module.eks -auto-approve -input=false || true
+            # PHASE 2 — terminate leftovers now, while nothing is waiting on them.
             - |
               IDS=$(aws ec2 describe-instances --region "$AWS_REGION" \
                 --filters "Name=tag:kubernetes.io/cluster/$CLUSTER_NAME,Values=owned" \
@@ -81,7 +86,7 @@ resource "aws_codebuild_project" "teardown" {
                 --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
                 aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
               done
-            # 2c) second destroy pass finishes anything the leftovers blocked (VPC/subnet/SG)
+            # PHASE 3 — everything else; SG and VPC now delete promptly.
             - terraform destroy -auto-approve -input=false
             # 3) sweep CSI-provisioned EBS orphans (PVCs; cluster gone before delete)
             - |
