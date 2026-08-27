@@ -74,10 +74,14 @@ spec:
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
-  name: pipeline_latency
+  # RFC 1123: a k8s resource name cannot contain '_'. The Kafka topic IS
+  # pipeline_latency, so the resource is named with a '-' and spec.topicName carries
+  # the real name. This is what 94-observability.yaml did before it was folded in here.
+  name: pipeline-latency
   namespace: kafka
   labels: { strimzi.io/cluster: trades }
 spec:
+  topicName: pipeline_latency
   # 6, matching the resource this replaces in 94-observability.yaml. Kafka rejects a
   # partition-count DECREASE, so lowering it would wedge the topic operator.
   partitions: 6
