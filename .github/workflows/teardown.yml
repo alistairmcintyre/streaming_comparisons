@@ -163,5 +163,9 @@ jobs:
           chk "available ebs"  0 "$(aws ec2 describe-volumes --filters "Name=status,Values=available" --query 'length(Volumes)' --output text)"
           chk "unattached eip" 0 "$(aws ec2 describe-addresses --query "length(Addresses[?AssociationId==null])" --output text)"
           chk "$CN iam roles"  0 "$(aws iam list-roles --query "length(Roles[?starts_with(RoleName,'$CN')])" --output text)"
-          chk "tf state"       0 "$(terraform state list 2>/dev/null | grep -vcE '^data\.' || echo 0)"
+          # `grep -c` EXITS 1 when the count is zero, so `|| echo 0` fired *after* grep
+          # had already printed "0" — the substitution captured "0\n0", which never
+          # equals "0", and a perfectly clean teardown reported TEARDOWN INCOMPLETE.
+          # `wc -l` always succeeds and emits exactly one number.
+          chk "tf state"       0 "$(terraform state list 2>/dev/null | grep -vE '^data\.' | wc -l | tr -d ' ')"
           [ "$fail" = 0 ] && echo "teardown verified clean" || { echo "TEARDOWN INCOMPLETE — see LEFT lines above"; exit 1; }
