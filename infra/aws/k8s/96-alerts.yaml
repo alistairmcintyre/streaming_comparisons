@@ -1,0 +1,126 @@
+# Alerting rules. kube-prometheus-stack ships Prometheus + Alertmanager and this
+# project had ZERO rules — the recurring lesson in DEPLOY_LOG is "RUNNING is not
+# working", and nothing was watching for the difference.
+#
+# Every rule below is written against a metric that is actually collected:
+#   kafka_consumergroup_lag, kafka_topic_partition_current_offset
+#       <- Strimzi kafkaExporter (30-kafka.yaml) + its PodMonitor
+#   flink_jobmanager_*         <- the Prometheus reporter (70-/92-flink-*.yaml)
+#   processing_delay_seconds, pipeline_latency_events_total
+#       <- docker/latency-exporter, scraped by the ServiceMonitor
+#   kube_*, kubelet_volume_stats_*  <- kube-state-metrics / kubelet, always present
+#
+# Writing a rule against a metric that does not exist produces a rule that never fires
+# and is indistinguishable from a healthy system — the exact failure mode these are
+# meant to catch, so the reporter and exporter gaps were fixed first.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: streaming-pipelines
+  namespace: monitoring
+  labels: { release: kube-prometheus-stack }
+spec:
+  groups:
+    - name: streaming.flow
+      interval: 30s
+      rules:
+        # THE headline health signal. Growing lag means a pipeline is permanently
+        # behind, which no other dashboard panel distinguishes from healthy.
+        - alert: ConsumerGroupLagGrowing
+          expr: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 100000
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ $labels.consumergroup }} is {{ $value | humanize }} behind on {{ $labels.topic }}"
+            description: "Sustained 10m. The pipeline is not keeping up with the load; every latency number it reports is a lower bound."
+
+        - alert: ConsumerGroupStalled
+          expr: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 0
+                and sum by (consumergroup, topic) (rate(kafka_consumergroup_current_offset[10m])) == 0
+          for: 10m
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ $labels.consumergroup }} has lag but is not consuming"
+            description: "Offsets have not advanced in 10m while lag is non-zero — the consumer is stuck, not merely slow."
+
+        # A pipeline that stops emitting looks exactly like a pipeline with no delay.
+        - alert: PipelineStoppedEmitting
+          expr: sum by (pipeline) (rate(pipeline_latency_events_total[5m])) == 0
+          for: 10m
+          labels: { severity: critical }
+          annotations:
+            summary: "pipeline {{ $labels.pipeline }} has emitted nothing for 10m"
+            description: "Either the pipeline stopped or its emit broke. Zero events renders as zero delay on the dashboard, so this must alert rather than be read off a panel."
+
+        - alert: ProcessingDelayHigh
+          expr: histogram_quantile(0.95, sum by (le, pipeline) (rate(processing_delay_seconds_bucket[5m]))) > 300
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ $labels.pipeline }} p95 processing delay {{ $value | humanizeDuration }}"
+
+        # The DLQ must be empty. Anything in it means Debezium is rejecting records and
+        # the run's correctness numbers cannot be trusted.
+        - alert: DeadLetterQueueNonEmpty
+          expr: sum(kafka_topic_partition_current_offset{topic="debezium-dlq"}) > 0
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: "debezium-dlq has {{ $value }} records"
+            description: "Records are being rejected. See infra/aws/ERROR_HANDLING.md; the run's counts are not trustworthy until this is explained."
+
+    - name: streaming.jobs
+      interval: 30s
+      rules:
+        # restartPolicy: Always with a 10s interval means a deterministically-failing
+        # job (bad schema, missing credential) crash-loops forever while still
+        # reporting as deployed. Nothing capped it and nothing watched it.
+        - alert: PodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace=~"spark|flink|kafka|fluss|streaming"}[15m]) > 3
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} restarted {{ $value }}x in 15m"
+
+        - alert: FlinkCheckpointsFailing
+          expr: increase(flink_jobmanager_job_numberOfFailedCheckpoints[15m]) > 2
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "Flink job {{ $labels.job_name }} is failing checkpoints"
+            description: "Exactly-once depends on checkpoints completing. Repeated failures mean the job cannot recover without replaying, and state is growing unbounded meanwhile."
+
+        - alert: FlinkCheckpointDurationHigh
+          expr: flink_jobmanager_job_lastCheckpointDuration > 60000
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "Flink {{ $labels.job_name }} checkpoint took {{ $value }}ms"
+            description: "Approaching the 60s timeout. Usually the first symptom of unbounded operator state — see the MIN/MAX note in the gold SQL."
+
+        - alert: FlinkJobRestarting
+          expr: increase(flink_jobmanager_job_numRestarts[30m]) > 3
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "Flink {{ $labels.job_name }} restarted {{ $value }}x in 30m"
+
+    - name: streaming.capacity
+      interval: 60s
+      rules:
+        # Kafka retention is now declared (31-kafka-topics.yaml), but a misconfigured
+        # topic or an unforeseen volume still ends at a full broker, which loses data.
+        - alert: KafkaBrokerDiskFilling
+          expr: kubelet_volume_stats_used_bytes{namespace="kafka"}
+                / kubelet_volume_stats_capacity_bytes{namespace="kafka"} > 0.75
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "Kafka PVC {{ $labels.persistentvolumeclaim }} {{ $value | humanizePercentage }} full"
+
+        - alert: PersistentVolumeFilling
+          expr: kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes > 0.85
+          for: 10m
+          labels: { severity: critical }
+          annotations:
+            summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} {{ $value | humanizePercentage }} full"

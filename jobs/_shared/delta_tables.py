@@ -92,7 +92,26 @@ def create_gold_open_positions(spark):
         StructField("account_id", LongType(), False), StructField("symbol", StringType(), False),
         StructField("net_quantity", LongType()), StructField("net_notional", DecimalType(38, 4)),
         StructField("trade_count", LongType()), StructField("status", StringType()),
-        StructField("country", StringType()), StructField("tier", StringType()),
+        # country/tier are NOT denormalised here. They are account attributes, not
+        # position attributes, and a current-state table has no defensible temporal
+        # semantic for them: the value would be "whatever the last batch that happened
+        # to touch this row saw" — neither the account's country now, nor its country
+        # at the fill. gen_accounts.py trickles real SCD updates, so that is live, not
+        # theoretical. Enrich at query time instead:
+        #   SELECT p.*, a.country, a.tier
+        #   FROM gold.open_positions p LEFT JOIN silver.accounts a USING (account_id)
+        # LEFT, always: the trades and accounts CDC streams are independent, so a fill
+        # can land before its account row. An inner join would silently drop those
+        # positions from the book.
+        # EVENT-time lineage: opened_at = MIN(executed_at) for the position,
+        # last_updated_at = MAX(executed_at). commit_ts stays PROCESSING time, so
+        # (commit_ts - last_updated_at) is a per-row processing delay, uniform across
+        # engines and computable from the table itself with no emit chain involved.
+        # opened_at is NOT reset when a flat position reopens: that is easy here in
+        # the MERGE and impossible as a pure Flink fold, so it would make the Spark
+        # and Flink golds disagree on identical input.
+        StructField("opened_at", TimestampType()),
+        StructField("last_updated_at", TimestampType()),
         StructField("commit_ts", TimestampType()),
     ])
     (DeltaTable.createIfNotExists(spark)

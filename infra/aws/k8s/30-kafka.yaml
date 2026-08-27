@@ -45,7 +45,25 @@ spec:
       offsets.topic.replication.factor: 3
       transaction.state.log.replication.factor: 3
       transaction.state.log.min.isr: 2
-      auto.create.topics.enable: "true"
+      # OFF. With auto-create on, a consumer subscribing to a misspelled topic
+      # silently creates an empty one and then reports zero lag forever — the exact
+      # class of silent failure this project keeps getting bitten by. Every topic is
+      # declared in 31-kafka-topics.yaml; Connect still creates its own internal and
+      # routed topics explicitly via AdminClient, which auto-create does not gate.
+      auto.create.topics.enable: "false"
+      # Broker-level backstop so an undeclared topic can never inherit unbounded
+      # retention. Per-topic config in 31-kafka-topics.yaml overrides these.
+      log.retention.hours: 168
+      log.retention.bytes: 5368709120
+      log.segment.bytes: 268435456
   entityOperator:
     topicOperator: {}
     userOperator: {}
+  # Consumer-group lag as a Prometheus metric. Without this there is no lag signal at
+  # all outside `kafka-consumer-groups.sh` run by hand — so a pipeline falling
+  # permanently behind looks identical to a healthy one on every dashboard. Lag is the
+  # single most important streaming health metric and it was not being collected.
+  # Exposes kafka_consumergroup_lag + kafka_topic_partition_current_offset on :9404.
+  kafkaExporter:
+    topicRegex: ".*"
+    groupRegex: ".*"

@@ -102,7 +102,9 @@ echo "== 4. flink — fluss =="
 FJ=$($KB -n flink exec deploy/fluss-flink -- curl -s localhost:8081/jobs/overview 2>/dev/null)
 if [ -n "$FJ" ]; then
   R=$(echo "$FJ" | python3 -c "import json,sys;print(sum(1 for j in json.load(sys.stdin)['jobs'] if j['state']=='RUNNING'))" 2>/dev/null)
-  [ "${R:-0}" -ge 3 ] && ok "fluss jobs RUNNING ($R: bronze+gold+tiering)" || bad "only ${R:-0}/3 fluss jobs RUNNING"
+  # 4 jobs: silver_trades (Kafka→Fluss, one STATEMENT SET with its latency sink),
+  # silver_accounts (the dimension gold enriches from), gold_open_positions, tiering.
+  [ "${R:-0}" -ge 4 ] && ok "fluss jobs RUNNING ($R: silver trades+accounts, gold, tiering)" || bad "only ${R:-0}/4 fluss jobs RUNNING"
   # Is data actually IN Fluss? Tiering having created the Paimon tables proves only
   # that it connected — not that Fluss holds rows to tier.
   echo "$FJ" | python3 -c "
@@ -118,7 +120,7 @@ for v in d.get('vertices',[]):
     if m.get('write-records',0) or m.get('read-records',0):
         print(v['name'][:28], 'in=',m.get('read-records'), 'out=',m.get('write-records'))
 " 2>/dev/null)
-    [ -n "$OUT" ] && echo "        fluss bronze vertices: $OUT"
+    [ -n "$OUT" ] && echo "        fluss silver vertices: $OUT"
   done
 fi
 FD=$(aws s3 ls "s3://$PAIMON/fluss/" --recursive 2>/dev/null | grep -cE '\.(parquet|orc|avro)$')
@@ -127,7 +129,8 @@ FD=$(aws s3 ls "s3://$PAIMON/fluss/" --recursive 2>/dev/null | grep -cE '\.(parq
 
 echo "== 5. flink — paimon =="
 PJ=$($KB -n flink exec deploy/flink-paimon -- curl -s localhost:8081/jobs/overview 2>/dev/null | python3 -c "import json,sys;print(sum(1 for j in json.load(sys.stdin)['jobs'] if j['state']=='RUNNING'))" 2>/dev/null)
-[ "${PJ:-0}" -ge 3 ] && ok "paimon jobs RUNNING ($PJ)" || bad "only ${PJ:-0} paimon jobs RUNNING"
+# 4 jobs: bronze_trades, silver_trades, silver_accounts, gold_open_positions.
+[ "${PJ:-0}" -ge 4 ] && ok "paimon jobs RUNNING ($PJ)" || bad "only ${PJ:-0}/4 paimon jobs RUNNING"
 
 echo "== 6. spark =="
 SR=$($KB -n spark get sparkapplications -o jsonpath='{.items[*].status.applicationState.state}' 2>/dev/null | tr ' ' '\n' | grep -c RUNNING)

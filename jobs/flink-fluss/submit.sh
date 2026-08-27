@@ -35,11 +35,16 @@ EOF
 
 # ── Lake env (where the Paimon warehouse + Iceberg catalog live) ────────────
 if [ "${DEPLOY_ENV}" = "aws" ]; then
-  # Register the tiered Paimon tables' Iceberg metadata in Glue → Athena reads them.
+  # hadoop-catalog, NOT hive-catalog. hive-catalog needs AWSCatalogMetastoreClient,
+  # which AWS publishes source-only (never to Maven Central), so this image carries no
+  # Hive/Glue jars and every Iceberg commit died with NoClassDefFoundError — the tiered
+  # tables got data files but no metadata.json, leaving them invisible to Athena. This
+  # is the same fix the flink-paimon path already took (DEPLOY_LOG #30); it was never
+  # applied here. Paimon then writes real Iceberg metadata to
+  # <warehouse>/iceberg/<db>/<table>/metadata/ and register-glue-tables.sh points Glue
+  # at it — the same route every other non-Spark engine uses.
   FLUSS_ICEBERG_OPTS=",
-    'paimon.metadata.iceberg.storage' = 'hive-catalog',
-    'paimon.metadata.iceberg.hive-client-class' = 'com.amazonaws.glue.catalog.metastore.AWSCatalogMetastoreClient',
-    'paimon.metadata.iceberg.manifest-legacy-version' = 'true'"
+    'paimon.metadata.iceberg.storage' = 'hadoop-catalog'"
   # paimon-s3 needs static keys (no IRSA) — injected from SSM via env (S3_ACCESS_KEY/
   # S3_SECRET_KEY). Real S3 → no endpoint/path-style.
   DATALAKE_S3_ARGS="--datalake.paimon.s3.region ${AWS_REGION} \
@@ -92,10 +97,13 @@ for attempt in $(seq 1 24); do
 done
 
 submit_job() { render "$1"; echo "Submitting: $1"; ${SQL_CLIENT} -f "${RENDER_DIR}/$1" & }
-submit_job "bronze_trades.sql"
+# Fluss has no bronze: the PK table IS the cleaned deduped view, so silver.trades is
+# fed straight from Kafka. accounts is the dimension gold joins for country/tier.
+submit_job "silver_trades.sql"
+submit_job "silver_accounts.sql"
 submit_job "gold_open_positions.sql"
 wait
-echo "Bronze + gold submitted."
+echo "Silver (trades + accounts) + gold submitted."
 
 # ── Fluss → Paimon lakehouse tiering service ────────────────────────────────
 TIERING_JAR=$(ls ${FLINK_HOME}/opt/fluss-flink-tiering-*.jar | head -1)

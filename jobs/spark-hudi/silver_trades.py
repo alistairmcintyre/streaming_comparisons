@@ -18,6 +18,16 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
 
     # Hudi streaming source reads the commit timeline incrementally.
+    # NO per-batch admission control. Delta caps its stream with maxFilesPerTrigger
+    # and Iceberg with streaming-max-files-per-micro-batch; Hudi 1.2.0 exposes no
+    # equivalent — there is no ReadLimit machinery and no hoodie.* option for it
+    # (checked against hudi-spark4.0-bundle_2.13-1.2.0.jar). So after a stall this
+    # source pulls the whole backlog in one micro-batch.
+    # This is a real capability difference, not an oversight, and it makes Hudi's
+    # batch sizes incomparable to the other engines' under recovery — recorded in
+    # results.json rather than papered over. The KEEP_LATEST_BY_HOURS cleaner
+    # retention in hudi_tables.py is what stops the worst case (losing the start
+    # instant and silently falling back to a full-table scan).
     src = (spark.readStream.format("hudi")
            .load(BRONZE_TRADES)
            .select("trade_id", "account_id", "symbol", "side", "quantity", "price",

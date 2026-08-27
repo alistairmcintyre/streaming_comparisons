@@ -247,6 +247,17 @@ jobs:
           role-to-assume: arn:aws:iam::167217327348:role/streaming-comparison-gha-deploy
           aws-region: ${{ env.AWS_REGION }}
 
+      # Drain before measuring. With the generator still running, gold trails silver by
+      # whatever is in flight and bronze trails the Kafka end offset by the consumer lag,
+      # so every correctness figure taken mid-flight shows a shortfall indistinguishable
+      # from real data loss. QUIESCED is threaded into the snapshot so the recorded
+      # numbers always say whether they were taken caught-up or mid-flight.
+      - name: Quiesce (stop load, drain to zero lag)
+        if: always()
+        id: quiesce
+        continue-on-error: true
+        run: infra/aws/scripts/quiesce-run.sh
+
       # Delta and Paimon write to S3 without touching Glue, so Athena cannot see them
       # even though the data is there (only the Spark/Iceberg jobs self-register).
       # Runs AFTER the load window so the tables and their metadata actually exist.
@@ -264,6 +275,9 @@ jobs:
           # differ in wire_format alone — same rate, duration, cluster size.
           export RUN_ID WIRE_FORMAT="${{ inputs.wire_format }}"
           export TRADES_PER_SEC="${{ inputs.trades_per_sec }}" RUN_MINUTES="${{ inputs.run_minutes }}"
+          # invariants.csv / correctness.csv are only readable as correctness if the
+          # pipelines were caught up when they were taken. Record which it was.
+          export QUIESCED="${{ steps.quiesce.outcome == 'success' && 'true' || 'false' }}"
           infra/aws/scripts/snapshot-results.sh
 
       # Teardown policy (the 2.5h EventBridge kill-switch ALWAYS backstops):

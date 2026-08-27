@@ -80,8 +80,17 @@ if [ $# -gt 0 ]; then
 else
   echo "views:  delta_bronze_trades, delta_silver_trades, delta_silver_accounts,"
   echo "        delta_gold_positions, iceberg_bronze_trades"
-  echo "macro:  paimon_trades('${PAI_TRADES:-vNNN.metadata.json}')   # newest at launch"
+  echo "macros: paimon_trades(m), paimon_gold(m), fluss_gold(m)   # m = a metadata.json name"
+  echo "        newest at launch: '${PAI_TRADES:-vNNN.metadata.json}'"
   echo "e.g.    SELECT count(*) FROM delta_gold_positions;"
+  echo "enrich: country/tier are NOT in gold (account attributes, no temporal meaning"
+  echo "        on a current-state row). LEFT JOIN them at read time — LEFT because a"
+  echo "        fill can land before its account row, and INNER would drop the position:"
+  echo "        SELECT p.*, a.country, a.tier FROM delta_gold_positions p"
+  echo "        LEFT JOIN delta_silver_accounts a USING (account_id);"
+  echo "delay:  the headline metric, straight out of gold — no emit chain involved:"
+  echo "        SELECT quantile_cont(epoch_ms(commit_ts)-epoch_ms(last_updated_at), [0.5,0.95,0.99])"
+  echo "        FROM delta_gold_positions WHERE last_updated_at IS NOT NULL;"
   echo "        SELECT count(*) FROM paimon_trades('${PAI_TRADES:-vNNN.metadata.json}');"
   "$DUCKDB" -init "$INIT"
 fi

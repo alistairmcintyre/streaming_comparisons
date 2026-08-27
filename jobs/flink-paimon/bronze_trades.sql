@@ -41,6 +41,32 @@ CREATE TEMPORARY TABLE kafka_trades_src (
     'json.ignore-parse-errors'     = 'false'${KAFKA_EXTRA_OPTS}
 );
 
+-- ── Latency emit ────────────────────────────────────────────────────────────
+-- Feeds the `pipeline_latency` topic that docker/latency-exporter consumes.
+-- CAVEAT that matters when reading results: Flink SQL has no post-commit hook, so
+-- this samples at PROCESSING time, whereas the Spark engines emit after their write
+-- returns (post-commit). Flink numbers therefore EXCLUDE the sink commit while Spark
+-- numbers include it — compare within a family freely, across families with care.
+-- MOD 997 keeps this to ~0.1% of rows: emitting every record would add measurement
+-- traffic to the very Kafka the pipelines read from.
+-- It is also no longer the headline number: the authoritative processing delay is
+-- (commit_ts - last_updated_at) read out of gold.open_positions — uniform across
+-- engines, no emit chain in the loop. This feeds the live Grafana panel.
+CREATE TEMPORARY TABLE latency_sink (
+    `value` STRING
+) WITH (
+    'connector'                    = 'kafka',
+    'topic'                        = 'pipeline_latency',
+    'properties.bootstrap.servers' = '${KAFKA_BOOTSTRAP}',
+    'format'                       = 'raw'${KAFKA_EXTRA_OPTS}
+);
+
+-- One STATEMENT SET so both sinks share a single Kafka source operator. As two
+-- standalone INSERTs the sql-client submits two jobs, each reading the whole topic —
+-- doubling load on the very pipeline being measured.
+EXECUTE STATEMENT SET
+BEGIN
+
 INSERT INTO paimon.bronze.trades
 SELECT
     op,
@@ -58,23 +84,6 @@ SELECT
 FROM kafka_trades_src
 WHERE `after`.trade_id IS NOT NULL;
 
--- ── Latency emit ────────────────────────────────────────────────────────────
--- Feeds the `pipeline_latency` topic that docker/latency-exporter consumes.
--- CAVEAT that matters when reading results: Flink SQL has no post-commit hook, so
--- this samples at PROCESSING time, whereas the Spark engines emit after their write
--- returns (post-commit). Flink numbers therefore EXCLUDE the sink commit while Spark
--- numbers include it — compare within a family freely, across families with care.
--- MOD 997 keeps this to ~0.1% of rows: emitting every record would add measurement
--- traffic to the very Kafka the pipelines read from.
-CREATE TEMPORARY TABLE latency_sink (
-    `value` STRING
-) WITH (
-    'connector'                    = 'kafka',
-    'topic'                        = 'pipeline_latency',
-    'properties.bootstrap.servers' = '${KAFKA_BOOTSTRAP}',
-    'format'                       = 'raw'${KAFKA_EXTRA_OPTS}
-);
-
 INSERT INTO latency_sink
 SELECT
     '{"pipeline":"paimon-bronze","executed_at_ms":'
@@ -82,3 +91,5 @@ SELECT
     || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING) || '}'
 FROM kafka_trades_src
 WHERE `after`.trade_id IS NOT NULL AND MOD(`after`.trade_id, 997) = 0;
+
+END;

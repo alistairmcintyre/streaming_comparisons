@@ -54,10 +54,15 @@ k -n flink logs job/fluss-submitter --tail=30
 # expect: ends "All Fluss jobs submitted." with no [ERROR] blocks
 
 k -n flink exec deploy/fluss-flink -- curl -s localhost:8081/jobs/overview | python3 -m json.tool | grep -E '"name"|"state"'
-# expect 3 jobs, ALL "RUNNING":
-#   insert-into_fluss_catalog.trades_db.trades          (bronze)
-#   insert-into_fluss_catalog.trades_db.open_positions  (gold)
+# expect 4 jobs, ALL "RUNNING":
+#   silver_trades   (Kafka → fluss_catalog.silver.trades, + its latency sink; one
+#                    STATEMENT SET so both sinks share a single Kafka source)
+#   silver_accounts (Kafka → fluss_catalog.silver.accounts, the gold enrichment dim)
+#   gold            (fold → fluss_catalog.gold.open_positions, + its latency sink)
 #   Fluss Lake Tiering Service - paimon                 (hot tier → S3 lake)
+# Fluss has NO bronze: its PK table is already the cleaned deduped view, so the
+# layers are silver + gold and it has one write hop fewer than the other engines.
+# That is recorded as `hops` in results.json — read latency against it.
 # RESTARTING = check exceptions + JM log:
 k -n flink logs deploy/fluss-flink --tail=100 | grep -iE 'forbidden|slot|exception'
 # "cannot get resource deployments ... forbidden" = flink-native Role missing
@@ -96,7 +101,7 @@ k -n fluss logs deploy/fluss-coordinator --tail=20   # no repeated ERRORs
 # (a) does Fluss ITSELF have rows?  (empty => sink problem, not tiering)
 k -n flink exec deploy/fluss-flink -- /opt/flink/bin/sql-client.sh -f /dev/stdin <<'SQL'
 CREATE CATALOG fluss_catalog WITH ('type'='fluss','bootstrap.servers'='fluss-coordinator.fluss.svc:9123');
-SELECT count(*) FROM fluss_catalog.trades_db.trades;
+SELECT count(*) FROM fluss_catalog.silver.trades;
 SQL
 #
 # (b) is the bronze job emitting records into the sink?
@@ -110,7 +115,7 @@ k -n flink exec deploy/fluss-flink -- curl -s localhost:8081/jobs/$JID | python3
 # Paimon bucket — fluss datalake tiering + flink-paimon warehouse:
 aws s3 ls s3://streaming-comparison-amc-paimon/ --recursive | tail -20
 # expect: RECENT timestamps (this run!), data files (parquet/orc) under
-#   fluss/paimon/trades_db.db/...  and  paimon/...
+#   fluss/paimon/silver.db/..., fluss/paimon/gold.db/...  and  paimon/...
 # schema-only files or stale timestamps = writers not actually flowing
 
 # Warehouse bucket — iceberg/delta output:
@@ -124,6 +129,22 @@ k -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh \
 # run's numbers are not trustworthy. Inspect with print.headers=true to see the cause.
 # See ERROR_HANDLING.md.
 
+── 8b2. ENRICHING GOLD (country/tier live in the dimension, not the fact) ─────
+# gold.open_positions holds POSITION FACTS only — 9 identical columns in all five
+# engines. country/tier are account attributes and were removed from gold: on a
+# current-state row their value had no defensible meaning (it was whatever the last
+# batch to touch the row happened to see), and denormalising them cost a full
+# silver.accounts rescan every 15s in Spark and a second copy of the book in Flink
+# join state. Join at read time instead:
+#
+#   SELECT p.*, a.country, a.tier
+#   FROM gold.open_positions_delta p
+#   LEFT JOIN silver.accounts_delta a USING (account_id)
+#
+# LEFT, never INNER: trades and accounts are independent CDC streams, so a fill can
+# land before its account row. INNER would silently drop that position and make the
+# book's row count depend on dimension timing.
+
 ── 8c. QUERY THE LAKE FROM YOUR LAPTOP (no Athena needed) ─────────────────────
 ./infra/aws/scripts/query-lake-local.sh                 # interactive DuckDB shell
 ./infra/aws/scripts/query-lake-local.sh "SELECT count(*) FROM delta_gold_positions"
@@ -134,16 +155,59 @@ k -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh \
 ── 9. LATENCY + GRAFANA ───────────────────────────────────────────────────────
 k -n kafka exec trades-dual-role-0 -- bin/kafka-get-offsets.sh \
   --bootstrap-server localhost:9092 --topic pipeline_latency
-# expect: offsets > 0 once the latency emit is wired (currently a stub)
+# expect: offsets > 0. Pipelines emitting: {delta,iceberg,hudi}-{bronze,gold},
+# {paimon,fluss}-{bronze|silver,gold}. This feeds the LIVE dashboard only.
+#
+# The HEADLINE processing-delay number does not come from here — it is read out of
+# the gold tables themselves as (commit_ts - last_updated_at), which every engine
+# computes identically and which cannot silently vanish if the emit chain breaks:
+./infra/aws/scripts/query-lake-local.sh "SELECT engine, approx_quantile(delay_ms,0.5) p50
+  FROM (SELECT 'delta' engine, epoch_ms(commit_ts)-epoch_ms(last_updated_at) delay_ms
+        FROM delta_gold_positions) GROUP BY 1"
+# or read processing_delay.csv from the run's benchmarks/ prefix after teardown.
 
 k -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 # then http://localhost:3000 (admin / prom-operator unless changed)
+
+── 9b. ALERTS + LONG-RUN HEALTH ───────────────────────────────────────────────
+# The rules in 96-alerts.yaml are what make this pipeline safe to leave running.
+# Check they LOADED — a PrometheusRule with a bad expr is silently dropped:
+k -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+#   http://localhost:9090/rules      -> expect 11 rules, all "ok" (not "err")
+#   http://localhost:9090/alerts     -> expect none firing on a healthy run
+
+# Prove the metrics the rules depend on actually arrive (a rule against a missing
+# metric never fires and looks identical to a healthy system — see DEPLOY_LOG #71):
+#   kafka_consumergroup_lag              <- Strimzi kafkaExporter
+#   flink_jobmanager_job_uptime          <- the Flink prometheus reporter (:9249)
+#   pipeline_latency_events_total        <- latency-exporter
+k -n monitoring exec -it deploy/kube-prometheus-stack-prometheus -c prometheus -- \
+  wget -qO- 'localhost:9090/api/v1/query?query=kafka_consumergroup_lag' | head -c 300
+# empty result = the exporter or its PodMonitor is not working; fix before trusting a run.
+
+# Consumer lag directly (the single most important streaming health number):
+k -n kafka exec trades-dual-role-0 -- bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --describe --all-groups | awk '$5 ~ /^[0-9]+$/ {s+=$5} END {print "total lag:", s}'
+
+# Topic retention is DECLARED (31-kafka-topics.yaml), not inherited. Verify:
+k -n kafka get kafkatopic
+k -n kafka exec trades-dual-role-0 -- bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --entity-type topics --entity-name app.public.trades --describe
+# expect retention.ms=604800000, retention.bytes=5368709120, segment.bytes=268435456
+# app.public.accounts must be cleanup.policy=compact (a dimension must not age out)
 
 ── 10. RUN + TEARDOWN STATUS ──────────────────────────────────────────────────
 gh run list --workflow=eks-run.yml --limit 3      # the driving GHA run
 aws eks describe-cluster --region $REGION --name $CLUSTER --query cluster.status
 # kill-switch check — the EventBridge one-time schedule that enforces the 2.5h cap:
 aws scheduler get-schedule --region $REGION --name sc-iter-teardown --query 'ScheduleExpression'
+
+# BEFORE MEASURING: drain. With the generator still running, gold trails silver and
+# bronze trails the Kafka end offset, so every correctness number is a race rather
+# than a result. The workflow does this automatically; by hand:
+KUBECTL=~/kubectl ./infra/aws/scripts/quiesce-run.sh
+# then snapshot-results.sh. invariants.csv records quiesced=true/false alongside the
+# numbers, so a drift figure can never be mistaken for data loss.
 
 # TEARING DOWN: run the dedicated workflow — it handles cancelled/failed runs, which
 # eks-run.yml does NOT (destroy_mode=on-success means a cancel skips destroy and the

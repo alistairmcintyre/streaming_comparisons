@@ -95,3 +95,13 @@ spec:
     # in net_notional = SUM(quantity * price) over millions of rows. `string` keeps
     # the exact decimal and the jobs cast it to DECIMAL(12,4).
     decimal.handling.mode: string
+    # Broker auto-create is OFF (30-kafka.yaml), so Connect must be able to create the
+    # topics it routes to. The declared topics in 31-kafka-topics.yaml already exist and
+    # Connect leaves those alone; this is the safety net for a table added to
+    # table.include.list without a matching KafkaTopic — it gets bounded retention
+    # rather than failing the task or inheriting no bound at all.
+    topic.creation.default.replication.factor: 3
+    topic.creation.default.partitions: 3
+    topic.creation.default.retention.ms: 604800000
+    topic.creation.default.retention.bytes: 5368709120
+    topic.creation.default.cleanup.policy: delete

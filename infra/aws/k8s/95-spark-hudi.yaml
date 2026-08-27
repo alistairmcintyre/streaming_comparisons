@@ -22,7 +22,13 @@ spec:
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/jobs/bronze_trades.py"
   sparkVersion: "4.0.4"
-  restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
+  # BOUNDED RESTARTS. `type: Always` retries forever, so a deterministically-failing job
+  # (bad schema, missing credential, unreadable table) crash-loops indefinitely while
+  # still reporting as deployed — burning cluster and looking healthy. `OnFailure` with a
+  # retry cap lets transient failures self-heal (each restart resumes from the streaming
+  # checkpoint) but lets a permanent failure actually FAIL, where the PodCrashLooping
+  # alert in 96-alerts.yaml can surface it.
+  restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
     "spark.sql.extensions": "org.apache.spark.sql.hudi.HoodieSparkSessionExtension"
@@ -74,7 +80,7 @@ spec:
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/jobs/silver_trades.py"
   sparkVersion: "4.0.4"
-  restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
+  restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
     "spark.sql.extensions": "org.apache.spark.sql.hudi.HoodieSparkSessionExtension"
@@ -126,7 +132,7 @@ spec:
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/jobs/silver_accounts.py"
   sparkVersion: "4.0.4"
-  restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
+  restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
     "spark.sql.extensions": "org.apache.spark.sql.hudi.HoodieSparkSessionExtension"
@@ -178,7 +184,7 @@ spec:
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/jobs/gold_open_positions.py"
   sparkVersion: "4.0.4"
-  restartPolicy: { type: Always, onFailureRetryInterval: 10, onSubmissionFailureRetryInterval: 20 }
+  restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
     "spark.sql.extensions": "org.apache.spark.sql.hudi.HoodieSparkSessionExtension"

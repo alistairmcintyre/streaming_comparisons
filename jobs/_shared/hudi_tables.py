@@ -36,7 +36,16 @@ _COMMON = {
     # Keep the timeline bounded on a long run; without this the .hoodie dir grows
     # without limit and commit listing slowly dominates write latency.
     "hoodie.clean.automatic": "true",
-    "hoodie.cleaner.commits.retained": "10",
+    # TIME-based retention, not commit-count. commits.retained=10 at a 15s trigger is
+    # ~2.5 MINUTES of history — and both Hudi streaming consumers (silver reading
+    # bronze, gold reading silver) read INCREMENTALLY from a start instant. Fall further
+    # behind than the cleaner's window (a restart, a slow batch, a node replacement) and
+    # that instant is gone: the read either fails or takes the
+    # hoodie.datasource.read.incr.fallback.fulltablescan path — which re-reads the whole
+    # table and DOUBLE-COUNTS it into the `+=` gold fold, silently. 24h of history means
+    # a consumer can be down a full day and still resume incrementally.
+    "hoodie.cleaner.policy": "KEEP_LATEST_BY_HOURS",
+    "hoodie.cleaner.hours.retained": "24",
     "hoodie.datasource.write.hive_style_partitioning": "true",
     # ATTEMPTED Athena compatibility — CURRENTLY INEFFECTIVE, kept as intent.
     # Hudi 1.2.0 writes table version 9 with timeline layout 2 (the LSM timeline under

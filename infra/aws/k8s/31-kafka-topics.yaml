@@ -1,0 +1,89 @@
+# Declared topics with explicit retention.
+#
+# WHY THIS EXISTS: the cluster ran with `auto.create.topics.enable: true` and no
+# topic declarations, so every topic inherited the broker default retention (7 days)
+# with no size bound. At ~1k trades/s the Debezium JSON envelope is roughly 500 B/record
+# — order 40 GB/day — against a 50Gi per-broker volume. The run is 1-2h so it never
+# showed, but the design would fill the brokers in about a day. A pipeline meant to
+# run for months declares retention per topic and sizes it to the disk.
+#
+# retention.bytes is PER PARTITION. With replication.factor 3 across 3 brokers, each
+# broker holds roughly (retention.bytes x partitions) for a topic, so the budget below
+# is: trades 6x5Gi = 30Gi, everything else ~3Gi, leaving headroom on the 50Gi volume.
+#
+# Auto-create is now OFF (see 30-kafka.yaml). That is the point of declaring these: a
+# consumer subscribing to a misspelled topic now fails loudly instead of silently
+# creating an empty one and reporting zero lag forever.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: app.public.trades
+  namespace: kafka
+  labels: { strimzi.io/cluster: trades }
+spec:
+  partitions: 6
+  replicas: 3
+  config:
+    retention.ms: "604800000"          # 7d — the semantic bound
+    retention.bytes: "5368709120"      # 5Gi/partition — the disk bound; whichever hits first
+    # 256Mi segments so retention actually deletes at a useful granularity. With the
+    # 1Gi default, a topic can exceed retention.bytes by most of a segment per partition.
+    segment.bytes: "268435456"
+    min.insync.replicas: "2"
+    compression.type: "producer"
+---
+# The accounts dimension is COMPACTED, not time-retained. Under delete-retention a
+# consumer replaying from earliest after the retention window gets an INCOMPLETE
+# dimension — accounts that never changed have aged out — and every gold enrichment
+# silently produces NULL country/tier. Compaction keeps the latest value for every key
+# forever, bounded by account count, which is exactly SCD1 semantics.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: app.public.accounts
+  namespace: kafka
+  labels: { strimzi.io/cluster: trades }
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    cleanup.policy: "compact"
+    min.cleanable.dirty.ratio: "0.5"
+    delete.retention.ms: "86400000"    # tombstones (Debezium deletes) linger 1d for consumers
+    segment.bytes: "268435456"
+    min.insync.replicas: "2"
+---
+# DLQ: low volume, long retention. This is forensic data — losing it to retention
+# defeats the purpose, and a full DLQ is a signal, not something to age away quietly.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: debezium-dlq
+  namespace: kafka
+  labels: { strimzi.io/cluster: trades }
+spec:
+  partitions: 1
+  replicas: 3
+  config:
+    retention.ms: "2592000000"         # 30d
+    retention.bytes: "1073741824"      # 1Gi
+    min.insync.replicas: "2"
+---
+# Telemetry. Short retention: the exporter consumes it into Parquet within seconds and
+# the durable copy lives in the benchmarks/ prefix, so nothing here needs to survive.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: pipeline_latency
+  namespace: kafka
+  labels: { strimzi.io/cluster: trades }
+spec:
+  # 6, matching the resource this replaces in 94-observability.yaml. Kafka rejects a
+  # partition-count DECREASE, so lowering it would wedge the topic operator.
+  partitions: 6
+  replicas: 3
+  config:
+    retention.ms: "86400000"           # 1d
+    retention.bytes: "1073741824"      # 1Gi
+    segment.bytes: "134217728"
+    min.insync.replicas: "2"

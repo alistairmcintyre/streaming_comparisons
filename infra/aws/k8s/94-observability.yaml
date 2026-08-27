@@ -1,17 +1,9 @@
 # Observability: the latency-exporter (Kafka pipeline_latency → Prometheus histogram
 # + S3 Parquet) + scrape configs. kube-prometheus-stack (Prometheus operator + Grafana)
 # is installed by Helm (see README). Grafana reads Prometheus — never Kafka directly.
-apiVersion: kafka.strimzi.io/v1
-kind: KafkaTopic
-metadata:
-  name: pipeline-latency
-  namespace: kafka
-  labels: { strimzi.io/cluster: trades }
-spec:
-  topicName: pipeline_latency
-  partitions: 6
-  replicas: 3
----
+# NOTE: the pipeline_latency topic is declared in 31-kafka-topics.yaml, with
+# retention, alongside every other topic. Declaring it twice makes the Strimzi
+# topic operator reconcile two resources onto one topic and flap between them.
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: latency-exporter, namespace: streaming }
@@ -63,4 +55,21 @@ metadata:
   labels: { release: kube-prometheus-stack }
 spec:
   selector: { matchLabels: { type: flink-native-kubernetes } }
-  podMetricsEndpoints: [{ port: metrics, interval: 5s }]
+  # targetPort, not port: the Flink operator does not name the reporter's container
+  # port, so a name-based selector matches nothing. 9249 is metrics.reporter.prom.port.
+  podMetricsEndpoints: [{ targetPort: 9249, interval: 5s }]
+---
+# Scrape the Strimzi Kafka Exporter (consumer lag + topic offsets). Strimzi labels the
+# exporter pod strimzi.io/kind=KafkaExporter and serves metrics on 9404.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: kafka-exporter
+  namespace: kafka
+  labels: { release: kube-prometheus-stack }
+spec:
+  selector:
+    matchLabels:
+      strimzi.io/kind: KafkaExporter
+      strimzi.io/cluster: trades
+  podMetricsEndpoints: [{ targetPort: 9404, interval: 15s }]

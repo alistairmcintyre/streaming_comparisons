@@ -39,8 +39,17 @@ _STATEMENTS = [
       USING iceberg TBLPROPERTIES ({_MOR_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.gold.open_positions_spark (
         account_id BIGINT NOT NULL, symbol STRING NOT NULL, net_quantity BIGINT,
-        net_notional DECIMAL(38,4), trade_count BIGINT, status STRING, country STRING,
-        tier STRING, commit_ts TIMESTAMP)
+        net_notional DECIMAL(38,4), trade_count BIGINT, status STRING,
+        -- country/tier are NOT denormalised here — they are account attributes with no
+        -- defensible temporal semantic on a current-state row. Enrich at query time:
+        --   SELECT p.*, a.country, a.tier FROM gold.open_positions_spark p
+        --   LEFT JOIN silver.accounts_spark a USING (account_id)
+        -- LEFT, always: a fill can land before its account row (independent CDC
+        -- streams), and an inner join would silently drop that position.
+        -- EVENT time (from executed_at); commit_ts stays PROCESSING time, so
+        -- (commit_ts - last_updated_at) is a per-row processing delay readable
+        -- straight out of the table, identically in all five engines.
+        opened_at TIMESTAMP, last_updated_at TIMESTAMP, commit_ts TIMESTAMP)
       USING iceberg PARTITIONED BY (symbol) TBLPROPERTIES ({_MOR_PROPS})""",
 ]
 

@@ -117,6 +117,40 @@ for spec in "bronze:trades_paimon:paimon/iceberg/bronze/trades" \
   && echo "  registered ${db}.${tbl} -> ${latest}" || echo "  FAILED ${db}.${tbl}"
 done
 
+# ── Fluss's tiered Paimon tables → Glue ──────────────────────────────────────
+# The Fluss tiering service mirrors silver.trades / gold.open_positions into Paimon
+# under s3://$PAIMON_BUCKET/fluss/paimon, which (hadoop-catalog) writes Iceberg
+# metadata to .../iceberg/<db>/<table>/metadata/ exactly like the flink-paimon
+# warehouse. Fluss was previously registered NOWHERE, so it was absent from Athena
+# and from the results capture entirely.
+#
+# The Glue names carry a _fluss suffix even though the Fluss tables are plain
+# silver.trades / gold.open_positions: Fluss has its own catalog namespace, but Glue's
+# silver/gold databases are shared by all five engines, so the suffix is what keeps
+# `gold.open_positions_fluss` distinguishable from _delta/_paimon/_spark/_hudi_rt.
+echo "== fluss (tiered paimon, as iceberg) =="
+for spec in "silver:trades_fluss:fluss/paimon/iceberg/silver/trades" \
+            "gold:open_positions_fluss:fluss/paimon/iceberg/gold/open_positions"; do
+  db="${spec%%:*}"; rest="${spec#*:}"; tbl="${rest%%:*}"; path="${rest#*:}"
+  latest=$(aws s3 ls "s3://${PAIMON_BUCKET}/${path}/metadata/" 2>/dev/null \
+           | grep -oE '[^ ]+\.metadata\.json$' | grep -v '^\.' | sort -V | tail -1 || true)
+  if [ -z "$latest" ]; then echo "  skip ${db}.${tbl} — no iceberg metadata yet"; continue; fi
+  meta="s3://${PAIMON_BUCKET}/${path}/metadata/${latest}"
+  aws glue create-table --database-name "$db" --table-input "{
+      \"Name\": \"${tbl}\",
+      \"TableType\": \"EXTERNAL_TABLE\",
+      \"Parameters\": {\"table_type\": \"ICEBERG\", \"metadata_location\": \"${meta}\"},
+      \"StorageDescriptor\": {\"Location\": \"s3://${PAIMON_BUCKET}/${path}\", \"Columns\": []}
+    }" >/dev/null 2>&1 \
+  || aws glue update-table --database-name "$db" --table-input "{
+      \"Name\": \"${tbl}\",
+      \"TableType\": \"EXTERNAL_TABLE\",
+      \"Parameters\": {\"table_type\": \"ICEBERG\", \"metadata_location\": \"${meta}\"},
+      \"StorageDescriptor\": {\"Location\": \"s3://${PAIMON_BUCKET}/${path}\", \"Columns\": []}
+    }" >/dev/null 2>&1 \
+  && echo "  registered ${db}.${tbl} -> ${latest}" || echo "  FAILED ${db}.${tbl}"
+done
+
 echo "== registered tables =="
 for db in bronze silver gold; do
   echo "  $db: $(aws glue get-tables --database-name "$db" --query 'TableList[].Name' --output text 2>/dev/null)"

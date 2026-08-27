@@ -39,6 +39,13 @@ def main():
            .option("kafka.bootstrap.servers", KAFKA_BROKERS)
            .option("subscribe", TOPIC)
            .option("startingOffsets", "earliest")
+           # Bound the catch-up batch, as bronze_trades already does (at 200k). Without
+           # it, a restart with a backlog makes the FIRST micro-batch attempt the whole
+           # backlog at once. accounts is a low-volume SCD trickle so this never bites in
+           # steady state — but the accounts topic is COMPACTED, so a replay from earliest
+           # delivers one record per account in a single burst, which is exactly the
+           # unbounded first batch this caps.
+           .option("maxOffsetsPerTrigger", os.environ.get("MAX_OFFSETS_PER_TRIGGER", "100000"))
            .option("failOnDataLoss", "false")
            .option("kafka.group.id", "hudi-silver-accounts")
            .load()

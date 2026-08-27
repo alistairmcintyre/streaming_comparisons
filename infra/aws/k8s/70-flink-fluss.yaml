@@ -12,6 +12,32 @@ spec:
   serviceAccount: lake
   flinkConfiguration:
     taskmanager.numberOfTaskSlots: "4"
+    # RECOVERY + UPGRADE PATH. These are SESSION clusters (many SQL jobs on one
+    # cluster), so the operator's `job.upgradeMode: savepoint` does not apply — that is
+    # an Application-mode feature. The equivalent for this topology is: keep checkpoints
+    # when a job is cancelled, retain enough of them to roll back to, and give savepoints
+    # a home so a job can be stopped-with-savepoint and resumed via the REST API.
+    # Without RETAIN_ON_CANCELLATION a cancelled job's checkpoints are DELETED, so any
+    # deliberate job change means replaying from the source — over months, unacceptable.
+    execution.checkpointing.externalized-checkpoint-retention: "RETAIN_ON_CANCELLATION"
+    state.checkpoints.num-retained: "3"
+    state.savepoints.dir: "s3://${PAIMON_BUCKET}/_flink_savepoints/fluss"
+    # Tolerate transient checkpoint failures (S3 5xx) instead of failing the job on the
+    # first one; FlinkCheckpointsFailing in 96-alerts.yaml catches a persistent problem.
+    execution.checkpointing.tolerable-failed-checkpoints: "3"
+    # Bounded restart strategy: back off rather than hot-loop, and give up if the job is
+    # failing persistently so it surfaces instead of restarting silently forever.
+    restart-strategy.type: "exponential-delay"
+    restart-strategy.exponential-delay.initial-backoff: "10 s"
+    restart-strategy.exponential-delay.max-backoff: "2 min"
+    restart-strategy.exponential-delay.reset-backoff-threshold: "10 min"
+    # Prometheus metrics reporter. 94-observability.yaml has a PodMonitor scraping
+    # `port: metrics` on these pods, but WITHOUT this block no reporter is started and
+    # no metrics port is opened — so the PodMonitor has been scraping nothing and the
+    # Flink half of the dashboard has been empty on every run to date. The
+    # metrics-prometheus plugin already ships in the image; it just was not enabled.
+    metrics.reporter.prom.factory.class: "org.apache.flink.metrics.prometheus.PrometheusReporterFactory"
+    metrics.reporter.prom.port: "9249"
     # datalake S3 for the Fluss source's hybrid lake read. paimon-s3 needs static
     # keys (no IRSA) — from SSM via envsubst at deploy (see workflow).
     s3.region: "${AWS_REGION}"

@@ -4,25 +4,47 @@ Spark Structured Streaming: Iceberg silver.trades_spark → gold.open_positions_
 Folds signed fills into a net book per (account_id, symbol) via MERGE, work ∝ the
 fills in each micro-batch (append stream of silver.trades — never a full scan):
     BUY -> +quantity   SELL -> -quantity ;  net_quantity += Σ signed_qty
-Enriched with account country/tier by a batch snapshot lookup of silver.accounts.
+Enrichment is NOT denormalised into gold. country/tier are account attributes, and a
+current-state position row has no defensible temporal semantic for them — the value
+would be "whatever the last batch that happened to touch this row saw", which is an
+artifact of batch boundaries rather than a fact about the position. Enrich at read time:
+
+    SELECT p.*, a.country, a.tier
+    FROM gold.open_positions p
+    LEFT JOIN silver.accounts a USING (account_id)
+
+LEFT, always: the trades and accounts CDC streams are independent, so a fill can land
+before its account row does. An inner join would silently drop that position from the
+book — the row count would depend on dimension timing, with no error.
 
 EXACTLY-ONCE: Iceberg has NO idempotent-write primitive (no txnAppId/txnVersion like
-Delta), so this incrementing `+=` MERGE is **at-least-once** — a failed micro-batch
-that replays could double-apply. Mitigation is a periodic BATCH RECONCILIATION
-(recompute the whole book from silver.trades off-peak) to correct drift; see
-gold_open_positions_reconcile.py. In a no-failure run the fold is exact.
-(This is the concrete cost of Iceberg lacking Delta's idempotent write / Flink's
-exactly-once state — cheap incremental, but you buy correctness with a reconcile.)
+Delta), so this incrementing `+=` MERGE is **at-least-once** — a failed micro-batch that
+replays double-applies, and the drift is permanent. In a no-failure run the fold is exact.
+
+This is DETECTED, NOT REPAIRED, and that is deliberate. After the load is drained
+(infra/aws/scripts/quiesce-run.sh) the snapshot checks the fold invariant
+
+    sum(gold.trade_count) == count(silver.trades)
+
+per engine and publishes any difference in invariants.csv. A reconcile job that
+recomputed the book would repair drift but add write amplification to exactly the
+engine that drifted — contaminating the numbers this pipeline exists to produce.
+"Did Iceberg drift under sustained load, and by how much?" is a result worth having;
+silently correcting it is not. This is the concrete cost of lacking Delta's idempotent
+write and Flink's exactly-once state: cheap incremental writes, measured drift.
 """
 import os
 from iceberg_tables import ensure_all  # in-pipeline DDL
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, when, lit, sum as _sum, count as _count, broadcast
+from latency import observe_event_time, attach_latency_listener
+from pyspark.sql.functions import (
+    col, when, lit, sum as _sum, count as _count,
+    min as _min, max as _max,
+)
 
 CHECKPOINT_BASE = os.environ.get("CHECKPOINT_BASE", "s3a://warehouse/_chk")
 CHECKPOINT_PATH = f"{CHECKPOINT_BASE}/gold_open_positions_spark"
 SILVER_TRADES   = "rest.silver.trades_spark"
-SILVER_ACCOUNTS = "rest.silver.accounts_spark"
 GOLD            = "rest.gold.open_positions_spark"
 
 
@@ -33,14 +55,19 @@ def fold_to_book(batch: DataFrame, batch_id: int):
     deltas = (signed.groupBy("account_id", "symbol").agg(
         _sum("sq").alias("dq"),
         _sum(col("sq") * col("price")).alias("dnot"),
-        _count(lit(1)).alias("dcnt")))
+        _count(lit(1)).alias("dcnt"),
+        # EVENT time carried through the fold: opened_at = MIN over the position's
+        # history, last_updated_at = MAX. Both fold incrementally via least/greatest
+        # in the MERGE, so this stays proportional to the batch — no rescan.
+        _min("executed_at").alias("dmin"),
+        _max("executed_at").alias("dmax")))
 
-    try:
-        accts = spark.table(SILVER_ACCOUNTS).select("account_id", "country", "tier")
-        deltas = deltas.join(broadcast(accts), "account_id", "left")
-    except Exception:
-        deltas = deltas.withColumn("country", lit(None).cast("string")) \
-                       .withColumn("tier", lit(None).cast("string"))
+    # No dimension read here, deliberately. This previously did a FULL batch read of
+    # silver.accounts on EVERY micro-batch — every 15s, forever — and broadcast it, to
+    # stamp country/tier onto the book. That is a rescan of a silver table (the one
+    # thing STREAMING_DESIGN_PRINCIPLES.md rules out), it is O(dimension) rather than
+    # O(batch), and the value it wrote had no defensible temporal meaning anyway.
+    # country/tier now come from a LEFT JOIN to silver.accounts at query time.
 
     deltas = deltas.cache()
     try:
@@ -56,14 +83,17 @@ def fold_to_book(batch: DataFrame, batch_id: int):
                 t.net_notional = t.net_notional + s.dnot,
                 t.trade_count  = t.trade_count + s.dcnt,
                 t.status       = CASE WHEN (t.net_quantity + s.dq) <> 0 THEN 'OPEN' ELSE 'CLOSED' END,
-                t.country      = s.country,
-                t.tier         = s.tier,
+                -- least/greatest skip NULLs, so a pre-existing row written before
+                -- these columns existed adopts the batch value instead of staying NULL.
+                t.opened_at       = least(t.opened_at, s.dmin),
+                t.last_updated_at = greatest(t.last_updated_at, s.dmax),
                 t.commit_ts    = current_timestamp()
             WHEN NOT MATCHED THEN INSERT
-                (account_id, symbol, net_quantity, net_notional, trade_count, status, country, tier, commit_ts)
+                (account_id, symbol, net_quantity, net_notional, trade_count, status,
+                 opened_at, last_updated_at, commit_ts)
                 VALUES (s.account_id, s.symbol, s.dq, s.dnot, s.dcnt,
                         CASE WHEN s.dq <> 0 THEN 'OPEN' ELSE 'CLOSED' END,
-                        s.country, s.tier, current_timestamp())
+                        s.dmin, s.dmax, current_timestamp())
         """)
         print(f"[gold-open-positions-spark] batch {batch_id}: folded fills into the book")
     finally:
@@ -80,6 +110,9 @@ def main():
               .option("streaming-skip-delete-snapshots", "true")
               .option("streaming-max-files-per-micro-batch", "500")
               .load(SILVER_TRADES))
+
+    attach_latency_listener(spark, "iceberg-gold")
+    trades = observe_event_time(trades)
 
     (trades.writeStream.foreachBatch(fold_to_book)
         .option("checkpointLocation", CHECKPOINT_PATH)

@@ -5,7 +5,8 @@ changelog/current-view) → Paimon's Iceberg view (cold/interop)**. Two physical
 stores, three read surfaces (Fluss KV, Paimon changelog, Iceberg snapshot).
 
 ```
-Kafka trades ─► Fluss trades_db.trades (PK, hot) ─► fold in Flink ─► Fluss open_positions (PK book)
+Kafka trades ─► Fluss silver.trades (PK, hot) ─► fold in Flink ─► Fluss gold.open_positions (PK book)
+Kafka accounts ─► Fluss silver.accounts (PK dimension) ─┘
                        │  datalake.enabled + fluss-flink-tiering job
                        ▼
                Paimon  s3://warehouse/fluss/paimon   ──►  Iceberg view (Athena/Trino/Spark)
@@ -37,7 +38,7 @@ S3 (`datalake.paimon.*`, written by the tiering job, which uses paimon-s3 direct
 
 Everything switches on `DEPLOY_ENV` + scalars in `env/<env>.env` — the same
 convention as the flink-paimon stack. `jobs/flink-fluss/submit.sh` renders the SQL
-templates (`create_tables/bronze_trades/gold_open_positions.sql`) with `envsubst`
+templates (`create_tables/silver_trades/silver_accounts/gold_open_positions.sql`) with `envsubst`
 and starts the tiering job; `docker-compose.fluss.yml` reads `${VAR:-default}` for
 the server/Flink config. The knobs (see `env/local.env` / `env/aws.example.env`):
 `FLUSS_BOOTSTRAP`, `DATALAKE_FORMAT`, `FLUSS_PAIMON_WAREHOUSE`, `FLUSS_REMOTE_DATA_DIR`,
@@ -81,9 +82,9 @@ CREATE CATALOG paimon_lake WITH (
 -- fold oracle (stop the generator + let it drain for an EXACT match):
 SELECT COUNT(*) AS trades_rows,
        SUM(CASE WHEN side='BUY' THEN CAST(quantity AS BIGINT) ELSE -CAST(quantity AS BIGINT) END) AS signed_qty
-FROM paimon_lake.trades_db.trades;
+FROM paimon_lake.silver.trades;
 SELECT COUNT(*) AS pos_rows, SUM(net_quantity) AS net_qty, SUM(trade_count) AS tcount
-FROM paimon_lake.trades_db.open_positions;
+FROM paimon_lake.gold.open_positions;
 ```
 
 Expected: `signed_qty == net_qty` and `trades_rows == tcount`. The Paimon tables live
@@ -141,5 +142,34 @@ The **server** (coordinator/tablet) and **Flink cluster** are the built images
 (`docker/fluss`, `docker/fluss-flink`); on AWS run them on EKS/EC2/EMR with the same
 `FLUSS_PROPERTIES` / `FLINK_PROPERTIES`, S3 via the task/pod IAM role. Blank S3 keys are
 dropped from `server.yaml` by the entrypoint so Fluss uses the default (IAM) credential
-provider. Athena then queries `trades_db.trades` / `trades_db.open_positions` directly
+provider. Athena then queries `silver.trades` / `gold.open_positions` directly
 from Glue. Keep Iceberg **format-version 2** (Athena requirement).
+
+
+## Layer naming (why Fluss has a `silver` and no `bronze`)
+
+Fluss's PK table already does what bronze→silver does elsewhere: it dedupes on the
+key and serves the cleaned current view, with no separate landing table to re-read.
+Calling it `bronze` would have implied a hop that does not exist; calling it
+`silver` states what it holds. So the databases are `silver` (trades, accounts) and
+`gold` (open_positions) — the same layer names, meaning the same things, as the
+other four engines, which is what lets the reconciliation address them uniformly.
+
+The saved hop is real and is Fluss's structural advantage, not something to hide in
+the naming: `results.json` records `hops` per engine (Fluss 2, the rest 3) so a
+latency comparison can be read against the topology that produced it.
+
+## Timestamp semantics in gold
+
+    opened_at       MIN(executed_at)  — event time of the fill that opened the position
+    last_updated_at MAX(executed_at)  — event time of the newest fill
+    commit_ts       processing time when the gold row was produced
+
+`commit_ts - last_updated_at` is the per-row processing delay, computed identically
+in all five engines and readable straight out of the table — no latency-emit chain
+in the loop. `snapshot-results.sh` reports its percentiles as the headline metric.
+
+`opened_at` is MIN over the position's whole history, not "reset each time the
+position goes flat and reopens". Reset-on-flat is easy in the Spark MERGE and not
+expressible as a pure Flink fold, so adopting it would make the two families hold
+different values for identical input and break cross-engine reconciliation.
