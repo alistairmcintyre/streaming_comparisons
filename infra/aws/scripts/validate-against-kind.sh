@@ -46,6 +46,16 @@ helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --crea
 helm upgrade --install flink-operator flink-operator/flink-kubernetes-operator \
   -n flink --create-namespace --wait --timeout 5m >/dev/null
 kubectl -n flink rollout status deploy/flink-kubernetes-operator --timeout=180s >/dev/null
+# The Deployment being Available is NOT the same as its validating webhook serving.
+# cert-manager still has to issue and inject the cert, and until it does every
+# FlinkDeployment dry-run fails with "failed calling webhook ... connection refused" —
+# which looks exactly like a rejected manifest. Wait for real endpoints.
+echo "  waiting for the validating webhook to serve..."
+for i in $(seq 1 60); do
+  EP=$(kubectl -n flink get endpoints -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.subsets[*].addresses[*].ip}{"\n"}{end}' 2>/dev/null | grep -ci 'webhook.*[0-9]' || true)
+  [ "${EP:-0}" -gt 0 ] && { echo "  webhook endpoints ready"; break; }
+  sleep 2
+done
 
 echo "== server dry-run every manifest =="
 # Placeholders: the webhook validates SHAPE and CONFIG KEYS, not secret values.
@@ -55,6 +65,11 @@ export ECR_REGISTRY=placeholder.dkr.ecr.eu-west-1.amazonaws.com AWS_REGION=eu-we
        POSTGRES_PASSWORD=placeholder DELTA_LOGSTORE_TABLE=placeholder \
        NODE_AZ=eu-west-1a ACCOUNT=000000000000 PROJECT=streaming-comparison
 fails=0
+# `set -e` is OFF for the loop ON PURPOSE. A failing `out=$(...)` assignment aborts the
+# script under -e BEFORE `rc=$?` is read, so the first rejected manifest killed the run
+# and printed NOTHING about which one or why. We want every manifest checked and every
+# rejection reported in one pass.
+set +e
 for f in $(ls infra/aws/k8s/*.yaml | sort); do
   b=$(basename "$f")
   # 96-alerts.yaml is applied without envsubst in the real workflow — match that here,
@@ -63,12 +78,21 @@ for f in $(ls infra/aws/k8s/*.yaml | sort); do
   else out=$(envsubst < "$f" | kubectl apply --dry-run=server -f - 2>&1); rc=$?; fi
   # Missing CRDs for operators we did not install are EXPECTED here and are not failures;
   # a webhook denial or a schema violation is.
+  # One retry on a webhook that is not serving yet: that is our infrastructure warming
+  # up, not a manifest defect, and reporting it as a rejection would send someone
+  # hunting a bug that does not exist.
+  if [ $rc -ne 0 ] && echo "$out" | grep -qiE 'failed calling webhook|connection refused|no endpoints available'; then
+    sleep 10
+    if [ "$b" = "96-alerts.yaml" ]; then out=$(kubectl apply --dry-run=server -f "$f" 2>&1); rc=$?
+    else out=$(envsubst < "$f" | kubectl apply --dry-run=server -f - 2>&1); rc=$?; fi
+  fi
   if [ $rc -ne 0 ] && ! echo "$out" | grep -qiE 'no matches for kind|could not find the requested resource|ensure CRDs'; then
     echo "  REJECTED $b:"; echo "$out" | sed 's/^/      /'; fails=1
   else
     echo "  ok       $b"
   fi
 done
+set -e
 [ "$fails" = 0 ] || { echo; echo "manifests would be REJECTED in AWS — fix before spending a cluster"; exit 1; }
 echo
 echo "all manifests accepted by real admission webhooks"
