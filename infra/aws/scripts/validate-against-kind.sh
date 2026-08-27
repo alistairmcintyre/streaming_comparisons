@@ -57,6 +57,19 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
+# Namespaces must EXIST, not be dry-run. A --dry-run=server of 00-namespaces.yaml
+# creates nothing, so every namespaced manifest after it fails with
+# `namespaces "kafka" not found` — 8 of 17 manifests, none of them actually broken.
+# The real workflow has these by the time it applies: some from 00-namespaces.yaml,
+# the rest from explicit `kubectl create ns` and helm --create-namespace. Create them
+# for real here so the dry-run validates against a cluster shaped like production.
+echo "== namespaces (created for real, so the dry-run is meaningful) =="
+kubectl apply -f infra/aws/k8s/00-namespaces.yaml >/dev/null 2>&1 || true
+for ns in kafka streaming spark flink fluss monitoring cert-manager; do
+  kubectl create namespace "$ns" --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1 || true
+done
+kubectl get ns -o name | sed 's|^|  |'
+
 echo "== server dry-run every manifest =="
 # Placeholders: the webhook validates SHAPE and CONFIG KEYS, not secret values.
 export ECR_REGISTRY=placeholder.dkr.ecr.eu-west-1.amazonaws.com AWS_REGION=eu-west-1 \
