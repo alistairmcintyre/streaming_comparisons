@@ -40,6 +40,12 @@ expect "every manifest var is exported"  0 bash -c '
   miss=""; for v in $need; do grep -qE "(^|[^A-Z_])${v}[:=]" .github/workflows/eks-run.yml || miss="$miss $v"; done
   [ -z "$miss" ] || { echo "unexported:$miss"; exit 1; }'
 
+expect "alert pipeline count matches the code" 0 bash -c '
+  n=$( { grep -rho "attach_latency_listener(spark, \"[a-z-]*\"" jobs/spark-*/*.py | sed "s/.*\"\(.*\)\"/\1/";
+         grep -rho "\"pipeline\":\"[a-z-]*\"" jobs/flink-*/*.sql | sed "s/.*:\"\(.*\)\"/\1/"; } | sort -u | wc -l )
+  want=$(grep -oE "pipeline_latency_events_total\)\) < [0-9]+" infra/aws/k8s/96-alerts.yaml | grep -oE "[0-9]+$")
+  [ "$n" = "$want" ] || { echo "code emits $n pipelines, PipelinesMissing expects $want"; exit 1; }'
+
 echo "== meta: each checker must REJECT a known-bad input =="
 expect "rejects an RFC1123-invalid name" 1 ./infra/aws/scripts/preflight-manifests.sh tests/fixtures
 expect "rejects a duplicate YAML key"    1 bash -c 'cd "$(git rev-parse --show-toplevel)"; d=$(mktemp -d); cp tests/fixtures/bad-dupkey.yaml "$d/"; ./infra/aws/scripts/preflight-manifests.sh "$d"'

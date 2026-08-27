@@ -14,7 +14,7 @@ metadata:
 data:
   pipeline-comparison-live.json: |
     {
-      "title": "Pipeline Comparison — Live",
+      "title": "Pipeline Comparison — Live (Flink gold not plotted: see PipelinesMissing alert)",
       "uid": "pipeline-compare-live",
       "schemaVersion": 39,
       "editable": true,
@@ -34,7 +34,7 @@ data:
       "panels": [
         {
           "id": 1,
-          "title": "Liveness — latency-event rate per pipeline (flat 0 = pipeline down)",
+          "title": "Liveness — latency-event rate per pipeline (flat 0 = down; ABSENT = never emitted, see note)",
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },

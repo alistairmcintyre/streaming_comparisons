@@ -44,6 +44,25 @@ spec:
             description: "Offsets have not advanced in 10m while lag is non-zero — the consumer is stuck, not merely slow."
 
         # A pipeline that stops emitting looks exactly like a pipeline with no delay.
+        # PipelineStoppedEmitting below CANNOT see a pipeline that never emitted at all.
+        # `sum by (pipeline) (...) == 0` only yields a result for pipeline labels that
+        # EXIST in Prometheus, so a pipeline that has produced zero events has no series
+        # and the expression is simply empty for it. On 2026-08-27 seven of eight
+        # pipelines were silently absent (only paimon-bronze reported, the Spark emitters
+        # were dying on "No module named 'kafka'") and nothing fired. "Stopped" and
+        # "never started" are different failures and need different alerts.
+        #
+        # EXPECTED_PIPELINES is asserted against the code inventory by tests/run-checks.sh,
+        # so adding or removing an emitter without updating this threshold fails the
+        # suite rather than silently weakening the alert.
+        - alert: PipelinesMissing
+          expr: count(count by (pipeline) (pipeline_latency_events_total)) < 8
+          for: 10m
+          labels: { severity: critical }
+          annotations:
+            summary: "only {{ $value }} of 8 pipelines are reporting latency"
+            description: "A pipeline that never emitted has no series at all, so PipelineStoppedEmitting cannot see it. Expected 8: delta/iceberg/hudi bronze+gold, paimon-bronze, fluss-silver. NOTE the Flink engines have NO gold emit — the gold-hop latency sink was removed because a Kafka raw sink cannot consume the updating stream a GROUP BY produces (DEPLOY_LOG #80). Their authoritative gold-hop number is (commit_ts - last_updated_at) read out of the table by snapshot-results.sh, not this dashboard. An empty Flink-gold panel is expected, not a fault."
+
         - alert: PipelineStoppedEmitting
           expr: sum by (pipeline) (rate(pipeline_latency_events_total[5m])) == 0
           for: 10m
