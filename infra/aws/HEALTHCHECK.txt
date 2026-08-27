@@ -145,6 +145,13 @@ aws eks describe-cluster --region $REGION --name $CLUSTER --query cluster.status
 # kill-switch check — the EventBridge one-time schedule that enforces the 2.5h cap:
 aws scheduler get-schedule --region $REGION --name sc-iter-teardown --query 'ScheduleExpression'
 
+# TEARING DOWN: run the dedicated workflow — it handles cancelled/failed runs, which
+# eks-run.yml does NOT (destroy_mode=on-success means a cancel skips destroy and the
+# cluster bills until the 2.5h kill-switch).
+gh workflow run teardown.yml -f run_id=iter
+gh workflow run teardown.yml -f run_id=iter -f clean_lake=true   # also wipe lake + Glue
+# It verifies against the AWS API and FAILS the job if anything is left.
+
 # AFTER teardown, verify nothing is left billing:
 aws ec2 describe-instances --region $REGION \
   --filters "Name=tag:kubernetes.io/cluster/sc-iter,Values=owned" \

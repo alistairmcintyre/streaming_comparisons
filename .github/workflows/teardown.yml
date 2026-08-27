@@ -1,0 +1,167 @@
+name: Teardown (manual cleanup)
+
+# Tear down a run and sweep anything it left behind. Run this whenever a run was
+# CANCELLED or FAILED: eks-run.yml only destroys on success (destroy_mode=on-success),
+# so a cancelled run leaves the cluster billing until the 2.5h kill-switch fires.
+#
+# Safe to run at any time, including when nothing exists — every step tolerates
+# absent resources. It verifies against the AWS API at the end and FAILS if anything
+# is left, because a teardown that reports success while resources bill is the single
+# most expensive failure mode this project has.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run id to tear down (matches the eks-run input)"
+        default: "iter"
+      clean_lake:
+        description: "ALSO delete lake data + Glue tables (destructive — leaves tfstate/teardown/ECR alone)"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write      # OIDC
+  contents: read
+
+env:
+  AWS_REGION: eu-west-1
+  PROJECT: streaming-comparison
+  PAIMON_BUCKET: streaming-comparison-amc-paimon
+  WAREHOUSE_BUCKET: streaming-comparison-amc-warehouse
+  TF_DIR: infra/aws
+
+jobs:
+  teardown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assume deploy role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::167217327348:role/streaming-comparison-gha-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Set names
+        run: echo "CN=sc-${{ inputs.run_id }}" >> "$GITHUB_ENV"
+
+      # Order matters and was learned the hard way:
+      #   EFS mount targets first  — terraform retries them very slowly otherwise.
+      #   nodegroup before cluster — delete-cluster fails with ResourceInUseException.
+      #   cluster before EC2       — deleting the cluster kills Karpenter; terminating
+      #                              nodes while it is alive just makes it launch
+      #                              replacements (watched 3 terminated -> 4 new).
+      - name: Delete EFS mount targets
+        run: |
+          for fs in $(aws efs describe-file-systems --query 'FileSystems[].FileSystemId' --output text); do
+            for mt in $(aws efs describe-mount-targets --file-system-id "$fs" --query 'MountTargets[].MountTargetId' --output text); do
+              echo "deleting mount target $mt"; aws efs delete-mount-target --mount-target-id "$mt" || true
+            done
+          done
+
+      - name: Delete nodegroups, then the cluster
+        run: |
+          for ng in $(aws eks list-nodegroups --cluster-name "$CN" --query 'nodegroups' --output text 2>/dev/null || true); do
+            echo "deleting nodegroup $ng"
+            aws eks delete-nodegroup --cluster-name "$CN" --nodegroup-name "$ng" || true
+            aws eks wait nodegroup-deleted --cluster-name "$CN" --nodegroup-name "$ng" || true
+          done
+          aws eks delete-cluster --name "$CN" || echo "no cluster $CN"
+
+      - name: Terminate EC2 (billing stops here)
+        run: |
+          IDS=$(aws ec2 describe-instances \
+            --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" \
+                      "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId' --output text)
+          if [ -n "$IDS" ]; then
+            echo "terminating $IDS"
+            aws ec2 terminate-instances --instance-ids $IDS
+            aws ec2 wait instance-terminated --instance-ids $IDS || true
+          fi
+          aws eks wait cluster-deleted --name "$CN" 2>/dev/null || true
+          echo "BILLING STOPPED"
+
+      - name: Terraform destroy
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false
+          # An interrupted destroy leaves the DynamoDB state lock HELD, and every later
+          # attempt dies with "Error acquiring the state lock" while the steps after it
+          # still report success. That stranded a VPC + EIP twice.
+          LID=$(terraform plan -refresh=false -lock-timeout=0s \
+                  -var "run_id=${{ inputs.run_id }}" -var "teardown_after_minutes=150" 2>&1 \
+                | grep -oE '[0-9a-f]{8}-[0-9a-f-]{27}' | head -1 || true)
+          [ -n "$LID" ] && terraform force-unlock -force "$LID" || true
+          terraform destroy -auto-approve -input=false -lock-timeout=300s \
+            -var "run_id=${{ inputs.run_id }}" -var "teardown_after_minutes=150" || \
+            echo "first pass failed — sweeping blockers, then retrying"
+
+      - name: Sweep orphans and destroy again
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          # Karpenter's CNI ENIs linger 'available' and block subnet/SG deletion.
+          for eni in $(aws ec2 describe-network-interfaces \
+              --filters "Name=description,Values=aws-K8S-*" "Name=status,Values=available" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
+            aws ec2 delete-network-interface --network-interface-id "$eni" || true
+          done
+          # CSI volumes do NOT all carry kubernetes.io/cluster/<name>; filtering on that
+          # alone once left 190GiB of Kafka/Postgres/Fluss volumes billing.
+          for key in "tag:kubernetes.io/cluster/$CN" "tag:KubernetesCluster" "tag:ebs.csi.aws.com/cluster-name"; do
+            case "$key" in *cluster/$CN) VAL=owned ;; *) VAL="$CN" ;; esac
+            for v in $(aws ec2 describe-volumes --filters "Name=$key,Values=$VAL" "Name=status,Values=available" \
+                --query 'Volumes[].VolumeId' --output text); do
+              echo "deleting volume $v"; aws ec2 delete-volume --volume-id "$v" || true
+            done
+          done
+          # EKS auto-creates this; left behind it fails the NEXT apply's CreateLogGroup.
+          for lg in $(aws logs describe-log-groups --log-group-name-prefix "/aws/eks/$CN/" \
+              --query 'logGroups[].logGroupName' --output text); do
+            aws logs delete-log-group --log-group-name "$lg" || true
+          done
+          terraform destroy -auto-approve -input=false -lock-timeout=300s \
+            -var "run_id=${{ inputs.run_id }}" -var "teardown_after_minutes=150" || true
+          # Refresh-enabled pass reconciles entries for resources already gone, so state
+          # does not carry stale objects into the next run.
+          terraform destroy -auto-approve -lock-timeout=300s \
+            -var "run_id=${{ inputs.run_id }}" -var "teardown_after_minutes=150" || true
+
+      - name: Clean lake data and Glue tables
+        if: ${{ inputs.clean_lake }}
+        run: |
+          for p in delta iceberg hudi _chk; do aws s3 rm "s3://$WAREHOUSE_BUCKET/$p/" --recursive --only-show-errors || true; done
+          for p in paimon fluss _flink_chk; do aws s3 rm "s3://$PAIMON_BUCKET/$p/" --recursive --only-show-errors || true; done
+          for keep in tfstate teardown; do
+            aws s3 ls "s3://$WAREHOUSE_BUCKET/$keep/" >/dev/null 2>&1 \
+              && echo "OK preserved: $keep/" || { echo "FATAL: $keep/ missing after clean"; exit 1; }
+          done
+          for db in bronze silver gold; do
+            for t in $(aws glue get-tables --database-name "$db" --query 'TableList[].Name' --output text 2>/dev/null); do
+              aws glue delete-table --database-name "$db" --name "$t" && echo "dropped glue $db.$t" || true
+            done
+          done
+
+      # Verify against the AWS API, never the steps' own exit codes. A teardown that
+      # reported state=0 while a VPC and an unattached EIP were still billing is exactly
+      # why this step exists — and why it FAILS the job rather than just printing.
+      - name: Verify nothing is left
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          fail=0
+          chk() { # name expected actual
+            if [ "$2" = "$3" ]; then echo "  OK   $1 = $3"; else echo "  LEFT $1 = $3 (expected $2)"; fail=1; fi; }
+          chk "eks clusters"   0 "$(aws eks list-clusters --query 'length(clusters)' --output text)"
+          chk "ec2"            0 "$(aws ec2 describe-instances --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" "Name=instance-state-name,Values=pending,running,stopping,stopped" --query 'length(Reservations[].Instances[])' --output text)"
+          chk "project vpcs"   0 "$(aws ec2 describe-vpcs --filters "Name=tag:Project,Values=$PROJECT" --query 'length(Vpcs)' --output text)"
+          chk "nat gateways"   0 "$(aws ec2 describe-nat-gateways --filter "Name=state,Values=pending,available" --query 'length(NatGateways)' --output text)"
+          chk "efs"            0 "$(aws efs describe-file-systems --query 'length(FileSystems)' --output text)"
+          chk "available ebs"  0 "$(aws ec2 describe-volumes --filters "Name=status,Values=available" --query 'length(Volumes)' --output text)"
+          chk "unattached eip" 0 "$(aws ec2 describe-addresses --query "length(Addresses[?AssociationId==null])" --output text)"
+          chk "$CN iam roles"  0 "$(aws iam list-roles --query "length(Roles[?starts_with(RoleName,'$CN')])" --output text)"
+          chk "tf state"       0 "$(terraform state list 2>/dev/null | grep -vcE '^data\.' || echo 0)"
+          [ "$fail" = 0 ] && echo "teardown verified clean" || { echo "TEARDOWN INCOMPLETE — see LEFT lines above"; exit 1; }
