@@ -339,11 +339,14 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f -
           # PHASE 0 — every ${VAR} the manifests reference must be SET and non-empty.
           # envsubst does not fail on an unset variable, it substitutes EMPTY — which
-          # yields a manifest that is syntactically fine and semantically wrong. In
+          # yields a manifest that is syntactically fine and semantically wrong.
+          # COMMENT LINES ARE SKIPPED: 92-flink-paimon.yaml has a comment mentioning
+          # ${FLINK_CHECKPOINT_BASE} (explaining DEPLOY_LOG #27), which is not a real
+          # substitution and blocked a perfectly good deploy the first time this ran. In
           # validation this produced `volumeHandle: ""` and a rejected PersistentVolume;
           # in a real apply it would create something subtly broken instead.
           MISSING=""
-          for v in $(grep -rhoE '\$\{[A-Z_][A-Z0-9_]*\}' infra/aws/k8s/*.yaml | tr -d '${}' | sort -u); do
+          for v in $(grep -rhv '^[[:space:]]*#' infra/aws/k8s/*.yaml | grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' | tr -d '${}' | sort -u); do
             [ -n "${!v:-}" ] || MISSING="$MISSING $v"
           done
           [ -z "$MISSING" ] || { echo "UNSET manifest variables:$MISSING"; echo "envsubst would blank these — refusing to apply"; exit 1; }

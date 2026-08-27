@@ -78,7 +78,7 @@ echo "== server dry-run every manifest =="
 # manifest. That is exactly what happened here: EFS_ID was missing from the list, so
 # volumeHandle became "" and the PV was rejected for a reason that had nothing to do
 # with the manifest. Auto-discovery means a newly-introduced var can never do that again.
-for v in $(grep -rhoE '\$\{[A-Z_][A-Z0-9_]*\}' infra/aws/k8s/*.yaml | tr -d '${}' | sort -u); do
+for v in $(grep -rhv '^[[:space:]]*#' infra/aws/k8s/*.yaml | grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' | tr -d '${}' | sort -u); do
   if [ -z "${!v:-}" ]; then
     case "$v" in
       EFS_ID)          export "$v=fs-0000000000000000" ;;   # must look like an EFS id
@@ -92,7 +92,7 @@ for v in $(grep -rhoE '\$\{[A-Z_][A-Z0-9_]*\}' infra/aws/k8s/*.yaml | tr -d '${}
     esac
   fi
 done
-echo "  placeholders set for: $(grep -rhoE '\$\{[A-Z_][A-Z0-9_]*\}' infra/aws/k8s/*.yaml | tr -d '${}' | sort -u | tr '\n' ' ')"
+echo "  placeholders set for: $(grep -rhv '^[[:space:]]*#' infra/aws/k8s/*.yaml | grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' | tr -d '${}' | sort -u | tr '\n' ' ')"
 fails=0
 # `set -e` is OFF for the loop ON PURPOSE. A failing `out=$(...)` assignment aborts the
 # script under -e BEFORE `rc=$?` is read, so the first rejected manifest killed the run
