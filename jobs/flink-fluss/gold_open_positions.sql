@@ -107,4 +107,37 @@ FROM (
 -- No loss: the authoritative gold-hop number is (commit_ts - last_updated_at) read out
 -- of the table itself, which is uniform across all five engines. The Kafka emit chain
 -- only feeds the live dashboard, and bronze/silver still emit into it.
+-- Gold-hop latency. upsert-kafka, NOT a raw kafka sink: gold_book comes from a GROUP BY
+-- and is therefore an UPDATING changelog, which an append-only sink rejects outright
+-- (DEPLOY_LOG #80). upsert-kafka is built for exactly this. Two details it needs:
+--   value.fields-include = EXCEPT_KEY — otherwise the value format also receives the key
+--     column and the 'raw' format fails: "only supports single physical column".
+--   the exporter must tolerate NULL values — upsert-kafka writes a tombstone on
+--     retraction, and json.loads on None killed the whole consumer loop.
+-- Sampled on account_id (the fold key); a gold row is an aggregate with no single trade.
+CREATE TEMPORARY TABLE latency_sink (
+    k       STRING,
+    `value` STRING,
+    PRIMARY KEY (k) NOT ENFORCED
+) WITH (
+    'connector'                    = 'upsert-kafka',
+    'topic'                        = 'pipeline_latency',
+    'properties.bootstrap.servers' = '${KAFKA_BOOTSTRAP}',
+    'key.format'                   = 'raw',
+    'value.format'                 = 'raw',
+    'value.fields-include'         = 'EXCEPT_KEY'
+);
+EXECUTE STATEMENT SET
+BEGIN
+
 INSERT INTO fluss_catalog.gold.open_positions SELECT * FROM gold_book;
+
+INSERT INTO latency_sink
+SELECT CAST(account_id AS STRING),
+    '{"pipeline":"fluss-gold","executed_at_ms":'
+    || CAST(UNIX_TIMESTAMP(DATE_FORMAT(last_updated_at, 'yyyy-MM-dd HH:mm:ss')) * 1000 AS STRING)
+    || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING) || '}'
+FROM gold_book
+WHERE MOD(account_id, 97) = 0;
+
+END;

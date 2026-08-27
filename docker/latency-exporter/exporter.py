@@ -68,10 +68,17 @@ def main():
     consumer = KafkaConsumer(
         TOPIC, bootstrap_servers=BOOTSTRAP.split(","),
         group_id="latency-exporter", auto_offset_reset="latest",
-        value_deserializer=lambda b: json.loads(b.decode("utf-8")),
+        # TOMBSTONE-SAFE. The Flink gold emitters use upsert-kafka (the only Kafka sink
+        # that accepts the updating stream a GROUP BY produces), and upsert-kafka writes
+        # a NULL value on retraction. `b.decode` on None raises AttributeError inside the
+        # deserializer, which kills the consumer loop and takes the whole exporter down —
+        # so every pipeline's metrics stop, not just the one that retracted.
+        value_deserializer=lambda b: json.loads(b.decode("utf-8")) if b else None,
     )
     for msg in consumer:
         e = msg.value
+        if not e:                      # tombstone from an upsert-kafka retraction
+            continue
         pipeline = e.get("pipeline", "unknown")
         delay_ms = e.get("delay_ms")
         if delay_ms is None and e.get("ingest_ts_ms") and e.get("executed_at_ms"):

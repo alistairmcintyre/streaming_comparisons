@@ -14,7 +14,7 @@ metadata:
 data:
   pipeline-comparison-live.json: |
     {
-      "title": "Pipeline Comparison — Live (Flink gold not plotted: see PipelinesMissing alert)",
+      "title": "Pipeline Comparison — Live",
       "uid": "pipeline-compare-live",
       "schemaVersion": 39,
       "editable": true,
