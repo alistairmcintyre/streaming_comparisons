@@ -110,6 +110,17 @@ jobs:
       # continue-on-error on the cheap steps so ONE failure does not hide the others —
       # the whole point of this job is to surface everything in a single free pass. The
       # gate step at the end is what actually fails the job.
+      # Compiles the Flink SQL against a throwaway local Flink with a filesystem Paimon
+      # warehouse. Two of 2026-08-27's failures were planning errors that only showed up
+      # ~25 minutes into a run and presented as a silently MISSING JOB. Needs no Kafka,
+      # no S3, no AWS — planning happens before submission. Asserts every job file
+      # produces a job, because "some jobs submitted" is exactly what the bad run looked
+      # like. Uses ECR images, so it runs after the AWS creds step.
+      - name: Flink SQL — compile locally
+        id: flinksql
+        continue-on-error: true
+        run: ./infra/aws/scripts/validate-flink-sql.sh
+
       - name: Manifests — real admission webhooks (kind)
         uses: helm/kind-action@v1
         with:
@@ -131,7 +142,8 @@ jobs:
                    "shell:${{ steps.shell.outcome }}" \
                    "python:${{ steps.python.outcome }}" \
                    "terraform:${{ steps.terraform.outcome }}" \
-                   "webhooks:${{ steps.webhooks.outcome }}"; do
+                   "webhooks:${{ steps.webhooks.outcome }}" \\
+                   "flink-sql:${{ steps.flinksql.outcome }}"; do
             n="${c%%:*}"; o="${c##*:}"
             if [ "$o" = "success" ]; then echo "  PASS  $n"; else echo "  FAIL  $n ($o)"; fail=1; fi
           done
