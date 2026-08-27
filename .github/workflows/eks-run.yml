@@ -72,15 +72,21 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Manifests — offline (YAML, RFC1123 names, duplicate keys, envsubst traps)
+        id: manifests
+        continue-on-error: true
         run: ./infra/aws/scripts/preflight-manifests.sh
 
       - name: Shell — syntax
+        id: shell
+        continue-on-error: true
         run: |
           rc=0
           for f in $(git ls-files '*.sh'); do bash -n "$f" || { echo "  FAIL $f"; rc=1; }; done
           exit $rc
 
       - name: Python — syntax
+        id: python
+        continue-on-error: true
         run: |
           rc=0
           for f in $(git ls-files 'jobs/**/*.py' 'generators/*.py'); do
@@ -88,7 +94,15 @@ jobs:
           done
           exit $rc
 
+      # The run job installs terraform via this action; validate needs it too, or the
+      # step dies with `terraform: command not found` — which is exactly what happened
+      # on the gate's first live use, and it MASKED the kind webhook check behind it.
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_wrapper: false }
+
       - name: Terraform — fmt + validate
+        id: terraform
+        continue-on-error: true
         working-directory: infra/aws
         run: |
           terraform fmt -check -recursive || echo "  (fmt drift — not fatal)"
@@ -97,13 +111,36 @@ jobs:
 
       # The one that needed a live apiserver. kind gives us real admission webhooks
       # for free — this is what would have caught `kubernetes.cluster-id`.
+      # continue-on-error on the cheap steps so ONE failure does not hide the others —
+      # the whole point of this job is to surface everything in a single free pass. The
+      # gate step at the end is what actually fails the job.
       - name: Manifests — real admission webhooks (kind)
         uses: helm/kind-action@v1
         with:
           cluster_name: manifest-validate
           wait: 120s
       - name: Manifests — server dry-run against webhooks
+        id: webhooks
+        continue-on-error: true
         run: KIND_CLUSTER=manifest-validate KEEP_KIND=1 ./infra/aws/scripts/validate-against-kind.sh
+
+      # THE GATE. Every check above runs to completion so one failure cannot hide the
+      # rest — same discipline as validate-run.sh: report everything in one pass. This
+      # step is what fails the job, and `run` needs: validate, so a red result here
+      # means terraform apply never starts and the run costs nothing.
+      - name: Gate — fail if any check failed
+        run: |
+          fail=0
+          for c in "manifests:${{ steps.manifests.outcome }}" \
+                   "shell:${{ steps.shell.outcome }}" \
+                   "python:${{ steps.python.outcome }}" \
+                   "terraform:${{ steps.terraform.outcome }}" \
+                   "webhooks:${{ steps.webhooks.outcome }}"; do
+            n="${c%%:*}"; o="${c##*:}"
+            if [ "$o" = "success" ]; then echo "  PASS  $n"; else echo "  FAIL  $n ($o)"; fail=1; fi
+          done
+          [ "$fail" = 0 ] || { echo; echo "validation failed — no AWS resource was created"; exit 1; }
+          echo; echo "all pre-deploy checks passed"
 
   run:
     needs: validate
