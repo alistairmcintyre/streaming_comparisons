@@ -82,6 +82,36 @@ INSERT INTO probe_sink SELECT CAST(account_id AS STRING) FROM gold_book;
 PYEOF
     JOBS_DIR="$d" ./infra/aws/scripts/validate-flink-sql.sh'
 
+  echo "== slow: Fluss SQL compiles (Docker: zookeeper + coordinator + tablet server) =="
+  expect "fluss SQL compiles, every file yields a job" 0 ./infra/aws/scripts/validate-fluss-sql.sh
+
+  echo "== meta: the Fluss checker must catch bad SQL and bad table options =="
+  # Same shape as paimon bug #80: an append-only Kafka sink fed by a GROUP BY.
+  expect "catches updating-stream into append sink (fluss)" 1 bash -c '
+    d=$(mktemp -d); cp jobs/flink-fluss/*.sql "$d/"
+    python3 - "$d" <<PYEOF
+import sys, pathlib
+f = pathlib.Path(sys.argv[1]) / "gold_open_positions.sql"
+f.write_text(f.read_text() + """
+CREATE TEMPORARY TABLE probe_sink (\`value\` STRING) WITH (
+    '"'"'connector'"'"' = '"'"'kafka'"'"',
+    '"'"'topic'"'"' = '"'"'probe'"'"',
+    '"'"'properties.bootstrap.servers'"'"' = '"'"'localhost:9092'"'"',
+    '"'"'format'"'"' = '"'"'raw'"'"'
+);
+INSERT INTO probe_sink SELECT CAST(account_id AS STRING) FROM gold_book;
+""")
+PYEOF
+    JOBS_DIR="$d" ./infra/aws/scripts/validate-fluss-sql.sh'
+
+  # A table option the SERVER rejects. TableDescriptorValidation throws for
+  # first_row + delete.behavior=allow — verified in the Fluss source. This is the
+  # class the offline checks cannot see at all.
+  expect "catches a server-rejected table option" 1 bash -c '
+    d=$(mktemp -d); cp jobs/flink-fluss/*.sql "$d/"
+    sed -i "s|.table.merge-engine.  *= .first_row.,|'table.merge-engine' = 'first_row', 'table.delete.behavior' = 'allow',|" "$d/create_tables.sql"
+    JOBS_DIR="$d" ./infra/aws/scripts/validate-fluss-sql.sh'
+
 else
   echo "  (skipping Docker checks — run with --all)"
 fi

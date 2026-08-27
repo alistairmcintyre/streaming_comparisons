@@ -201,7 +201,8 @@ clean:
 
 # ── pre-deploy checks ───────────────────────────────────────────────────────
 # Run after every change. `test` is seconds and needs nothing; `test-all` adds the
-# Flink SQL compile (Docker, ~3 min). Both also verify each CHECKER can still fail
+# Flink SQL compile for BOTH engines (Docker, ~6 min: paimon needs a Flink, fluss also
+# needs zookeeper + coordinator + tablet server). Both tiers also verify each CHECKER can still fail
 # against a known-bad fixture — several checks written on 2026-08-27 were themselves
 # broken in ways that made them silently pass, which is how ~$42 of clusters went on
 # bugs that were free to catch.
