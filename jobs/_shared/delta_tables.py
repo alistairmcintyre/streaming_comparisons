@@ -98,6 +98,14 @@ def create_silver_accounts(spark):
         StructField("account_id", LongType(), False), StructField("name", StringType()),
         StructField("country", StringType()), StructField("tier", StringType()),
         StructField("source_updated_at", TimestampType()), StructField("event_ts", TimestampType()),
+        # effective_to and is_current are NOT columns here — they are derived, and
+        # register-glue-tables.sh publishes silver.accounts_*_scd2 views that do it:
+        #     LEAD(effective_from) OVER (PARTITION BY account_id ORDER BY effective_from)
+        # Why not materialise them? Close-out (UPDATE the prior row when a new version
+        # arrives) is not uniformly achievable: Paimon could via partial-update, Fluss has
+        # only first_row/versioned/aggregation. Materialising in three engines and
+        # deriving in two would put a PIPELINE difference into the DATA MODEL. The base
+        # table is the audit record; the view is the lens, and it costs nothing.
         StructField("effective_from", TimestampType(), False),
         StructField("source_lsn", LongType(), False),
         StructField("op", StringType()),          # 'd' marks the version that closed the account

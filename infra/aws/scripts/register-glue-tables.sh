@@ -151,6 +151,33 @@ for spec in "silver:trades_fluss:fluss/paimon/iceberg/silver/trades" \
   && echo "  registered ${db}.${tbl} -> ${latest}" || echo "  FAILED ${db}.${tbl}"
 done
 
+# ── SCD2 validity views ──────────────────────────────────────────────────────
+# silver.accounts stores EVERY version, keyed (account_id, source_lsn), with only
+# effective_from materialised. effective_to and is_current are derived here rather than
+# written, because materialised close-out is not uniformly achievable: Paimon could do it
+# with partial-update, but Fluss has only first_row/versioned/aggregation. Materialising
+# in three engines and deriving in two would put a PIPELINE difference into the DATA
+# MODEL, which is exactly what this project is trying not to do.
+#
+# A view costs nothing to maintain and gives analysts the standard SCD2 shape, so nobody
+# has to hand-write LEAD() and get the boundary condition wrong. The base table remains
+# the audit record; this is the lens.
+#
+#   current row      : WHERE is_current
+#   as-of a trade    : JOIN ... ON a.account_id = t.account_id
+#                      AND t.executed_at >= a.effective_from
+#                      AND (a.effective_to IS NULL OR t.executed_at < a.effective_to)
+echo "== scd2 views =="
+for tbl in accounts_delta accounts_spark accounts_paimon accounts_hudi_rt accounts_fluss; do
+  aws glue get-table --database-name silver --name "$tbl" >/dev/null 2>&1 || { echo "  skip ${tbl} — not registered"; continue; }
+  athena_sql "CREATE OR REPLACE VIEW silver.${tbl}_scd2 AS
+    SELECT *,
+           LEAD(effective_from) OVER (PARTITION BY account_id ORDER BY effective_from) AS effective_to,
+           LEAD(effective_from) OVER (PARTITION BY account_id ORDER BY effective_from) IS NULL AS is_current
+    FROM silver.${tbl}" \
+    && echo "  view silver.${tbl}_scd2" || echo "  FAILED view for ${tbl}"
+done
+
 echo "== registered tables =="
 for db in bronze silver gold; do
   echo "  $db: $(aws glue get-tables --database-name "$db" --query 'TableList[].Name' --output text 2>/dev/null)"
