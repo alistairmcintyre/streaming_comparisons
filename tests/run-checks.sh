@@ -59,6 +59,12 @@ expect "scd2 staging logic (shared by the Spark engines)" 0 \
 expect "every workflow run: block is valid shell" 0 \
   python3 tests/check_workflow_shell.py
 
+# clean_lake is what makes a run a FRESH benchmark. It is a hand-maintained prefix list,
+# so a manifest that starts writing somewhere new is silently uncovered — which is how
+# _flink_ha and _flink_savepoints accrued objects across every run since HA was added.
+expect "every manifest S3 prefix is wiped or deliberately preserved" 0 \
+  python3 tests/check_clean_lake.py
+
 expect "job imports: all shipped, none shadowed" 0 \
   python3 tests/check_configmaps.py
 
@@ -90,6 +96,13 @@ expect "schema parity check catches a drifted field type" 1 bash -c '
   sed "s|net_notional    DECIMAL(38,4)|net_notional    DECIMAL(20,4)|" \
     jobs/flink-paimon/create_tables.sql > "$d/jobs/flink-paimon/create_tables.sql"
   cd "$d" && python3 "$OLDPWD/tests/schema_parity_test.py"'
+
+expect "clean_lake check catches a prefix dropped from the wipe" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/.github/workflows" "$d/infra/aws"
+  cp -r infra/aws/k8s "$d/infra/aws/k8s"
+  sed "s|for p in paimon fluss _flink_chk _flink_ha _flink_savepoints; do|for p in paimon fluss _flink_chk; do|" \
+    .github/workflows/eks-run.yml > "$d/.github/workflows/eks-run.yml"
+  cd "$d" && python3 "$OLDPWD/tests/check_clean_lake.py"'
 
 expect "workflow shell check catches a doubled backslash" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/.github/workflows"

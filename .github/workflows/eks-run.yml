@@ -307,11 +307,20 @@ jobs:
             echo "wiping s3://$WAREHOUSE_BUCKET/$p/"
             aws s3 rm "s3://$WAREHOUSE_BUCKET/$p/" --recursive --only-show-errors || true
           done
-          for p in paimon fluss _flink_chk; do
+          # _flink_ha and _flink_savepoints belong here too. Kubernetes HA keeps its
+          # job-graph POINTERS in ConfigMaps, which die with the cluster, so a surviving
+          # storageDir cannot make a fresh cluster recover last run's jobs — but the blobs
+          # it references are then orphaned and accrue across every run. Savepoints are
+          # equally dead once their lake is wiped. tests/check_clean_lake.py now fails the
+          # build if a manifest writes to a prefix this step neither wipes nor preserves.
+          for p in paimon fluss _flink_chk _flink_ha _flink_savepoints; do
             echo "wiping s3://$PAIMON_BUCKET/$p/"
             aws s3 rm "s3://$PAIMON_BUCKET/$p/" --recursive --only-show-errors || true
           done
-          # Guard: these must still be here afterwards.
+          # Guard: these must still be here afterwards. `benchmarks/` is also PRESERVED
+          # (it is the results archive — the whole point is that it outlives the cluster)
+          # but is not asserted, because it legitimately does not exist before the first
+          # run that snapshots anything.
           for keep in tfstate teardown; do
             aws s3 ls "s3://$WAREHOUSE_BUCKET/$keep/" >/dev/null 2>&1 \
               && echo "  OK preserved: $keep/" \
