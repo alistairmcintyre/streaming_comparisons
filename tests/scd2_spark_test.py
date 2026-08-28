@@ -26,16 +26,19 @@ spark.sparkContext.setLogLevel("ERROR")
 
 schema = StructType([
     StructField("account_id", LongType()), StructField("tier", StringType()),
+    # a NON-STRING attribute on purpose: the close rows null every attribute out,
+    # and casting those nulls to string silently breaks unionByName.
+    StructField("source_updated_at", TimestampType()),
     StructField("effective_from", TimestampType()), StructField("source_lsn", LongType())])
 
 batch = spark.createDataFrame([
-    (1, "A", D(1), 100), (2, "X", D(3), 150), (1, "B", D(5), 200),
-    (3, "P", D(6), 400), (3, "Q", D(5), 300),   # generated BEFORE 400, arrives after
-    (4, "Z", D(8), 500), (4, "Z", D(8), 500),          # re-delivery
+    (1, "A", D(1), D(1), 100), (2, "X", D(3), D(3), 150), (1, "B", D(5), D(5), 200),
+    (3, "P", D(6), D(6), 400), (3, "Q", D(5), D(5), 300),  # generated BEFORE 400, arrives after
+    (4, "Z", D(8), D(8), 500), (4, "Z", D(8), D(8), 500),  # re-delivery
 ], schema)
 current = spark.createDataFrame([], schema)             # empty table to start
 
-staged = stage_scd2(batch, current, attrs=["tier"]).collect()
+staged = stage_scd2(batch, current, attrs=["tier", "source_updated_at"]).collect()
 
 # model the sink: PK (account_id, source_lsn), last write wins
 merged = {}

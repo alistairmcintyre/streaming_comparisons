@@ -13,6 +13,7 @@ table (fine for ephemeral benchmark runs; a long-lived table needs explicit migr
 import os
 from delta.tables import DeltaTable
 from pyspark.sql.types import (
+    BooleanType,
     StructType, StructField, StringType, LongType, IntegerType, DecimalType, TimestampType,
 )
 
@@ -107,6 +108,10 @@ def create_silver_accounts(spark):
         # deriving in two would put a PIPELINE difference into the DATA MODEL. The base
         # table is the audit record; the view is the lens, and it costs nothing.
         StructField("effective_from", TimestampType(), False),
+        # MATERIALISED by the atomic close-out in silver_accounts.py — when version
+        # N+1 arrives, one MERGE both closes N and inserts N+1.
+        StructField("effective_to", TimestampType()),
+        StructField("is_current", BooleanType()),
         StructField("source_lsn", LongType(), False),
         StructField("op", StringType()),          # 'd' marks the version that closed the account
         StructField("commit_ts", TimestampType()),

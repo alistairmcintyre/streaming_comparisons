@@ -27,6 +27,7 @@ the CDC total order, so an identical re-delivery collapses while a real change d
 """
 import os
 from delta_tables import ensure_all  # in-pipeline DDL
+from scd2 import stage_scd2
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, from_json, current_timestamp, to_timestamp, coalesce, row_number,
@@ -56,6 +57,38 @@ ENVELOPE = StructType([
     StructField("source", SOURCE,       True),
 ])
 
+
+
+def upsert_scd2(batch, batch_id):
+    """One MERGE that both CLOSES the predecessor and INSERTS the new version.
+
+    Atomic: a reader never sees a moment with two current rows, or none. The staging is
+    jobs/_shared/scd2.py, shared with the other Spark engines so the five pipelines cannot
+    drift on what SCD2 means.
+    """
+    spark = batch.sparkSession
+    if batch.rdd.isEmpty():
+        return
+    ids = [r[0] for r in batch.select("account_id").distinct().collect()]
+    try:
+        current = (spark.read.format("delta").load(TABLE_PATH)
+                   .filter(col("is_current") & col("account_id").isin(ids))
+                   .select("account_id", "source_lsn", "effective_from"))
+    except Exception:                      # first batch: the table does not exist yet
+        current = spark.createDataFrame(
+            [], batch.select("account_id", "source_lsn", "effective_from").schema)
+
+    stage_scd2(batch, current, attrs=["name", "country", "tier", "source_updated_at", "event_ts", "op", "commit_ts"]).createOrReplaceTempView("_scd2")
+    spark.sql(f"""
+        MERGE INTO delta.`{TABLE_PATH}` AS t
+        USING _scd2 AS s
+        ON t.account_id = s.account_id AND t.source_lsn = s.source_lsn
+        WHEN MATCHED AND s.action = 'close' THEN UPDATE SET
+            t.effective_to = s.effective_to, t.is_current = false
+        WHEN NOT MATCHED AND s.action = 'new' THEN INSERT
+            (account_id, name, country, tier, source_updated_at, event_ts, effective_from, effective_to, is_current, source_lsn, op, commit_ts)
+            VALUES (s.account_id, s.name, s.country, s.tier, s.source_updated_at, s.event_ts, s.effective_from, s.effective_to, s.is_current, s.source_lsn, s.op, s.commit_ts)
+    """)
 
 
 def main():
@@ -99,18 +132,7 @@ def main():
                 current_timestamp().alias("commit_ts"),
                 col("kafka_offset")))
 
-    # Append EVERY version. dropDuplicates on the natural key (account_id, source_lsn)
-    # collapses at-least-once CDC re-deliveries — byte-identical rows — while leaving
-    # genuine versions alone. source_lsn is monotonic, so a re-delivery lands close
-    # behind its original and the watermark bounds the state.
-    versions = (parsed
-                .withWatermark("event_ts", "1 hour")
-                .dropDuplicatesWithinWatermark(["account_id", "source_lsn"])
-                .select("account_id", "name", "country", "tier", "source_updated_at",
-                        "event_ts", "effective_from", "source_lsn", "op", "commit_ts"))
-
-    (versions.writeStream.format("delta").outputMode("append")
-        .option("path", TABLE_PATH)
+    (parsed.writeStream.foreachBatch(upsert_scd2)
         .option("checkpointLocation", CHECKPOINT_PATH)
         .trigger(processingTime="15 seconds")
         .start().awaitTermination())

@@ -5,6 +5,7 @@ SCD1 dimension: latest row per account_id wins, which Hudi gives directly via up
 with precombine on source_updated_at.
 """
 import os
+from scd2 import stage_scd2
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, current_timestamp, to_timestamp, coalesce
 from pyspark.sql.types import StructType, StructField, StringType, LongType
@@ -30,6 +31,34 @@ ENVELOPE = StructType([
     StructField("after",  PAYLOAD,      True),
     StructField("source", SOURCE,       True),
 ])
+
+
+def upsert_scd2(batch, batch_id):
+    """Same staging as Delta/Iceberg (jobs/_shared/scd2.py); the WRITE differs.
+
+    Hudi has no MERGE with per-clause conditions here, but it does not need one: the record
+    key is (account_id, source_lsn), so upserting the staged rows CLOSES the predecessor
+    (its key already exists, so the row is replaced with effective_to set) and INSERTS the
+    new version (its key is new) in a single commit. Same atomicity, different primitive —
+    which is exactly the kind of difference this benchmark exists to show.
+    """
+    spark = batch.sparkSession
+    if batch.rdd.isEmpty():
+        return
+    ids = [r[0] for r in batch.select("account_id").distinct().collect()]
+    try:
+        current = (spark.read.format("hudi").load(SILVER_ACCOUNTS)
+                   .filter(col("is_current") & col("account_id").isin(ids))
+                   .select("account_id", "source_lsn", "effective_from"))
+    except Exception:                      # first batch: the table does not exist yet
+        current = spark.createDataFrame(
+            [], batch.select("account_id", "source_lsn", "effective_from").schema)
+
+    staged = stage_scd2(batch, current,
+                        attrs=["name", "country", "tier", "source_updated_at", "event_ts", "op"])
+    (staged.drop("action").withColumn("commit_ts", current_timestamp())
+        .write.format("hudi").options(**silver_accounts_opts())
+        .mode("append").save(SILVER_ACCOUNTS))
 
 
 def main():
@@ -69,11 +98,8 @@ def main():
                 current_timestamp().alias("commit_ts"))
               .filter(col("account_id").isNotNull() & (col("op") != "d")))
 
-    (parsed.writeStream.format("hudi")
-        .options(**silver_accounts_opts())
-        .option("path", SILVER_ACCOUNTS)
+    (parsed.writeStream.foreachBatch(upsert_scd2)
         .option("checkpointLocation", CHECKPOINT_PATH)
-        .outputMode("append")
         .trigger(processingTime="15 seconds")
         .start().awaitTermination())
 

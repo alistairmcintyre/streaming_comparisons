@@ -47,7 +47,9 @@ _STATEMENTS = [
           -- a PK table, and keeping all five engines on one model matters more here.
           -- Natural key (account_id, source_lsn): a CDC re-delivery collapses, a real
           -- change does not.
-          effective_from TIMESTAMP, source_lsn BIGINT, op STRING, commit_ts TIMESTAMP)
+          -- effective_to / is_current are MATERIALISED by the atomic close-out.
+          effective_from TIMESTAMP, effective_to TIMESTAMP, is_current BOOLEAN,
+          source_lsn BIGINT, op STRING, commit_ts TIMESTAMP)
       USING iceberg TBLPROPERTIES ({_MOR_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.gold.open_positions_spark (
         account_id BIGINT NOT NULL, symbol STRING NOT NULL, net_quantity BIGINT,

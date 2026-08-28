@@ -67,6 +67,9 @@ def stage_scd2(batch: DataFrame, current: DataFrame, attrs,
                            col("_prev_eff").alias(eff_from),
                            col(eff_from).alias("effective_to"),
                            lit(False).alias("is_current"), col("action"),
-                           *[lit(None).cast("string").alias(a) for a in attrs]))
+                           # NULL of the SAME TYPE as the batch column. Casting these to
+                           # string worked only because the first test used a string
+                           # attribute; unionByName fails on a type mismatch otherwise.
+                           *[lit(None).cast(batch.schema[a].dataType).alias(a) for a in attrs]))
 
     return new_rows.unionByName(close_rows)
