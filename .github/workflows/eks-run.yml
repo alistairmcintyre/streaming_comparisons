@@ -369,9 +369,16 @@ jobs:
             --docker-server="${ECR_REGISTRY}" --docker-username=AWS \
             --docker-password="$(aws ecr get-login-password --region "$AWS_REGION")" \
             --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n flink create ns flink --dry-run=client -o yaml 2>/dev/null || true
-          kubectl -n flink create configmap fluss-sql  --from-file=jobs/flink-fluss/  --dry-run=client -o yaml | kubectl apply -f - || true
-          kubectl -n flink create configmap paimon-sql --from-file=jobs/flink-paimon/ --dry-run=client -o yaml | kubectl apply -f - || true
+          # `kubectl -n flink create ns flink ... 2>/dev/null || true` — three bugs in one
+          # line: -n is meaningless for a namespace, the generator was NOT piped to
+          # `kubectl apply` so it only printed YAML to the log, and `|| true` hid that
+          # nothing was created. On a fresh cluster the flink namespace did not exist
+          # until 00-namespaces.yaml in PHASE 2, long after these ConfigMaps.
+          kubectl create ns flink --dry-run=client -o yaml | kubectl apply -f -
+          # No `|| true`: a missing SQL ConfigMap means the Flink submitters mount nothing
+          # and both engines run zero jobs while every pod looks healthy.
+          kubectl -n flink create configmap fluss-sql  --from-file=jobs/flink-fluss/  --dry-run=client -o yaml | kubectl apply -n flink -f -
+          kubectl -n flink create configmap paimon-sql --from-file=jobs/flink-paimon/ --dry-run=client -o yaml | kubectl apply -n flink -f -
           # Spark jobs + shared module → ConfigMaps (mounted at /opt/jobs, /opt/shared)
           kubectl create ns spark --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n spark create configmap spark-iceberg-jobs --from-file=jobs/spark-iceberg/ --dry-run=client -o yaml | kubectl apply -f -
@@ -413,11 +420,19 @@ jobs:
           echo "== phase 1: server dry-run (no changes) =="
           DRYFAIL=0
           for f in $(ls infra/aws/k8s/*.yaml | sort); do
-            case "$(basename "$f")" in 96-alerts.yaml) R=$(kubectl apply --dry-run=server -f "$f" 2>&1) ;;
-                                       *)              R=$(envsubst < "$f" | kubectl apply --dry-run=server -f - 2>&1) ;; esac
+            # `&& RC=0 || RC=$?`, NOT a bare assignment followed by `[ $? -ne 0 ]`.
+            # GitHub runs these blocks under `bash -eo pipefail`, so a bare `R=$(cmd)`
+            # whose cmd fails IS a failing command: the shell exits THERE, before the if
+            # that would print the rejection. The step logged the header and then
+            # `exit 1` with no diagnostic at all, which is how a rejected manifest became
+            # undebuggable. Reproduced locally before changing it.
+            case "$(basename "$f")" in
+              96-alerts.yaml) R=$(kubectl apply --dry-run=server -f "$f" 2>&1) && RC=0 || RC=$? ;;
+              *)              R=$(envsubst < "$f" | kubectl apply --dry-run=server -f - 2>&1) && RC=0 || RC=$? ;;
+            esac
             # An "already exists"/immutable complaint on a re-apply is not a rejection.
-            if [ $? -ne 0 ] && ! echo "$R" | grep -qiE 'already exists|field is immutable'; then
-              echo "  REJECTED $(basename "$f"):"; echo "$R" | sed 's/^/      /'; DRYFAIL=1
+            if [ "$RC" -ne 0 ] && ! echo "$R" | grep -qiE 'already exists|field is immutable'; then
+              echo "  REJECTED $(basename "$f") (rc=$RC):"; echo "$R" | sed 's/^/      /'; DRYFAIL=1
             fi
           done
           [ "$DRYFAIL" = 0 ] || { echo "manifests rejected by admission — nothing applied"; exit 1; }

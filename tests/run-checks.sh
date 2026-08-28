@@ -104,6 +104,12 @@ expect "clean_lake check catches a prefix dropped from the wipe" 1 bash -c '
     .github/workflows/eks-run.yml > "$d/.github/workflows/eks-run.yml"
   cd "$d" && python3 "$OLDPWD/tests/check_clean_lake.py"'
 
+expect "workflow shell check catches \$? tested under set -e" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/.github/workflows"
+  sed "s|if \[ \"\$RC\" -ne 0 \] \&\& ! echo \"\$R\"|if [ \$? -ne 0 ] \&\& ! echo \"\$R\"|" \
+    .github/workflows/eks-run.yml > "$d/.github/workflows/eks-run.yml"
+  cd "$d" && python3 "$OLDPWD/tests/check_workflow_shell.py"'
+
 expect "workflow shell check catches a doubled backslash" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/.github/workflows"
   sed "145s|\" \\\\$|\" \\\\\\\\|" .github/workflows/eks-run.yml > "$d/.github/workflows/eks-run.yml"
