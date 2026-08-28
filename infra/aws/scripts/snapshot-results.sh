@@ -26,17 +26,22 @@
 #           jobs/_shared/hudi_tables.py. silver.accounts is unpartitioned and reads fine.
 #           NOTE the un-suffixed table (open_positions_hudi) is the REAL-TIME view.
 #
-#   paimon and fluss — their Iceberg-compat metadata numbers fields from ZERO:
-#             paimon/fluss : field ids 0..8
-#             spark iceberg: field ids 1..9   (Athena reads this one fine)
-#           Iceberg readers expect positive ids, so Trino discards the id-0 column and the
-#           whole mapping collapses:
+#   paimon and fluss — FIXED. Their Glue tables were registered with "Columns": [], and
+#           Athena reads an Iceberg table's columns FROM THE GLUE DEFINITION, not from the
+#           metadata file the pointer names. So `SELECT count(*)` worked (it only needs the
+#           snapshot) while `SELECT *` failed with
 #             COLUMN_NOT_FOUND: Relation contains no accessible columns
-#           That is inside Paimon's IcebergCommitCallback, not anything this config sets.
+#           register-glue-tables.sh now derives the columns from the metadata's own schema.
+#           Verified against the live run: all four paimon/fluss tables return rows.
 #
-# So Athena covers delta and spark-iceberg. The other three must be counted through Spark
-# or Flink, and until that exists their rows here are legitimately query_failed rather
-# than evidence of a broken pipeline.
+#           NOTE for anyone who reads the metadata and gets suspicious: Paimon numbers
+#           Iceberg field ids from 0 where a native Iceberg writer starts at 1. That is a
+#           real difference and it is NOT the cause — re-registering with ids shifted to
+#           1-based changed nothing, and the original 0-based metadata reads fine once the
+#           Glue columns are present. Tested both ways rather than assumed.
+#
+# So Athena now covers delta, spark-iceberg, paimon and fluss. Only Hudi's PARTITIONED
+# tables remain unreadable, for the positional reason above; query those through Spark.
 set -uo pipefail
 
 : "${AWS_REGION:?}" ; : "${WAREHOUSE_BUCKET:?}" ; : "${RUN_ID:?}"

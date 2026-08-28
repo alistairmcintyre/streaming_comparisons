@@ -87,6 +87,40 @@ for spec in "bronze:trades_hudi" "silver:trades_hudi" "silver:accounts_hudi" \
   else echo "  MISSING ${db}.${tbl}(_ro/_rt) — Hudi Glue sync did not run: check hudi-aws-bundle is in the image and the workload role has glue:*Table*"; fi
 done
 
+# Athena reads an Iceberg table's COLUMNS FROM THE GLUE TABLE DEFINITION, not from the
+# metadata file the pointer names. Registering with "Columns": [] therefore produced a
+# table where `SELECT count(*)` WORKED (that only needs the snapshot) while `SELECT *`
+# failed with
+#     COLUMN_NOT_FOUND: line 1:8: Relation contains no accessible columns
+# for paimon AND fluss — three of five engines effectively unqueryable, and their rows in
+# snapshot-results recorded as query_failed as if the pipelines were broken.
+# Verified directly: re-registering the SAME metadata pointer with columns populated
+# returned real rows (account_id=1, symbol=AMD, net_quantity=1633, status=OPEN).
+# Derived from the metadata's own schema rather than hardcoded, so it follows the table.
+glue_columns_from_metadata() {   # $1 = s3://.../vN.metadata.json  -> Glue Columns JSON
+  aws s3 cp "$1" - 2>/dev/null | python3 -c '
+import json, re, sys
+M = {"long":"bigint","int":"int","string":"string","boolean":"boolean","double":"double",
+     "float":"float","date":"date","binary":"binary","uuid":"string",
+     "timestamp":"timestamp","timestamptz":"timestamp"}
+def conv(t):
+    if isinstance(t, str):
+        if t.startswith("decimal"):
+            return re.sub(r"\s+", "", t)
+        if t.startswith("fixed"):
+            return "binary"
+        return M.get(t, "string")
+    return "string"   # struct/list/map: not used by these tables
+try:
+    d = json.load(sys.stdin)
+    sid = d.get("current-schema-id", 0)
+    sch = next((x for x in d.get("schemas", []) if x.get("schema-id") == sid), None) or d["schemas"][0]
+    print(json.dumps([{"Name": f["name"], "Type": conv(f["type"])} for f in sch["fields"]]))
+except Exception:
+    print("[]")
+'
+}
+
 # ── Paimon's Iceberg metadata → Glue ─────────────────────────────────────────
 # Paimon (hadoop-catalog) writes Iceberg metadata under <table>/metadata/vN.metadata.json.
 # A Glue table with table_type=ICEBERG + metadata_location makes Athena read it.
@@ -102,17 +136,18 @@ for spec in "bronze:trades_paimon:paimon/iceberg/bronze/trades" \
            | grep -oE '[^ ]+\.metadata\.json$' | grep -v '^\.' | sort -V | tail -1 || true)
   if [ -z "$latest" ]; then echo "  skip ${db}.${tbl} — no iceberg metadata yet"; continue; fi
   meta="s3://${PAIMON_BUCKET}/${path}/metadata/${latest}"
+  COLS=$(glue_columns_from_metadata "$meta"); [ -z "$COLS" ] && COLS="[]"
   aws glue create-table --database-name "$db" --table-input "{
       \"Name\": \"${tbl}\",
       \"TableType\": \"EXTERNAL_TABLE\",
       \"Parameters\": {\"table_type\": \"ICEBERG\", \"metadata_location\": \"${meta}\"},
-      \"StorageDescriptor\": {\"Location\": \"s3://${PAIMON_BUCKET}/${path}\", \"Columns\": []}
+      \"StorageDescriptor\": {\"Location\": \"s3://${PAIMON_BUCKET}/${path}\", \"Columns\": ${COLS}}
     }" >/dev/null 2>&1 \
   || aws glue update-table --database-name "$db" --table-input "{
       \"Name\": \"${tbl}\",
       \"TableType\": \"EXTERNAL_TABLE\",
       \"Parameters\": {\"table_type\": \"ICEBERG\", \"metadata_location\": \"${meta}\"},
-      \"StorageDescriptor\": {\"Location\": \"s3://${PAIMON_BUCKET}/${path}\", \"Columns\": []}
+      \"StorageDescriptor\": {\"Location\": \"s3://${PAIMON_BUCKET}/${path}\", \"Columns\": ${COLS}}
     }" >/dev/null 2>&1 \
   && echo "  registered ${db}.${tbl} -> ${latest}" || echo "  FAILED ${db}.${tbl}"
 done
@@ -136,17 +171,18 @@ for spec in "silver:trades_fluss:fluss/paimon/iceberg/silver/trades" \
            | grep -oE '[^ ]+\.metadata\.json$' | grep -v '^\.' | sort -V | tail -1 || true)
   if [ -z "$latest" ]; then echo "  skip ${db}.${tbl} — no iceberg metadata yet"; continue; fi
   meta="s3://${PAIMON_BUCKET}/${path}/metadata/${latest}"
+  COLS=$(glue_columns_from_metadata "$meta"); [ -z "$COLS" ] && COLS="[]"
   aws glue create-table --database-name "$db" --table-input "{
       \"Name\": \"${tbl}\",
       \"TableType\": \"EXTERNAL_TABLE\",
       \"Parameters\": {\"table_type\": \"ICEBERG\", \"metadata_location\": \"${meta}\"},
-      \"StorageDescriptor\": {\"Location\": \"s3://${PAIMON_BUCKET}/${path}\", \"Columns\": []}
+      \"StorageDescriptor\": {\"Location\": \"s3://${PAIMON_BUCKET}/${path}\", \"Columns\": ${COLS}}
     }" >/dev/null 2>&1 \
   || aws glue update-table --database-name "$db" --table-input "{
       \"Name\": \"${tbl}\",
       \"TableType\": \"EXTERNAL_TABLE\",
       \"Parameters\": {\"table_type\": \"ICEBERG\", \"metadata_location\": \"${meta}\"},
-      \"StorageDescriptor\": {\"Location\": \"s3://${PAIMON_BUCKET}/${path}\", \"Columns\": []}
+      \"StorageDescriptor\": {\"Location\": \"s3://${PAIMON_BUCKET}/${path}\", \"Columns\": ${COLS}}
     }" >/dev/null 2>&1 \
   && echo "  registered ${db}.${tbl} -> ${latest}" || echo "  FAILED ${db}.${tbl}"
 done
