@@ -69,6 +69,16 @@ expect "image hash changes with content" 0 bash -c '
 if [ -n "$ALL" ]; then
   echo "== slow: Flink SQL compiles (Docker) =="
   expect "paimon SQL compiles, every file yields a job" 0 ./infra/aws/scripts/validate-flink-sql.sh
+  echo "== slow: SCD2 against a REAL Delta table, across micro-batches =="
+  # The unit test passes an EMPTY `current`, so it only covers versions arriving in one
+  # batch. This covers the path that actually happens — version N in one micro-batch, N+1
+  # in a later one, the close-out finding N by READING THE TABLE — plus the MERGE column
+  # list against the real schema, which no unit test can check.
+  expect "scd2 delta MERGE closes across micro-batches" 0 \
+    docker run --rm -u 0 -v "$PWD:/w" -w /w --entrypoint python3 \
+      167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
+      /w/tests/scd2_delta_merge_test.py
+
   echo "== slow: SCD2 close-out BEHAVIOUR (not just that it compiles) =="
   # The compile checks prove the SQL plans. This proves it is right — it runs the real
   # close-out over fixed account changes and asserts the validity ranges, including the
