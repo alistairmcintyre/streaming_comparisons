@@ -6,6 +6,7 @@ no MERGE, and a plain readStream downstream is fine (append snapshots).
 """
 import os
 from pyspark.sql import SparkSession
+from schemas import BRONZE_TRADES, conform
 from delta_tables import ensure_all  # in-pipeline DDL
 from latency import observe_event_time, attach_latency_listener
 from pyspark.sql.functions import col, from_json, current_timestamp, to_timestamp
@@ -80,6 +81,16 @@ def main():
                 col("env.source.lsn").alias("source_lsn"),
                 current_timestamp().alias("ingest_ts"),
                 col("kafka_offset"), col("kafka_partition")))
+
+    # conform(): the projection above emits source_lsn between event_ts and ingest_ts,
+    # while the table DDL puts it LAST. Delta appends by column NAME so it never noticed;
+    # ICEBERG MATCHES BY POSITION and rejected every micro-batch with
+    #   Cannot write incompatible dataset ... source_lsn is out of order, before
+    #   kafka_partition
+    # crash-looping the bronze job on a live cluster. One canon
+    # (jobs/_shared/schemas.py:BRONZE_TRADES) now decides the order for the DDL and the
+    # write alike, instead of the two being kept in step by hand.
+    parsed = conform(parsed, BRONZE_TRADES)
 
     # observe() costs no extra action; the listener emits after each batch COMMITS.
     attach_latency_listener(spark, "delta-bronze")

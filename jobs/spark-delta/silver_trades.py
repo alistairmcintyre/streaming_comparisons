@@ -8,6 +8,7 @@ would be added — none required yet, so it's a clean passthrough.
 """
 import os
 from pyspark.sql import SparkSession
+from schemas import SILVER_TRADES as SILVER_TRADES_FIELDS, conform
 from delta_tables import ensure_all  # in-pipeline DDL
 from pyspark.sql.functions import col
 
@@ -50,13 +51,13 @@ def main():
         # that is ~7.2M entries at 2h (~2x the 1h figure).
         .withWatermark("event_ts", "2 hours")
         .dropDuplicatesWithinWatermark(["trade_id"])
-        .select("trade_id", "account_id", "symbol", "side", "quantity",
-                "price", "executed_at", "event_ts", "ingest_ts",
-                # bronze has carried source_lsn all along; silver dropped it. It is the
-                # CDC total order, Hudi's precombine key, and the column every doc here
-                # points at — it belongs on all five silvers, not three.
-                "source_lsn")
+        # conform(), not a bare select: this is a POSITIONAL append, and Iceberg matches
+        # the frame to the table by position, not name. The bronze job got this wrong and
+        # crash-looped on `source_lsn is out of order`. One canon decides the order here
+        # and in the DDL. (source_lsn is the CDC total order and Hudi's precombine key —
+        # bronze carried it all along and silver used to drop it.)
     )
+    cleaned = conform(cleaned, SILVER_TRADES_FIELDS)
 
     (cleaned.writeStream.format("delta").outputMode("append")
         .option("path", SILVER_TRADES)

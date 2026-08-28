@@ -47,9 +47,15 @@ for job in sorted(pathlib.Path("jobs").glob("spark-*/*.py")):
                 fails.append(f"{job} imports '{n}' — NOT in the spark-shared configmap")
 
 # ── 2. shadowed imports ──────────────────────────────────────────────────────
+_TREES = {}
+def tree_of(path):
+    if path not in _TREES:
+        _TREES[path] = ast.parse(path.read_text())
+    return _TREES[path]
+
 for job in sorted(pathlib.Path("jobs").glob("spark-*/*.py")):
     seen = {}
-    for node in ast.walk(ast.parse(job.read_text())):
+    for node in ast.walk(tree_of(job)):
         if not isinstance(node, ast.ImportFrom):
             continue
         for alias in node.names:
@@ -58,6 +64,17 @@ for job in sorted(pathlib.Path("jobs").glob("spark-*/*.py")):
                 fails.append(f"{job} imports '{bound}' from both {seen[bound]} and "
                              f"{node.module} — the second silently shadows the first")
             seen[bound] = node.module
+    # …and a module-level ASSIGNMENT that shadows an imported name. This is the same bug
+    # wearing different clothes, and the import-vs-import check above walked straight past
+    # it: spark-delta/silver_trades.py imports SILVER_TRADES (the field list) and then
+    # defines SILVER_TRADES = f"{_BASE}/silver/trades" (the path), so conform() would have
+    # been handed a string. Caught only because the write then failed.
+    for node in ast.walk(tree_of(job)):
+        if isinstance(node, ast.Assign) and getattr(node, "col_offset", 1) == 0:
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id in seen:
+                    fails.append(f"{job} imports '{t.id}' from {seen[t.id]} and then "
+                                 f"reassigns it at module level — the import is dead")
 
 for f in sorted(set(fails)):
     print("  FAIL  " + f)
