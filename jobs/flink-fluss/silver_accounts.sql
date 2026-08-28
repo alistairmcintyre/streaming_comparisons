@@ -1,14 +1,24 @@
--- Kafka accounts (Debezium) → Fluss silver.accounts (SCD1 dimension).
--- Current view per account_id, latest wins. Gold joins this for country/tier so the
--- Fluss fold does the same work as the other four engines' folds.
+-- Kafka accounts (Debezium) → Fluss silver.accounts as SCD2, with an ATOMIC CLOSE-OUT.
 --
--- DELETES: Paimon carries hard deletes via 'rowkind.field'; Fluss has no equivalent,
--- so a deleted account is filtered out here and its dimension row simply stops being
--- refreshed (last-known country/tier persists). The generator never deletes accounts,
--- so this does not affect the benchmark — noted so the divergence isn't mistaken for
--- a bug when comparing silver.accounts row counts across engines.
+-- Every version is retained and its validity is MATERIALISED: when version N+1 arrives
+-- this job writes TWO rows — the new version (effective_to NULL, is_current TRUE) and
+-- version N again with effective_to set and is_current FALSE. The PK is
+-- (account_id, source_lsn), so rewriting version N merges onto the existing row.
+-- Both INSERTs share one STATEMENT SET: one job, one source read.
 --
--- Run in the Fluss Flink SQL client (see README). TEMPLATE: submit.sh runs envsubst.
+-- ORDER BY PROCTIME(), not event time. A rowtime OVER window cannot emit until the
+-- WATERMARK passes the row, and the watermark only advances as further events arrive — so
+-- on a low-volume dimension a change on day 1 would not reach silver until the NEXT change
+-- arrived, days later. Processing time emits immediately and drops nothing. The condition
+-- becomes "arrival order matches LSN order", true for one Debezium connector on one
+-- replication slot, and GUARDED by source_lsn > prev_lsn rather than assumed.
+--
+-- DELETES: Fluss has no rowkind.field, so a delete is filtered at the source (see the
+-- WHERE below) rather than written as a tombstone version. That is a real divergence from
+-- the Paimon pipeline and is recorded as such — the generator never deletes accounts, so
+-- it does not affect the benchmark, but it would matter for a source that does.
+--
+-- Run in the Fluss Flink SQL client. TEMPLATE: submit.sh runs envsubst.
 
 SET 'execution.checkpointing.interval' = '10 s';
 SET 'execution.checkpointing.mode'     = 'EXACTLY_ONCE';
@@ -23,7 +33,8 @@ CREATE TEMPORARY TABLE kafka_accounts_src (
     `before` ROW<account_id BIGINT, name STRING, country STRING, tier STRING, updated_at STRING>,
     `after`  ROW<account_id BIGINT, name STRING, country STRING, tier STRING, updated_at STRING>,
     `source` ROW<ts_ms BIGINT, lsn BIGINT>,
-    ts_ms    BIGINT
+    ts_ms    BIGINT,
+    proc AS PROCTIME()
 ) WITH (
     'connector'                    = 'kafka',
     'topic'                        = 'app.public.accounts',
@@ -34,14 +45,48 @@ CREATE TEMPORARY TABLE kafka_accounts_src (
     'json.ignore-parse-errors'     = 'false'${KAFKA_EXTRA_OPTS}
 );
 
-INSERT INTO fluss_catalog.silver.accounts
+-- Each change carried with its PREDECESSOR. Every attribute is LAGged because the
+-- close-out rewrites the whole previous row — Fluss has no partial-update merge engine.
+CREATE TEMPORARY VIEW acct_changes AS
 SELECT
-    `after`.account_id,
-    `after`.name,
-    `after`.country,
-    `after`.tier,
-    TO_TIMESTAMP(`after`.updated_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z'''),
-    TO_TIMESTAMP_LTZ(`source`.ts_ms, 3),
-    `source`.lsn
+    `after`.account_id                                                  AS account_id,
+    `after`.name                                                        AS name,
+    `after`.country                                                     AS country,
+    `after`.tier                                                        AS tier,
+    TO_TIMESTAMP(`after`.updated_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z''') AS source_updated_at,
+    TO_TIMESTAMP_LTZ(`source`.ts_ms, 3)                                 AS effective_from,
+    `source`.lsn                                                        AS source_lsn,
+    LAG(`after`.name)    OVER w                                         AS prev_name,
+    LAG(`after`.country) OVER w                                         AS prev_country,
+    LAG(`after`.tier)    OVER w                                         AS prev_tier,
+    LAG(TO_TIMESTAMP(`after`.updated_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z''')) OVER w AS prev_source_updated_at,
+    LAG(TO_TIMESTAMP_LTZ(`source`.ts_ms, 3)) OVER w                     AS prev_effective_from,
+    LAG(`source`.lsn)    OVER w                                         AS prev_lsn
 FROM kafka_accounts_src
-WHERE op <> 'd' AND `after`.account_id IS NOT NULL;
+WHERE op <> 'd' AND `after`.account_id IS NOT NULL
+WINDOW w AS (PARTITION BY `after`.account_id ORDER BY proc);
+
+EXECUTE STATEMENT SET
+BEGIN
+
+INSERT INTO fluss_catalog.silver.accounts
+SELECT account_id, name, country, tier, source_updated_at,
+       
+       effective_from,
+       -- An OUT-OF-ORDER arrival is not current: it is a late historical version, valid
+       -- until the row that already superseded it. Without this it would be written with
+       -- is_current TRUE and the account would have TWO current rows — which fans out
+       -- every join. Caught by tests/scd2-behaviour.sh; it compiles perfectly.
+       CASE WHEN prev_lsn IS NULL OR source_lsn > prev_lsn
+            THEN CAST(NULL AS TIMESTAMP(6)) ELSE prev_effective_from END,
+       (prev_lsn IS NULL OR source_lsn > prev_lsn),
+       source_lsn
+FROM acct_changes;
+
+INSERT INTO fluss_catalog.silver.accounts
+SELECT account_id, prev_name, prev_country, prev_tier, prev_source_updated_at,
+       prev_effective_from, effective_from, FALSE, prev_lsn
+FROM acct_changes
+WHERE prev_lsn IS NOT NULL AND source_lsn > prev_lsn;
+
+END;

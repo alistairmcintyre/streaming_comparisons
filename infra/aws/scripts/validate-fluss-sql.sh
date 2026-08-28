@@ -129,4 +129,6 @@ if [ -n "$FAILED" ]; then
   [ "${KEEP:-0}" = 1 ] && cp "$WORK/out.txt" ./fluss-sql-validate.log
   exit 1
 fi
+# KEEP writes the log on SUCCESS too — a stale failure log read as this run twice.
+[ "${KEEP:-0}" = 1 ] && cp "$WORK/out.txt" ./fluss-sql-validate.log
 echo "fluss SQL compiles — every job file produced a job"

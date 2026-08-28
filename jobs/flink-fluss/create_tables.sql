@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS fluss_catalog.silver.accounts (
     -- change writes a new row while an at-least-once re-delivery collapses onto the same
     -- one. effective_to / is_current are derived at read via LEAD(effective_from).
     effective_from    TIMESTAMP(6),
+    -- MATERIALISED by an atomic close-out; see silver_accounts.sql.
+    effective_to      TIMESTAMP(6),
+    is_current        BOOLEAN,
     source_lsn        BIGINT,
     PRIMARY KEY (account_id, source_lsn) NOT ENFORCED
 ) WITH (

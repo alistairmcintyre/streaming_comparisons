@@ -62,6 +62,13 @@ expect "image hash changes with content" 0 bash -c '
 if [ -n "$ALL" ]; then
   echo "== slow: Flink SQL compiles (Docker) =="
   expect "paimon SQL compiles, every file yields a job" 0 ./infra/aws/scripts/validate-flink-sql.sh
+  echo "== slow: SCD2 close-out BEHAVIOUR (not just that it compiles) =="
+  # The compile checks prove the SQL plans. This proves it is right — it runs the real
+  # close-out over fixed account changes and asserts the validity ranges, including the
+  # invariant that matters: exactly ONE current row per account. The first implementation
+  # compiled and planned cleanly and produced TWO current rows for an out-of-order arrival.
+  expect "scd2 close-out produces correct validity ranges" 0 ./tests/scd2-behaviour.sh
+
   echo "== meta: the SQL checker must catch the two bugs that cost a day =="
   # #85 — schema-valid, runtime-invalid: first-row cannot be stream-read with 'none'
   expect "catches changelog-producer=none" 1 bash -c '

@@ -122,4 +122,8 @@ if [ -n "$FAILED" ]; then
   [ "${KEEP:-0}" = 1 ] && cp "$WORK/out.txt" ./flink-sql-validate.log
   exit 1
 fi
+# KEEP writes the log on SUCCESS too. Previously only the failure branches copied it,
+# so ./flink-sql-validate.log could be a STALE artifact of an earlier failed run and
+# grepping it after a pass showed errors that were not from this run. It misled me twice.
+[ "${KEEP:-0}" = 1 ] && cp "$WORK/out.txt" ./flink-sql-validate.log
 echo "flink SQL compiles — every job file produced a job"

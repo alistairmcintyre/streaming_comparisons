@@ -131,6 +131,12 @@ CREATE TABLE IF NOT EXISTS paimon.silver.accounts (
     -- DERIVED at read via LEAD(effective_from) — materialised close-out would mean
     -- targeting (account_id, old_effective_from), which a stateless Flink job cannot know.
     effective_from    TIMESTAMP(6),
+    -- MATERIALISED validity, written by an atomic close-out (see silver_accounts.sql):
+    -- when version N+1 arrives, the job writes BOTH the new row AND version N again with
+    -- effective_to set. PK is (account_id, source_lsn), so rewriting version N merges
+    -- onto the existing row rather than duplicating it.
+    effective_to      TIMESTAMP(6),
+    is_current        BOOLEAN,
     source_lsn        BIGINT NOT NULL,
     PRIMARY KEY (account_id, source_lsn) NOT ENFORCED
 ) WITH (
