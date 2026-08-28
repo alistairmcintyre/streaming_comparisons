@@ -113,9 +113,15 @@ def bronze_trades_opts():
                  extra=_sync("bronze", "trades_hudi", "executed_date"))
 
 
-# silver trades: same grain, but deduplicated on trade_id, so upsert.
+# silver trades: same grain, deduplicated on trade_id — LAST-WINS.
+# precombine is the ordering key: on a duplicate trade_id Hudi keeps the row with the
+# GREATEST precombine value. It moves from executed_at to source_lsn because executed_at
+# ties at millisecond granularity at 1k/s, and a tie means an arbitrary winner. LSN is a
+# strict total order across the CDC stream and never ties.
+# This engine was ALREADY last-wins while paimon/fluss were first-wins and delta/iceberg
+# were first-wins-within-an-hour — three different answers to "which row survives".
 def silver_trades_opts():
-    return _opts("hudi_silver_trades", "trade_id", "executed_at",
+    return _opts("hudi_silver_trades", "trade_id", "source_lsn",
                  partitionpath="executed_date", operation="upsert",
                  extra=_sync("silver", "trades_hudi", "executed_date"))
 

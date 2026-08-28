@@ -19,7 +19,8 @@ CREATE CATALOG paimon WITH (
 
 INSERT INTO paimon.silver.trades
 SELECT
-    trade_id, account_id, symbol, side, quantity, price, executed_at, event_ts, ingest_ts
+    trade_id, account_id, symbol, side, quantity, price, executed_at, event_ts, ingest_ts,
+    source_lsn
 FROM paimon.bronze.trades
     /*+ OPTIONS('scan.mode' = 'latest-full') */
 WHERE trade_id IS NOT NULL;

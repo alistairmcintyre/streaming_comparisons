@@ -31,7 +31,9 @@ def main():
     src = (spark.readStream.format("hudi")
            .load(BRONZE_TRADES)
            .select("trade_id", "account_id", "symbol", "side", "quantity", "price",
-                   "executed_at", "event_ts", "executed_date")
+                   "executed_at", "event_ts", "executed_date",
+                     # ordering key for last-wins (precombine); see hudi_tables.py
+                     "source_lsn")
            .withColumn("ingest_ts", current_timestamp())
            .filter(col("trade_id").isNotNull()))
 

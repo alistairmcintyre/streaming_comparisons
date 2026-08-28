@@ -25,49 +25,26 @@
 -- a pure Flink fold, so adopting it would make the two engine families hold
 -- different values for identical input and break cross-engine reconciliation.
 --
--- STATE PROFILE (this is what makes the fold safe to run for months, not hours):
--- MIN/MAX cannot be un-applied the way SUM can, so over a RETRACTING input Flink keeps a
--- per-key multiset of every value ever seen — O(total rows), unbounded.
+-- STATE PROFILE — bounded, because silver.trades is insert-only.
+-- MIN and MAX cannot be un-applied the way SUM can, so over a RETRACTING input Flink
+-- keeps a per-key multiset of every value ever seen: O(total rows). Over an INSERT-ONLY
+-- input it keeps one scalar per key: O(distinct account x symbol), bounded by the size
+-- of the book rather than by uptime.
 --
--- This WAS the case here and is now fixed at the source. Reading
--- BaseDataTableSource.getChangelogMode() out of paimon-flink-1.20-1.4.2.jar: it returns
--- insertOnly() for a FIRST_ROW table, all() when changelog-producer != none, and upsert()
--- otherwise. silver.trades used changelog-producer='input' and so declared all() — a full
--- retract stream — regardless of the changelog being insert-only in content. It now uses
--- merge-engine='first-row' + changelog-producer='none' and declares insertOnly(), so Flink
--- plans MIN/MAX as a single scalar per key. All gold state is O(distinct account x symbol),
--- bounded by the size of the book rather than by uptime.
+-- silver.trades declares insert-only because it uses the first_row/first-row merge
+-- engine, which is correct on its own terms: a trade is an immutable execution, so the
+-- only duplicates are at-least-once CDC re-deliveries and those are byte-identical.
+-- Last-wins would be the right model for a MUTABLE entity — silver.accounts — but on
+-- this table it would buy nothing and cost a retracting changelog.
 --
+-- Sink-side aggregation (stateless projection into an aggregation merge engine) was
+-- considered as the way to bound state under last-wins. It cannot work: verified
+-- against the implementations, Fluss FieldSumAgg has no retract method at all and
+-- Paimon's min/max cannot retract. Sink aggregation is only sound over insert-only
+-- input — which is what we have, so the simpler stateful fold is fine.
 --
--- ACCESS PATTERN (verified against the jars in the image, not assumed):
---   * The GROUP BY is a keyed streaming aggregate, NOT a scan. GroupAggFunction
---     (flink-table-runtime-1.20.5.jar) holds the accumulator in ValueState<RowData>;
---     its constant pool references ValueState/update and no iterator, entries or
---     keys(). Per record that is one RocksDB point-get + point-put on
---     (account_id, symbol) — cost independent of key count and of rows processed.
---   * WHICH accumulator is the whole ballgame. AggFunctionFactory
---     (flink-table-planner_2.12-1.20.5.jar) branches on aggCallNeedRetractions and
---     for a TIMESTAMP picks either MinAggFunction$TimestampMinAggFunction (one value)
---     or MinWithRetractAggFunction, whose accumulator holds MapView<T, Long> — every
---     distinct timestamp ever seen for that key, with a count. Neither scans; one is
---     bounded and one is not, and the source's DECLARED changelog mode picks it.
---   * There is NO dimension join any more. When there was, it cost a second full
---     copy of the book: a regular streaming join materialises BOTH inputs
---     (StreamingJoinOperator keeps leftRecordStateView + rightRecordStateView),
---     so gold state was 2x book + accounts. Enrichment moved to query time.
---   * The source is read ONCE in full, then incrementally. Paimon's scan.mode='latest-full' is
---     "produces a snapshot upon first startup, and continue to read the latest
---     changes" (CoreOptions$StartupMode).
---     That bootstrap is unavoidable — a stateful fold has to be seeded — but it is
---     per job start, not per key or per record. It is also why retained checkpoints
---     matter (70-/92-flink-*.yaml): a restart WITHOUT a valid checkpoint re-reads the
---     whole table and rebuilds all state from scratch.
---
--- State TTL is deliberately NOT used here. Expiring a position's key would drop its
--- running SUM, so the next trade on a dormant account would rebuild net_quantity from
--- zero and silently corrupt the book. Bounded-by-key is the correct bound; TTL is not.
---
--- TEMPLATE: submit.sh runs envsubst.
+-- State TTL is NOT an option. Expiring a key drops its running SUM, so a dormant
+-- account's next trade would rebuild net_quantity from zero and corrupt the book.
 
 SET 'execution.runtime-mode'            = 'streaming';
 SET 'execution.checkpointing.interval'  = '10 s';

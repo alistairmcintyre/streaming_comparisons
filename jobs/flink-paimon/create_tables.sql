@@ -74,17 +74,31 @@ CREATE TABLE IF NOT EXISTS paimon.silver.trades (
     executed_at       TIMESTAMP(6),
     event_ts          TIMESTAMP(6),
     ingest_ts         TIMESTAMP(6),
+    -- the ordering key for last-wins; see sequence.field below
+    source_lsn        BIGINT,
     PRIMARY KEY (trade_id) NOT ENFORCED
 ) WITH (
     'bucket'                           = '4',
+    -- FIRST-WINS, and that is the correct model for this entity. A trade is an
+    -- IMMUTABLE EXECUTION: the source never updates it (gen_trades.py is INSERT-only,
+    -- and real venues model amendments and busts as NEW events carrying the original
+    -- trade id, not as updates in place). So the only duplicates that reach here are
+    -- at-least-once CDC RE-DELIVERIES, which are byte-identical — first-wins and
+    -- last-wins are therefore equivalent, and first-wins is cheaper.
+    --
+    -- Cheaper for a specific reason: FIRST_ROW makes the Paimon source declare
+    -- ChangelogMode.insertOnly(), so the gold GROUP BY plans MIN/MAX as one scalar per
+    -- key instead of a retract multiset of every value ever seen. Last-wins would need
+    -- a retracting changelog and put gold state back to O(total rows).
+    --
+    -- Last-wins belongs on MUTABLE entities. silver.accounts is that entity here — it
+    -- takes genuine UPDATEs and is maintained as a current view.
     'merge-engine'                     = 'first-row',
-    -- 'lookup', NOT 'none'. SchemaValidation ACCEPTS none, but a streaming read of
-    -- that combination fails at runtime:
-    --   First row streaming reading is not supported. You can use 'lookup' or
-    --   'full-compaction' changelog producer to support streaming reading.
-    -- The gold job streams from this table, so none silently cost us the gold job on
-    -- the first live run — schema-valid, runtime-invalid. lookup pays for changelog
-    -- generation at compaction; that is the price of a first-row table you can stream.
+    -- 'lookup', not 'none'. SchemaValidation accepts either with FIRST_ROW, but a
+    -- streaming read of first-row + none fails at RUNTIME: "First row streaming reading
+    -- is not supported. You can use 'lookup' or 'full-compaction'". The gold job streams
+    -- this table, so 'none' silently cost us the gold job on the first live run —
+    -- schema-valid, runtime-invalid (DEPLOY_LOG #85).
     'changelog-producer'               = 'lookup',
     'file.format'                      = 'parquet',
     'compaction.optimization-interval' = '${PAIMON_FULL_COMPACT_INTERVAL}',
