@@ -17,6 +17,26 @@ recorded in SIZING.md as a known asymmetry.
 READ SEMANTICS: a MOR table exposes _ro (read-optimised, base files only — STALE) and
 _rt (real-time, merges the log files — CURRENT). Correctness checks must use _rt or
 the snapshot query type; _ro looks fast and returns old data.
+
+GLUE SYNC ALSO REGISTERS AN UN-SUFFIXED TABLE, and it is the REAL-TIME one — verified from
+Glue: gold.open_positions_hudi uses HoodieParquetRealtimeInputFormat, identical to _rt,
+while _ro uses HoodieParquetInputFormat. So `open_positions_hudi` is the one to query;
+_ro and _rt are the extra pair, not the only two.
+
+ATHENA CANNOT READ THE PARTITIONED HUDI TABLES, and it is not fixable from here. Glue
+registers a partition field as a PARTITION KEY, so it is absent from the table's column
+list — but Hudi still writes it INTO the parquet. Athena maps positionally, so every
+column after the partition field is read one place out:
+    Glue: ... account_id bigint | net_quantity bigint | net_notional decimal ...
+    file: ... account_id bigint | symbol       string | net_quantity  bigint  ...
+    -> HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
+The obvious remedy, hoodie.datasource.write.drop.partition.columns=true, DOES NOT WORK on
+Hudi 1.2.0 and is actively harmful. Verified by probe: Hudi stores `false` in
+hoodie.properties whatever you pass, and the NEXT write then dies with
+    Config conflict: hoodie.datasource.write.drop.partition.columns:  true   false
+so every pipeline would break after its first micro-batch. Query Hudi through SPARK, which
+reconstructs partition values from the path and is unaffected. silver.accounts is
+unpartitioned and reads from Athena fine.
 """
 import os
 

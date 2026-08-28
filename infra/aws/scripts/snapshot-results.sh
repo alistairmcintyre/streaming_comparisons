@@ -12,9 +12,31 @@
 # Without this a run leaves only a live Grafana dashboard that vanishes at teardown.
 #
 # RESILIENT BY DESIGN: every metric is attempted independently and a failure is
-# recorded as null rather than aborting. Hudi in particular is EXPECTED to fail its
-# count — Athena supports Hudi 0.14/0.15 and we write 1.2.0 — and that must not cost
-# us the other four engines' results.
+# recorded as null rather than aborting.
+#
+# THREE ENGINES ARE EXPECTED TO FAIL THEIR ATHENA QUERIES, each for a different and
+# VERIFIED reason. None is a pipeline defect; all were confirmed against a live run.
+#
+#   hudi  — the PARTITIONED tables (bronze/silver trades, gold) cannot be read. Glue holds
+#           the partition field as a partition KEY and omits it from the column list, but
+#           Hudi writes it into the parquet, so Athena's positional mapping is one out:
+#             HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
+#           hoodie.datasource.write.drop.partition.columns=true does not fix it — Hudi
+#           1.2.0 ignores it and then fails the next write on a config conflict. See
+#           jobs/_shared/hudi_tables.py. silver.accounts is unpartitioned and reads fine.
+#           NOTE the un-suffixed table (open_positions_hudi) is the REAL-TIME view.
+#
+#   paimon and fluss — their Iceberg-compat metadata numbers fields from ZERO:
+#             paimon/fluss : field ids 0..8
+#             spark iceberg: field ids 1..9   (Athena reads this one fine)
+#           Iceberg readers expect positive ids, so Trino discards the id-0 column and the
+#           whole mapping collapses:
+#             COLUMN_NOT_FOUND: Relation contains no accessible columns
+#           That is inside Paimon's IcebergCommitCallback, not anything this config sets.
+#
+# So Athena covers delta and spark-iceberg. The other three must be counted through Spark
+# or Flink, and until that exists their rows here are legitimately query_failed rather
+# than evidence of a broken pipeline.
 set -uo pipefail
 
 : "${AWS_REGION:?}" ; : "${WAREHOUSE_BUCKET:?}" ; : "${RUN_ID:?}"
