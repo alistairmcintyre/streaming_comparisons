@@ -215,8 +215,12 @@ except Exception: print(-1)" 2>/dev/null)
   esac
 done
 
-# Gold schema parity. The five golds must agree on 9 columns; country/tier moved out
-# to a read-time join, and a stale table would still carry them.
+# Gold table presence. NOT a schema check — this only proves the Delta log exists.
+# Field parity across the five engines is checked OFFLINE and for every layer by
+# tests/schema_parity_test.py (declared schemas) and tests/hudi_schema_test.py +
+# tests/gold_fold_test.py (Hudi, measured, since it has no DDL to declare). Doing it here
+# would mean querying five catalogs mid-run to learn something a $0 local check already
+# knows. The comment used to claim this line verified the 9 columns; it never did.
 GC=$(aws s3 ls "s3://$WAREHOUSE/delta/gold/open_positions/_delta_log/" 2>/dev/null | wc -l)
 [ "${GC:-0}" -gt 0 ] && ok "delta gold table exists" || warn "delta gold table not created yet"
 

@@ -8,7 +8,7 @@
 -- bronze it does not have, so a layer name means the same thing in every engine and
 -- the cross-engine reconciliation can address tables uniformly.
 --   silver.trades       ← Kafka (Debezium), deduped on trade_id
---   silver.accounts     ← Kafka (Debezium), SCD1 dimension for gold enrichment
+--   silver.accounts     ← Kafka (Debezium), SCD2 dimension (every version retained)
 --   gold.open_positions ← the streaming fold over silver.trades
 --
 -- This is a TEMPLATE rendered by submit.sh (envsubst) for the active DEPLOY_ENV.
@@ -77,9 +77,11 @@ CREATE TABLE IF NOT EXISTS fluss_catalog.silver.trades (
     'table.datalake.auto-expire-snapshot' = 'true'${FLUSS_ICEBERG_OPTS}
 );
 
--- silver.accounts — SCD1 dimension, latest row per account wins. Gold joins this
--- for country/tier, matching the other four engines (previously Fluss gold had no
--- enrichment at all, which made its fold strictly less work than theirs).
+-- silver.accounts — SCD2 dimension: EVERY version is retained, keyed
+-- (account_id, source_lsn), with effective_to / is_current materialised by the atomic
+-- close-out in silver_accounts.sql. Not "latest row wins" — that is SCD1, and it destroys
+-- the ability to answer what an account was AT THE TIME OF A TRADE.
+-- Gold does NOT join this: country/tier are enriched at READ time, in all five engines.
 CREATE TABLE IF NOT EXISTS fluss_catalog.silver.accounts (
     account_id        BIGINT,
     name              STRING,

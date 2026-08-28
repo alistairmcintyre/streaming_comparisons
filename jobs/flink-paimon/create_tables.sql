@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS paimon.silver.trades (
     'snapshot.time-retained'           = '1h'${PAIMON_ICEBERG_OPTS}
 );
 
--- ─── Silver accounts (SCD1 current-view dimension, HARD deletes) ─────────────
+-- ─── Silver accounts (SCD2 dimension: every version retained) ────────────────
 CREATE TABLE IF NOT EXISTS paimon.silver.accounts (
     account_id        BIGINT NOT NULL,
     name              STRING,

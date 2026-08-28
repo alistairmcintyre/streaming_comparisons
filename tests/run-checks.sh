@@ -145,6 +145,27 @@ if [ -n "$ALL" ]; then
       167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
       /w/tests/dedupe_state_test.py
 
+  echo "== slow: HUDI's written schemas, measured (it has no DDL to check) =="
+  # Every other engine DECLARES its schema and schema_parity_test.py reads the
+  # declaration. A Hudi table's schema is whatever DataFrame was written, so the only
+  # truth is the table on disk — which is how gold's decimal(33,4) got past every
+  # value-based check. bronze, silver.trades and silver.accounts, each through the same
+  # conform() call the job uses; gold is measured by gold_fold_test.py.
+  expect "hudi's written schemas match the canon" 0 \
+    docker run --rm -u 0 -v "$PWD:/w" -w /w --entrypoint python3 \
+      167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-hudi:latest \
+      /w/tests/hudi_schema_test.py
+  # Meta-check that cannot self-cancel: mutating the CANON would just make conform() cast
+  # to the new type and the comparison would still pass. Dropping executed_date from
+  # PARTITION_ARTEFACTS instead leaves a real column unaccounted for, which the
+  # comparison must report as EXTRA.
+  expect "hudi schema check catches an unaccounted column" 1 bash -c '
+    d=$(mktemp -d); cp -r jobs "$d/jobs"
+    sed -i "s|^PARTITION_ARTEFACTS = .*|PARTITION_ARTEFACTS = set()|" "$d/jobs/_shared/schemas.py"
+    docker run --rm -u 0 -v "$PWD:/w" -v "$d/jobs:/w/jobs" -w /w --entrypoint python3 \
+      167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-hudi:latest \
+      /w/tests/hudi_schema_test.py'
+
   echo "== slow: GOLD fold against REAL tables, all three Spark engines =="
   # Drives each engine's OWN fold_to_book over three micro-batches — not a copy of it —
   # and asserts the exact book. The scenario forces every incremental rule: a position

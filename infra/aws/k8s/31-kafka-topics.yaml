@@ -34,9 +34,17 @@ spec:
 ---
 # The accounts dimension is COMPACTED, not time-retained. Under delete-retention a
 # consumer replaying from earliest after the retention window gets an INCOMPLETE
-# dimension — accounts that never changed have aged out — and every gold enrichment
+# dimension — accounts that never changed have aged out — and every read-time enrichment
 # silently produces NULL country/tier. Compaction keeps the latest value for every key
-# forever, bounded by account count, which is exactly SCD1 semantics.
+# forever, bounded by account count.
+#
+# KNOWN CONSEQUENCE, stated rather than discovered later: silver.accounts is SCD2, but
+# compaction is SCD1 by nature — it keeps only the newest record per key. So the version
+# HISTORY in silver is only as complete as what the pipeline consumed LIVE; a rebuild from
+# a compacted topic yields one version per account, not its history. That is inherent to
+# compaction, not a bug here, and the alternative (unbounded retention of every account
+# change) is what compaction exists to avoid. It matters only for a from-scratch replay,
+# which this benchmark does not do — each run starts with an empty lake.
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:

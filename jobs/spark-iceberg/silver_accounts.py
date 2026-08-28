@@ -6,18 +6,18 @@ real UPDATEs to country/tier — and in a regulated trading platform you must be
 answer "what was this client's classification AT THE TIME OF THE TRADE" (MiFID II
 categorisation, suitability, best execution). An SCD1 overwrite destroys exactly that.
 
-Validity is DERIVED rather than materialised:
+Validity is MATERIALISED by an atomic close-out: when version N+1 arrives, ONE MERGE
+writes the new row AND re-writes version N with effective_to set, so a reader never sees
+two current rows or none.
 
-    SELECT *, LEAD(effective_from) OVER (PARTITION BY account_id
-                                         ORDER BY effective_from) AS effective_to
-    FROM silver.accounts
-    -- current version: effective_to IS NULL
+    SELECT * FROM silver.accounts WHERE is_current      -- current view
+    SELECT * FROM silver.accounts                       -- full history
 
-Materialised close-out (UPDATE the prior row's effective_to, INSERT the new one) is the
-classic form and is natural in a Spark MERGE, but it is NOT expressible in Flink SQL for
-a PK table: closing the prior row means targeting (account_id, old_effective_from), which
-a stateless job does not know. Deriving keeps all five engines on an identical model at
-the cost of a window function at read.
+This was derived at read (LEAD(effective_from) OVER ...) on the argument that close-out
+is not expressible in Flink SQL for a PK table. That was wrong: the key is
+(account_id, source_lsn), so re-emitting version N MERGES onto the existing row and the
+job never needs to know its old effective_from. All five engines materialise it — see
+jobs/_shared/scd2.py, and tests/scd2-behaviour.sh for the Flink half.
 
 Deletes are kept as a version with op='d' rather than removed — a closed account must
 still be joinable for trades that happened while it was open.

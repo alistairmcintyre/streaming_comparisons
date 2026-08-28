@@ -79,22 +79,20 @@ def create_silver_accounts(spark):
     if _is_delta(spark, "silver/accounts"):
         return  # exists: properties are converged by _converge_properties()
     schema = StructType([
-        # SCD2 — ALL VERSIONS RETAINED, validity derived at read.
+        # SCD2 — ALL VERSIONS RETAINED, validity MATERIALISED.
         # Accounts are a MUTABLE dimension (gen_accounts.py issues real UPDATEs to
         # country/tier), and in a regulated trading platform you must be able to answer
         # "what was this client's classification AT THE TIME OF THE TRADE" — MiFID II
         # categorisation, suitability, best execution. SCD1 overwrites destroy that.
         #
-        # Validity is DERIVED, not materialised:
-        #     effective_to = LEAD(effective_from) OVER (PARTITION BY account_id
-        #                                               ORDER BY effective_from)
-        #     is_current   = that LEAD being NULL
-        # Materialised close-out (UPDATE the old row's effective_to, INSERT the new) is
-        # the classic form and is natural in a Spark MERGE — but it is not expressible in
-        # Flink SQL for a PK table, because closing the prior row means targeting
-        # (account_id, old_effective_from), which a stateless job does not know. Deriving
-        # keeps ALL FIVE engines on an identical model; the cost is a window function at
-        # read instead of an extra write.
+        # effective_to and is_current are WRITTEN, by an atomic close-out: when version
+        # N+1 arrives the job emits BOTH the new row AND version N again with effective_to
+        # set, in ONE MERGE, so a reader never sees two current rows or none.
+        # This was DERIVED at read (LEAD(effective_from) OVER ...) on the argument that
+        # close-out is not expressible in Flink SQL for a PK table. That turned out to be
+        # wrong: the PK is (account_id, source_lsn), so re-emitting version N MERGES onto
+        # the existing row — no need to know its old effective_from. All five engines
+        # materialise it. See jobs/_shared/scd2.py and tests/scd2-behaviour.sh.
         #
         # The natural key is (account_id, source_lsn): source_lsn is the CDC total order,
         # so an at-least-once re-delivery collapses onto the same row while a genuine
@@ -102,14 +100,7 @@ def create_silver_accounts(spark):
         StructField("account_id", LongType(), False), StructField("name", StringType()),
         StructField("country", StringType()), StructField("tier", StringType()),
         StructField("source_updated_at", TimestampType()), StructField("event_ts", TimestampType()),
-        # effective_to and is_current are NOT columns here — they are derived, and
-        # register-glue-tables.sh publishes silver.accounts_*_scd2 views that do it:
-        #     LEAD(effective_from) OVER (PARTITION BY account_id ORDER BY effective_from)
-        # Why not materialise them? Close-out (UPDATE the prior row when a new version
-        # arrives) is not uniformly achievable: Paimon could via partial-update, Fluss has
-        # only first_row/versioned/aggregation. Materialising in three engines and
-        # deriving in two would put a PIPELINE difference into the DATA MODEL. The base
-        # table is the audit record; the view is the lens, and it costs nothing.
+        # effective_to / is_current ARE columns, closed by the MERGE described above.
         StructField("effective_from", TimestampType(), False),
         # MATERIALISED by the atomic close-out in silver_accounts.py — when version
         # N+1 arrives, one MERGE both closes N and inserts N+1.

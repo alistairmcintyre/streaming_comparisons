@@ -1,5 +1,5 @@
 .PHONY: up down build wait create-tables register-connectors sql \
-        start-generators start-spark start-compactor \
+        start-generators start-spark start-compactor consistency-check \
         start-delta start-flink-paimon \
         ui logs status all clean logs-spark logs-delta logs-flink-paimon test test-all
 
@@ -73,6 +73,24 @@ sql:
 	  --conf "spark.hadoop.fs.s3a.access.key=minioadmin" \
 	  --conf "spark.hadoop.fs.s3a.secret.key=minioadmin" \
 	  --conf "spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem"
+
+# ─── Post-run consistency check ──────────────────────────────────────────────
+# Internal consistency of one engine's bronze -> silver -> gold, run AFTER the streams
+# have drained (stop the generators locally; quiesce-run.sh on AWS). Mid-flight, gold
+# legitimately trails silver by the current micro-batch and the fold totals will differ
+# for a reason that is not a bug.
+#   make consistency-check                  # delta
+#   make consistency-check ENGINE=iceberg
+ENGINE ?= delta
+consistency-check:
+	@case "$(ENGINE)" in \
+	  delta)   SVC=delta-bronze-trades ;; \
+	  iceberg) SVC=spark-bronze-trades ;; \
+	  *) echo "ENGINE=$(ENGINE) has no local compose service — hudi and paimon run on AWS only"; exit 2 ;; \
+	esac; \
+	docker compose run --rm --no-deps \
+	  -v $(CURDIR)/scripts/integration:/opt/integration \
+	  -e JOB_FILE=/opt/integration/trades_consistency.py -e ENGINE=$(ENGINE) "$$SVC"
 
 # ─── Open UI ─────────────────────────────────────────────────────────────────
 

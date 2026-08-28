@@ -9,8 +9,10 @@ CREATE TABLE IF NOT EXISTS accounts (
     tier       TEXT         NOT NULL DEFAULT 'retail',   -- retail / premier / business / wealth
     updated_at TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
--- REPLICA IDENTITY FULL so Debezium captures before-images on UPDATE (needed for SCD1
--- dedup + dimension-change handling downstream).
+-- REPLICA IDENTITY FULL so Debezium captures before-images on UPDATE. The downstream
+-- silver.accounts is SCD2 and derives the previous version with LAG over the stream
+-- rather than from `before`, but the before-image is what lets a delete carry its key
+-- (`after` is null on op='d') and keeps the envelope diagnosable.
 ALTER TABLE accounts REPLICA IDENTITY FULL;
 
 -- ── trades: append-only fills (immutable executions) ─────────────────────────

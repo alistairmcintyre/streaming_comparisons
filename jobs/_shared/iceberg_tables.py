@@ -44,13 +44,11 @@ _STATEMENTS = [
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.accounts_spark (
         account_id BIGINT NOT NULL, name STRING, country STRING, tier STRING,
           source_updated_at TIMESTAMP, event_ts TIMESTAMP,
-          -- SCD2: every version retained. effective_to / is_current are DERIVED at read
-          -- via LEAD(effective_from) OVER (PARTITION BY account_id ORDER BY
-          -- effective_from) — materialised close-out is not expressible in Flink SQL for
-          -- a PK table, and keeping all five engines on one model matters more here.
+          -- SCD2: every version retained, validity MATERIALISED by the atomic close-out
+          -- (one MERGE writes the new version AND re-writes its predecessor with
+          -- effective_to set, so a reader never sees two current rows or none).
           -- Natural key (account_id, source_lsn): a CDC re-delivery collapses, a real
           -- change does not.
-          -- effective_to / is_current are MATERIALISED by the atomic close-out.
           effective_from TIMESTAMP, effective_to TIMESTAMP, is_current BOOLEAN,
           source_lsn BIGINT, op STRING, commit_ts TIMESTAMP)
       USING iceberg TBLPROPERTIES ({_MOR_PROPS})""",
