@@ -572,25 +572,12 @@ jobs:
                   -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" 2>&1 \
                 | grep -oE '[0-9a-f]{8}-[0-9a-f-]{27}' | head -1 || true)
           [ -n "$LID" ] && terraform force-unlock -force "$LID" || true
-          # IS THE PHASED DANCE EVEN NEEDED? Only Karpenter nodes justify it: they are NOT
-          # in Terraform state, they get RELAUNCHED while the control plane is alive, and
-          # their ENIs hold the node security group. With none present the phased path is
-          # pure overhead — a targeted destroy plus a SECOND provider init and full state
-          # refresh to do what one pass does. That is exactly the fast-failure case: the
-          # run died at apply-manifests, so nothing was ever scheduled and Karpenter never
-          # provisioned anything, yet a 38-second failure still paid a full phased teardown.
-          KNODES=$(aws ec2 describe-instances --region "$AWS_REGION" \
-              --filters "Name=tag-key,Values=karpenter.sh/nodepool" \
-                        "Name=tag:kubernetes.io/cluster/$CN,Values=owned" \
-                        "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-              --query 'Reservations[].Instances[].InstanceId' --output text)
-          if [ -z "$KNODES" ]; then
-            echo "no Karpenter nodes — single-pass destroy"
-            terraform destroy -auto-approve -input=false -lock-timeout=300s \
-              -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" && DESTROYED=1 || DESTROYED=0
-          else
-          echo "Karpenter nodes present — phased destroy: $KNODES"
-
+          # ALWAYS PHASED. An earlier version skipped the phases when no Karpenter nodes
+          # existed, on the theory that nothing would relaunch. That was wrong: eks.tf
+          # declares an eks_managed_node_group with min_size = 2, and its ASG replaces
+          # terminated instances exactly like Karpenter does. The phases are not about
+          # Karpenter — they are about ANY autoscaled node whose ENIs hold the node
+          # security group, which is every run.
           # PHASE 1 — destroy ONLY the EKS cluster. That kills Karpenter, so the nodes
           # it launched stop being replaced. Running the FULL destroy here instead is
           # what cost ~13 minutes on every teardown: Terraform reaches the node
@@ -602,6 +589,20 @@ jobs:
           terraform destroy -target=module.eks -auto-approve -input=false -lock-timeout=300s \
               -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
               echo "targeted EKS destroy failed — continuing; the sweep below still runs"
+
+          # PHASE 2a — EFS mount targets. Each one holds an ENI in the node subnet, and
+          # aws_security_group.efs has an ingress rule referencing the NODE security
+          # group, so neither the subnet nor the SG can go until the mount target does.
+          # Deletion is asynchronous and takes minutes, so start it before the sweep.
+          # teardown.yml has always done this; this path never did.
+          for fs in $(aws efs describe-file-systems --region "$AWS_REGION" \
+              --query "FileSystems[?contains(CreationToken, '"'"'${CN}'"'"')].FileSystemId" --output text); do
+            for mt in $(aws efs describe-mount-targets --region "$AWS_REGION" --file-system-id "$fs" \
+                --query 'MountTargets[].MountTargetId' --output text); do
+              echo "deleting EFS mount target $mt"
+              aws efs delete-mount-target --region "$AWS_REGION" --mount-target-id "$mt" || true
+            done
+          done
 
           # PHASE 2 — terminate the orphans NOW, in the window between "control plane
           # gone" and "Terraform needs the security group". Karpenter is dead, so they
@@ -615,10 +616,26 @@ jobs:
               aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $IDS >/dev/null
               aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids $IDS || true
           fi
-          for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
-              --filters "Name=description,Values=aws-K8S-*" "Name=status,Values=available" \
-              --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
+          # POLL, do not sweep once. `wait instance-terminated` returns when the INSTANCE
+          # is gone, but its CNI secondary ENIs take another minute or two to detach and
+          # reach 'available'. A single sweep here finds them still in-use, deletes
+          # nothing, and phase 3 then sits on the node security group for ~15 minutes
+          # waiting for a detach nothing is causing — which is exactly the
+          # `aws_security_group.node[0]: Still destroying... 10m50s elapsed` symptom.
+          # Six passes over ~3 minutes cost far less than one 15-minute Terraform retry.
+          for _ in $(seq 1 6); do
+            for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+                --filters "Name=description,Values=aws-K8S-*" "Name=status,Values=available" \
+                --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
+              echo "deleting leftover ENI $eni"
               aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
+            done
+            REMAINING=$(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+              --filters "Name=description,Values=aws-K8S-*" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)
+            [ -z "$REMAINING" ] && break
+            echo "  ENIs still present, waiting for detach: $REMAINING"
+            sleep 30
           done
 
           # PHASE 3 — everything else. The security group and VPC now delete promptly.
@@ -629,7 +646,6 @@ jobs:
             DESTROYED=0
             echo "destroy pass failed — sweeping blockers, then retrying ONCE"
           fi
-          fi   # end: phased vs single-pass
 
           # RETRY ONLY IF PHASE 3 FAILED. This sweep and second full destroy used to run
           # UNCONDITIONALLY: the edit that introduced phases 1-3 added them above and left
