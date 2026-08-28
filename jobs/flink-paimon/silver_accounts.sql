@@ -89,16 +89,26 @@ FROM kafka_accounts_src
 WHERE op IS NOT NULL AND op <> 'd'
 WINDOW w AS (PARTITION BY COALESCE(`after`.account_id, `before`.account_id) ORDER BY proc);
 
-EXECUTE STATEMENT SET
-BEGIN
-
+-- ONE INSERT, not a statement set of two.
+--
+-- Both halves of the close-out target the SAME table, and a statement set makes that TWO
+-- SINKS with TWO COMMITTERS. On Paimon each committer also fires IcebergCommitCallback to
+-- maintain the Iceberg-compat metadata, and they race for the same version file on S3,
+-- which has no atomic rename:
+--
+--   FileAlreadyExistsException: Failed to rename .v16.metadata.json.<uuid>.tmp
+--     to v16.metadata.json; destination file exists
+--
+-- The job then restarts forever (seen live: silver.accounts RESTARTING while the other
+-- three Paimon jobs ran clean). UNION ALL gives one sink, one committer, one commit per
+-- checkpoint — and it matches what the Spark engines already do: jobs/_shared/scd2.py
+-- stages the new row and the closed predecessor into ONE frame and writes it once.
 INSERT INTO paimon.silver.accounts
 SELECT account_id, name, country, tier, source_updated_at, event_ts,
        effective_from,
        -- An OUT-OF-ORDER arrival is not current: it is a late historical version, valid
        -- until the row that already superseded it. Without this it would be written with
-       -- is_current TRUE and the account would have TWO current rows — which fans out
-       -- every join. Caught by tests/scd2-behaviour.sh; it compiles perfectly.
+       -- is_current TRUE and the account would have TWO current rows.
        CASE WHEN prev_lsn IS NULL OR source_lsn > prev_lsn
             THEN CAST(NULL AS TIMESTAMP(6)) ELSE prev_effective_from END,
        (prev_lsn IS NULL OR source_lsn > prev_lsn),
@@ -107,18 +117,18 @@ SELECT account_id, name, country, tier, source_updated_at, event_ts,
        CAST(CURRENT_TIMESTAMP AS TIMESTAMP(6))
 FROM acct_changes
 -- A re-delivery (identical lsn to the record before it) must be a NO-OP. Without this
--- guard it falls into the "not newer" branch and is emitted with is_current = FALSE — and
--- because the target is a PK table on (account_id, source_lsn) that write MERGES onto the
--- live row, leaving the account with ZERO current versions. Verified by
--- tests/scd2-behaviour.sh; the same bug in the Spark staging was found on Hudi.
-WHERE prev_lsn IS NULL OR source_lsn <> prev_lsn;
-
-INSERT INTO paimon.silver.accounts
+-- guard it is emitted with is_current = FALSE and, because the target is a PK table on
+-- (account_id, source_lsn), that write MERGES onto the live row and leaves the account
+-- with ZERO current versions.
+WHERE prev_lsn IS NULL OR source_lsn <> prev_lsn
+UNION ALL
+-- The predecessor, re-written with effective_to set. EVERY attribute comes from the
+-- version being closed (prev_*): the merge engine is deduplicate, so this write replaces
+-- the whole row, and taking the successor's values here would corrupt the history the
+-- close exists to preserve.
 SELECT account_id, prev_name, prev_country, prev_tier, prev_source_updated_at,
        prev_event_ts,
        prev_effective_from, effective_from, FALSE, prev_lsn, prev_op,
        CAST(CURRENT_TIMESTAMP AS TIMESTAMP(6))
 FROM acct_changes
 WHERE prev_lsn IS NOT NULL AND source_lsn > prev_lsn;
-
-END;
