@@ -572,6 +572,25 @@ jobs:
                   -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" 2>&1 \
                 | grep -oE '[0-9a-f]{8}-[0-9a-f-]{27}' | head -1 || true)
           [ -n "$LID" ] && terraform force-unlock -force "$LID" || true
+          # IS THE PHASED DANCE EVEN NEEDED? Only Karpenter nodes justify it: they are NOT
+          # in Terraform state, they get RELAUNCHED while the control plane is alive, and
+          # their ENIs hold the node security group. With none present the phased path is
+          # pure overhead — a targeted destroy plus a SECOND provider init and full state
+          # refresh to do what one pass does. That is exactly the fast-failure case: the
+          # run died at apply-manifests, so nothing was ever scheduled and Karpenter never
+          # provisioned anything, yet a 38-second failure still paid a full phased teardown.
+          KNODES=$(aws ec2 describe-instances --region "$AWS_REGION" \
+              --filters "Name=tag-key,Values=karpenter.sh/nodepool" \
+                        "Name=tag:kubernetes.io/cluster/$CN,Values=owned" \
+                        "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+              --query 'Reservations[].Instances[].InstanceId' --output text)
+          if [ -z "$KNODES" ]; then
+            echo "no Karpenter nodes — single-pass destroy"
+            terraform destroy -auto-approve -input=false -lock-timeout=300s \
+              -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" && DESTROYED=1 || DESTROYED=0
+          else
+          echo "Karpenter nodes present — phased destroy: $KNODES"
+
           # PHASE 1 — destroy ONLY the EKS cluster. That kills Karpenter, so the nodes
           # it launched stop being replaced. Running the FULL destroy here instead is
           # what cost ~13 minutes on every teardown: Terraform reaches the node
@@ -605,11 +624,12 @@ jobs:
           # PHASE 3 — everything else. The security group and VPC now delete promptly.
           if terraform destroy -auto-approve -input=false -lock-timeout=300s \
                -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150"; then
-          DESTROYED=1
+            DESTROYED=1
           else
-          DESTROYED=0
-          echo "destroy pass failed — sweeping blockers, then retrying ONCE"
+            DESTROYED=0
+            echo "destroy pass failed — sweeping blockers, then retrying ONCE"
           fi
+          fi   # end: phased vs single-pass
 
           # RETRY ONLY IF PHASE 3 FAILED. This sweep and second full destroy used to run
           # UNCONDITIONALLY: the edit that introduced phases 1-3 added them above and left
