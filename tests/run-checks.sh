@@ -72,6 +72,13 @@ expect "every manifest S3 prefix is wiped or deliberately preserved" 0 \
 expect "post-run steps are gated so a failed apply does not bill" 0 \
   python3 tests/check_workflow_gating.py
 
+# The kind pre-flight can only validate a kind whose CRD it installs, and it used to
+# report "ok" for any manifest that failed with "no matches for kind" — so 14
+# SparkApplications went unchecked while the gate reported green. This needs no cluster:
+# it maps every custom kind to the thing that installs its CRD, and fails on a blind spot.
+expect "every custom resource is covered by the kind pre-flight" 0 \
+  python3 tests/check_kind_coverage.py
+
 expect "job imports: all shipped, none shadowed" 0 \
   python3 tests/check_configmaps.py
 
@@ -103,6 +110,13 @@ expect "schema parity check catches a drifted field type" 1 bash -c '
   sed "s|net_notional    DECIMAL(38,4)|net_notional    DECIMAL(20,4)|" \
     jobs/flink-paimon/create_tables.sql > "$d/jobs/flink-paimon/create_tables.sql"
   cd "$d" && python3 "$OLDPWD/tests/schema_parity_test.py"'
+
+expect "kind-coverage check catches an uninstalled CRD" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/infra/aws/scripts"
+  cp -r infra/aws/k8s "$d/infra/aws/k8s"
+  grep -v "spark-operator/spark-operator" infra/aws/scripts/validate-against-kind.sh \
+    > "$d/infra/aws/scripts/validate-against-kind.sh"
+  cd "$d" && python3 "$OLDPWD/tests/check_kind_coverage.py"'
 
 expect "gating check catches an ungated quiesce" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/.github/workflows"

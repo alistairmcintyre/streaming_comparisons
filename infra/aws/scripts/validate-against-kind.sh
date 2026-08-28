@@ -63,6 +63,19 @@ done
 # The real workflow has these by the time it applies: some from 00-namespaces.yaml,
 # the rest from explicit `kubectl create ns` and helm --create-namespace. Create them
 # for real here so the dry-run validates against a cluster shaped like production.
+# SPARK OPERATOR CRDs. Without these, `kubectl apply --dry-run=server` on the four Spark
+# manifests fails with "no matches for kind SparkApplication" — which the loop below used
+# to treat as OK. That silently left 14 SparkApplication and 2 ScheduledSparkApplication
+# resources, across 90/91/93/95-*.yaml, COMPLETELY UNVALIDATED: a third of the manifests
+# and every one of the Spark pipelines. Only the CRDs are needed (schema validation); the
+# operator's pods are irrelevant here, so this does not --wait.
+echo "== spark operator CRDs =="
+helm repo add spark-operator https://kubeflow.github.io/spark-operator >/dev/null 2>&1 || true
+helm repo update >/dev/null 2>&1 || true
+helm upgrade --install spark-operator spark-operator/spark-operator \
+  -n spark-operator --create-namespace --set webhook.enable=false >/dev/null 2>&1 || \
+  echo "  spark-operator chart unavailable — its manifests will be reported UNVALIDATED"
+
 echo "== namespaces (created for real, so the dry-run is meaningful) =="
 kubectl apply -f infra/aws/k8s/00-namespaces.yaml >/dev/null 2>&1 || true
 for ns in kafka streaming spark flink fluss monitoring cert-manager; do
@@ -94,6 +107,7 @@ for v in $(grep -rhv '^[[:space:]]*#' infra/aws/k8s/*.yaml | grep -oE '\$\{[A-Z_
 done
 echo "  placeholders set for: $(grep -rhv '^[[:space:]]*#' infra/aws/k8s/*.yaml | grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' | tr -d '${}' | sort -u | tr '\n' ' ')"
 fails=0
+unvalidated=""
 # `set -e` is OFF for the loop ON PURPOSE. A failing `out=$(...)` assignment aborts the
 # script under -e BEFORE `rc=$?` is read, so the first rejected manifest killed the run
 # and printed NOTHING about which one or why. We want every manifest checked and every
@@ -115,13 +129,36 @@ for f in $(ls infra/aws/k8s/*.yaml | sort); do
     if [ "$b" = "96-alerts.yaml" ]; then out=$(kubectl apply --dry-run=server -f "$f" 2>&1); rc=$?
     else out=$(envsubst < "$f" | kubectl apply --dry-run=server -f - 2>&1); rc=$?; fi
   fi
-  if [ $rc -ne 0 ] && ! echo "$out" | grep -qiE 'no matches for kind|could not find the requested resource|ensure CRDs'; then
+  if [ $rc -ne 0 ] && echo "$out" | grep -qiE 'no matches for kind|could not find the requested resource|ensure CRDs'; then
+    # NOT a pass. A missing CRD means this manifest was never checked at all, and saying
+    # "ok" is how 14 SparkApplications went unvalidated while this script reported all
+    # green. Record it; the allowlist below decides whether that is acceptable.
+    echo "  UNVALIDATED $b (no CRD installed here)"
+    unvalidated="$unvalidated $b"
+  elif [ $rc -ne 0 ]; then
     echo "  REJECTED $b:"; echo "$out" | sed 's/^/      /'; fails=1
   else
     echo "  ok       $b"
   fi
 done
 set -e
+
+# Manifests we ACCEPT as unvalidatable here, each with a reason. Anything else that lands
+# in the unvalidated list is a blind spot that has to be closed, not discovered later at
+# ~$5 and 20 minutes a go.
+#   10-karpenter.yaml — NodePool/EC2NodeClass. Karpenter's CRDs ship in an OCI chart that
+#   expects a real cluster with the AWS provider; installing it on kind is more moving
+#   parts than the manifest is worth. It is 2 resources of stable shape.
+ALLOW_UNVALIDATED="10-karpenter.yaml"
+for b in $unvalidated; do
+  case " $ALLOW_UNVALIDATED " in
+    *" $b "*) ;;
+    *) echo "  BLIND SPOT: $b was not validated and is not on the allowlist"; fails=1 ;;
+  esac
+done
+
 [ "$fails" = 0 ] || { echo; echo "manifests would be REJECTED in AWS — fix before spending a cluster"; exit 1; }
 echo
 echo "all manifests accepted by real admission webhooks"
+[ -n "$unvalidated" ] && echo "(allowlisted, not checked:$unvalidated)"
+exit 0
