@@ -28,8 +28,28 @@ def main():
         .option("startingVersion", "0")
         .option("maxFilesPerTrigger", "200")
         .load(BRONZE_TRADES)
-        .withWatermark("event_ts", "1 hour")
-        .dropDuplicatesWithinWatermark(["trade_id"])   # bounded exact-dedupe of re-deliveries
+        # DEDUPE WINDOW — 2 hours, and the number is load-bearing.
+        # This is the ONLY place a re-delivered trade_id can be removed. Paimon and Fluss
+        # hold silver.trades as a PK table with the first-row merge engine, and Hudi as an
+        # upsert on trade_id, so on those three a duplicate CANNOT become a second row —
+        # the dedupe is structural and unbounded. Delta and Iceberg keep silver.trades
+        # APPEND-ONLY (gold streams it, and a streaming read of an updating table either
+        # fails or re-emits rewritten files, which would double-count far worse), so here
+        # the dedupe lives in operator STATE instead, and state has to be bounded.
+        # A re-delivery arriving after the window is appended as a genuine second row, and
+        # NOTHING downstream can undo it: the gold fold is `+=` over (account_id, symbol)
+        # and has no memory of which trade_ids it has already folded, so the position is
+        # then permanently wrong on two of the five engines. 2h is chosen to cover a whole
+        # run: run_minutes defaults to 120 and the EventBridge kill switch fires at 150,
+        # so for the runs this benchmark actually performs the window spans the entire
+        # event-time range and all five engines dedupe identically. It is a MATCH to the
+        # run length, not a margin over it — a run configured longer than 2h reopens the
+        # gap, and the window must be raised with it.
+        # COST: dropDuplicatesWithinWatermark state is one entry per distinct trade_id in
+        # the window, heap-resident under the default HDFS-backed state store. At 1k/s
+        # that is ~7.2M entries at 2h (~2x the 1h figure).
+        .withWatermark("event_ts", "2 hours")
+        .dropDuplicatesWithinWatermark(["trade_id"])
         .select("trade_id", "account_id", "symbol", "side", "quantity",
                 "price", "executed_at", "event_ts", "ingest_ts")
     )
