@@ -95,6 +95,39 @@ if [ -n "$ALL" ]; then
       167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-hudi:latest \
       /w/tests/scd2_hudi_upsert_test.py
 
+  echo "== slow: GOLD fold against REAL tables, all three Spark engines =="
+  # Drives each engine's OWN fold_to_book over three micro-batches — not a copy of it —
+  # and asserts the exact book. The scenario forces every incremental rule: a position
+  # that nets to zero (CLOSED) and reopens, and a LATE fill that must pull opened_at back
+  # without dragging last_updated_at with it. All three must agree to the last decimal.
+  for eng in delta iceberg hudi; do
+    expect "gold fold is correct ($eng)" 0 \
+      docker run --rm -u 0 -v "$PWD:/w" -w /w --entrypoint python3 \
+        167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-$eng:latest \
+        /w/tests/gold_fold_test.py "$eng"
+  done
+
+  echo "== slow: GOLD fold BEHAVIOUR for the Flink engines =="
+  # Same trades, same expected book — that is the claim: five engines, one book. The fold
+  # is lifted verbatim out of the real job file, so it cannot drift from what deploys.
+  expect "gold fold is correct (paimon)" 0 ./tests/gold-behaviour.sh jobs/flink-paimon/gold_open_positions.sql
+  expect "gold fold is correct (fluss)"  0 ./tests/gold-behaviour.sh jobs/flink-fluss/gold_open_positions.sql
+
+  echo "== meta: the gold checks must catch a broken fold =="
+  # Flip the sign convention so SELL adds instead of subtracting. Every engine still
+  # runs, still commits, still produces a book — just the wrong one. This is the exact
+  # shape of bug that no compile check can see.
+  expect "gold flink check catches an inverted sign" 1 bash -c '
+    d=$(mktemp -d); cp jobs/flink-paimon/gold_open_positions.sql "$d/g.sql"
+    sed -i "s|ELSE -CAST(quantity AS BIGINT) END|ELSE CAST(quantity AS BIGINT) END|" "$d/g.sql"
+    ./tests/gold-behaviour.sh "$d/g.sql"'
+  expect "gold spark check catches an inverted sign" 1 bash -c '
+    d=$(mktemp -d); cp -r jobs "$d/jobs"
+    sed -i "s|.otherwise(-col(\"quantity\"))|.otherwise(col(\"quantity\"))|" "$d/jobs/spark-delta/gold_open_positions.py"
+    docker run --rm -u 0 -v "$PWD:/w" -v "$d:/j" -w /w -e JOBS_ROOT=/j/jobs --entrypoint python3 \
+      167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
+      /w/tests/gold_fold_test.py delta'
+
   echo "== slow: SCD2 close-out BEHAVIOUR (not just that it compiles) =="
   # The compile checks prove the SQL plans. This proves it is right — it runs the real
   # close-out over fixed account changes and asserts the validity ranges, including the

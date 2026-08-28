@@ -79,16 +79,6 @@ FROM (
     GROUP BY account_id, symbol
 ) p;
 
--- Plain INSERT, NOT a STATEMENT SET with a latency emit alongside.
--- A gold-hop emit was tried here and is INVALID: gold_book comes from a GROUP BY, so
--- it is an UPDATING changelog, and the Kafka 'raw' latency_sink is append-only. Flink
--- rejects it outright:
---   TableException: Table sink 'latency_sink' doesn't support consuming update changes
---   which is produced by node GroupAggregate(groupBy=[account_id, symbol], ...)
--- That failure took down the whole statement set, so NO gold job was submitted at all.
--- No loss: the authoritative gold-hop number is (commit_ts - last_updated_at) read out
--- of the table itself, which is uniform across all five engines. The Kafka emit chain
--- only feeds the live dashboard, and bronze/silver still emit into it.
 -- Gold-hop latency. upsert-kafka, NOT a raw kafka sink: gold_book comes from a GROUP BY
 -- and is therefore an UPDATING changelog, which an append-only sink rejects outright
 -- (DEPLOY_LOG #80). upsert-kafka is built for exactly this. Two details it needs:
