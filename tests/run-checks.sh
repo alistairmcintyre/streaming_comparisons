@@ -46,6 +46,13 @@ expect "alert pipeline count matches the code" 0 bash -c '
   want=$(grep -oE "pipeline_latency_events_total\)\) < [0-9]+" infra/aws/k8s/96-alerts.yaml | grep -oE "[0-9]+$")
   [ "$n" = "$want" ] || { echo "code emits $n pipelines, PipelinesMissing expects $want"; exit 1; }'
 
+# Pure DataFrame logic, no table format, so it belongs in the FAST tier — seconds, and it
+# holds the Spark engines to the same SCD2 definition the Flink behaviour test enforces.
+expect "scd2 staging logic (shared by the Spark engines)" 0 \
+  docker run --rm -u 0 -v "$PWD:/w" -w /w --entrypoint python3 \
+    167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
+    /w/tests/scd2_spark_test.py
+
 echo "== meta: each checker must REJECT a known-bad input =="
 expect "rejects an RFC1123-invalid name" 1 ./infra/aws/scripts/preflight-manifests.sh tests/fixtures
 expect "rejects a duplicate YAML key"    1 bash -c 'cd "$(git rev-parse --show-toplevel)"; d=$(mktemp -d); cp tests/fixtures/bad-dupkey.yaml "$d/"; ./infra/aws/scripts/preflight-manifests.sh "$d"'
