@@ -85,6 +85,13 @@ expect "every custom resource is covered by the kind pre-flight" 0 \
 expect "every namespace exists before the server dry-run" 0 \
   python3 tests/check_namespace_prereqs.py
 
+# A DDL constrains the TABLE, not the frame written to it. Iceberg matches a positional
+# append BY POSITION and crash-looped on `source_lsn is out of order`; Delta appends by
+# NAME and never noticed the same defect. Every Spark write must be pinned to the canon —
+# by conform() for positional appends, or by an explicit MERGE column list.
+expect "every Spark write path is pinned to the canon" 0 \
+  python3 tests/check_write_paths.py
+
 expect "job imports: all shipped, none shadowed" 0 \
   python3 tests/check_configmaps.py
 
@@ -116,6 +123,11 @@ expect "schema parity check catches a drifted field type" 1 bash -c '
   sed "s|net_notional    DECIMAL(38,4)|net_notional    DECIMAL(20,4)|" \
     jobs/flink-paimon/create_tables.sql > "$d/jobs/flink-paimon/create_tables.sql"
   cd "$d" && python3 "$OLDPWD/tests/schema_parity_test.py"'
+
+expect "write-path check catches an unpinned projection" 1 bash -c '
+  d=$(mktemp -d); cp -r jobs "$d/jobs"
+  sed -i "s|    parsed = conform(parsed, BRONZE_TRADES)||" "$d/jobs/spark-iceberg/bronze_trades.py"
+  cd "$d" && python3 "$OLDPWD/tests/check_write_paths.py"'
 
 expect "namespace check catches an only-dry-run namespace" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/.github/workflows" "$d/infra/aws"
