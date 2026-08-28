@@ -343,6 +343,7 @@ jobs:
           fi
 
       - name: Render + apply manifests
+        id: apply
         run: |
           export TRADES_PER_SEC="${{ inputs.trades_per_sec }}"
           export POSTGRES_PASSWORD="$(openssl rand -hex 16)"
@@ -477,7 +478,13 @@ jobs:
       # from real data loss. QUIESCED is threaded into the snapshot so the recorded
       # numbers always say whether they were taken caught-up or mid-flight.
       - name: Quiesce (stop load, drain to zero lag)
-        if: always()
+        # Gated on the APPLY, not on always(). If the manifests never applied there is
+        # no load to drain, no table to register and nothing to snapshot — and quiesce
+        # polls consumer lag until QUIESCE_TIMEOUT (600s) plus a 90s settle, so on a
+        # failed apply it burned ~11 minutes of a live, billing cluster before teardown
+        # could even start. always() still covers what matters: apply succeeded and the
+        # run step was cancelled or timed out.
+        if: ${{ always() && steps.apply.outcome == 'success' }}
         id: quiesce
         continue-on-error: true
         run: infra/aws/scripts/quiesce-run.sh
@@ -486,11 +493,23 @@ jobs:
       # even though the data is there (only the Spark/Iceberg jobs self-register).
       # Runs AFTER the load window so the tables and their metadata actually exist.
       - name: Register Delta + Paimon tables in Glue (Athena visibility)
-        if: always()
+        # Gated on the APPLY, not on always(). If the manifests never applied there is
+        # no load to drain, no table to register and nothing to snapshot — and quiesce
+        # polls consumer lag until QUIESCE_TIMEOUT (600s) plus a 90s settle, so on a
+        # failed apply it burned ~11 minutes of a live, billing cluster before teardown
+        # could even start. always() still covers what matters: apply succeeded and the
+        # run step was cancelled or timed out.
+        if: ${{ always() && steps.apply.outcome == 'success' }}
         run: infra/aws/scripts/register-glue-tables.sh
 
       - name: Snapshot correctness + latency to S3
-        if: always()
+        # Gated on the APPLY, not on always(). If the manifests never applied there is
+        # no load to drain, no table to register and nothing to snapshot — and quiesce
+        # polls consumer lag until QUIESCE_TIMEOUT (600s) plus a 90s settle, so on a
+        # failed apply it burned ~11 minutes of a live, billing cluster before teardown
+        # could even start. always() still covers what matters: apply succeeded and the
+        # run step was cancelled or timed out.
+        if: ${{ always() && steps.apply.outcome == 'success' }}
         run: |
           # latency Parquet is already flushed by the exporter; run the count-reconciliation
           # (Athena) and write results next to it. See infra/aws/README.md.

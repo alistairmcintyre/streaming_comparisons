@@ -65,6 +65,13 @@ expect "every workflow run: block is valid shell" 0 \
 expect "every manifest S3 prefix is wiped or deliberately preserved" 0 \
   python3 tests/check_clean_lake.py
 
+# Once terraform apply has run the cluster EXISTS and bills until teardown, so what runs
+# between a failed apply and `terraform destroy` is money. Guards the four shapes that
+# cost: the sleep must not be always(), quiesce/snapshot must be gated on the apply, and
+# diagnostics + destroy must still run on failure.
+expect "post-run steps are gated so a failed apply does not bill" 0 \
+  python3 tests/check_workflow_gating.py
+
 expect "job imports: all shipped, none shadowed" 0 \
   python3 tests/check_configmaps.py
 
@@ -96,6 +103,18 @@ expect "schema parity check catches a drifted field type" 1 bash -c '
   sed "s|net_notional    DECIMAL(38,4)|net_notional    DECIMAL(20,4)|" \
     jobs/flink-paimon/create_tables.sql > "$d/jobs/flink-paimon/create_tables.sql"
   cd "$d" && python3 "$OLDPWD/tests/schema_parity_test.py"'
+
+expect "gating check catches an ungated quiesce" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/.github/workflows"
+  python3 -c "
+import pathlib, sys
+s = pathlib.Path(\".github/workflows/eks-run.yml\").read_text()
+gate = \"        if: \${{ always() && steps.apply.outcome == '"'"'success'"'"' }}\"
+assert gate in s
+s = s.replace(gate, \"        if: always()\", 1)   # first is quiesce
+pathlib.Path(sys.argv[1] + \"/.github/workflows/eks-run.yml\").write_text(s)
+" "$d"
+  cd "$d" && python3 "$OLDPWD/tests/check_workflow_gating.py"'
 
 expect "clean_lake check catches a prefix dropped from the wipe" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/.github/workflows" "$d/infra/aws"
