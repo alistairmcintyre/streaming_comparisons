@@ -53,6 +53,9 @@ expect "scd2 staging logic (shared by the Spark engines)" 0 \
     167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
     /w/tests/scd2_spark_test.py
 
+expect "shared modules a job imports actually reach the cluster" 0 \
+  python3 tests/check_configmaps.py
+
 echo "== meta: each checker must REJECT a known-bad input =="
 expect "rejects an RFC1123-invalid name" 1 ./infra/aws/scripts/preflight-manifests.sh tests/fixtures
 expect "rejects a duplicate YAML key"    1 bash -c 'cd "$(git rev-parse --show-toplevel)"; d=$(mktemp -d); cp tests/fixtures/bad-dupkey.yaml "$d/"; ./infra/aws/scripts/preflight-manifests.sh "$d"'
@@ -65,6 +68,16 @@ expect "image hash changes with content" 0 bash -c '
   b=$(./infra/aws/scripts/image-hashes.sh spark-hudi | awk "{print \$2}")
   git checkout -- docker/spark-hudi/Dockerfile
   [ "$a" != "$b" ]'
+
+expect "configmap check catches an unshipped shared module" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/.github/workflows"; cp -r jobs "$d/jobs"
+  python3 - "$d" <<PYEOF
+import sys, pathlib
+s = pathlib.Path(".github/workflows/eks-run.yml").read_text()
+s = s.replace("            --from-file=jobs/_shared/ \\", "            --from-file=jobs/_shared/latency.py \\")
+(pathlib.Path(sys.argv[1]) / ".github/workflows/eks-run.yml").write_text(s)
+PYEOF
+  cd "$d" && python3 "$OLDPWD/tests/check_configmaps.py"'
 
 if [ -n "$ALL" ]; then
   echo "== slow: Flink SQL compiles (Docker) =="

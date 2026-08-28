@@ -27,15 +27,18 @@ COMPACTION_INTERVAL_SECS = int(os.environ.get("COMPACTION_INTERVAL_SECS", "600")
 SNAPSHOT_RETAIN_HOURS    = int(os.environ.get("SNAPSHOT_RETAIN_HOURS", "1"))
 SNAPSHOT_RETAIN_LAST     = int(os.environ.get("SNAPSHOT_RETAIN_LAST", "5"))
 
+# The tables this run actually writes. These were the CUSTOMERS tables until the customers
+# pipeline was removed — which meant this job, which IS deployed on AWS
+# (infra/aws/k8s/93-maintenance.yaml), had been compacting eight tables that do not exist
+# in the run while the Iceberg trades tables went untouched. It failed silently per table
+# and reported healthy. That matters more for Iceberg than for any other engine here:
+# it is the one format with no in-writer compaction, so this job is the ONLY thing
+# keeping its file counts down (see SIZING.md).
 TABLES = [
-    "rest.silver.customers_spark",
-    "rest.silver.customers_flink",
-    "rest.silver.customers_flink_direct",
-    "rest.bronze.customers_spark",
-    "rest.bronze.customers_flink",
-    "rest.gold.customers_per_country_spark",
-    "rest.gold.customers_per_country_flink",
-    "rest.gold.customers_per_country_flink_direct",
+    "rest.bronze.trades_spark",
+    "rest.silver.trades_spark",
+    "rest.silver.accounts_spark",
+    "rest.gold.open_positions_spark",
 ]
 
 

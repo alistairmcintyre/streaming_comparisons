@@ -79,7 +79,7 @@ a major differentiator — small-file accumulation is exactly what drives the
 degrade-over-time you see on the dashboard:
 - **Delta:** compaction is **IN-pipeline** — Optimized Writes + Auto Compaction
   (`delta.autoOptimize.optimizeWrite`/`.autoCompact` on the tables in
-  ddl/create_tables_delta.py, plus session confs on the streaming write). The only
+  jobs/_shared/delta_tables.py, plus session confs on the streaming write). The only
   separate job is **VACUUM** (GC; no auto-vacuum in OSS) — jobs/spark-delta/maintenance_vacuum.py.
   Single committer (the streaming writer), so the DynamoDB LogStore is optional here.
 - **Iceberg:** no in-writer auto-compaction in Spark structured streaming, so

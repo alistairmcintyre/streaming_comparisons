@@ -1,7 +1,7 @@
-.PHONY: up down build wait create-tables register-connectors seed sql \
-        start-generators start-spark start-flink start-compactor start-customers-only \
-        start-delta start-hudi start-paimon start-flink-paimon \
-        integration-test ui logs status all clean logs-spark logs-delta logs-hudi logs-paimon logs-flink-paimon test test-all
+.PHONY: up down build wait create-tables register-connectors sql \
+        start-generators start-spark start-compactor \
+        start-delta start-flink-paimon \
+        ui logs status all clean logs-spark logs-delta logs-flink-paimon test test-all
 
 # ─── Bring up infrastructure ────────────────────────────────────────────────
 
@@ -27,17 +27,6 @@ create-tables:
 register-connectors:
 	@bash scripts/register_connectors.sh
 
-# Optional: insert 1000 seed customers into Postgres (triggers Debezium CDC).
-# The generator also self-seeds via inserts, so this is just for an instant base.
-seed:
-	docker compose exec postgres-app psql -U app -d appdb -c "\
-	  INSERT INTO customers (customer_id, name, country, segment) \
-	  SELECT i, 'Customer-'||i, \
-	  (ARRAY['GB','US','DE','FR','ES','IE','IN','SG'])[floor(random()*8+1)], \
-	  (ARRAY['retail','premier','business','wealth'])[floor(random()*4+1)] \
-	  FROM generate_series(1,1000) AS s(i) ON CONFLICT DO NOTHING;"
-	@echo "1000 seed customers inserted."
-
 # ─── Start pipelines ─────────────────────────────────────────────────────────
 
 start-generators:
@@ -45,23 +34,10 @@ start-generators:
 
 start-spark:
 	docker compose up -d \
-		spark-bronze-customers spark-silver-customers spark-gold-customers
-
-start-flink:
-	docker compose up -d flink-jobmanager flink-taskmanager
-	@echo "Waiting 10s for Flink JM to start..."
-	@sleep 10
-	docker compose up -d flink-submitter
+		spark-bronze-trades spark-silver-trades spark-silver-accounts spark-gold-openpositions
 
 start-compactor:
 	docker compose up -d compactor
-
-start-customers-only:
-	docker compose up -d \
-		generator-customers \
-		spark-bronze-customers \
-		spark-silver-customers \
-		spark-gold-customers
 
 start-delta:
 	docker compose up -d \
@@ -70,44 +46,15 @@ start-delta:
 		delta-silver-accounts \
 		delta-gold-openpositions
 
-start-hudi:
-	docker compose up -d \
-		hudi-bronze-customers \
-		hudi-silver-customers \
-		hudi-gold-customers
-
-start-paimon:
-	docker compose up -d \
-		paimon-bronze-customers \
-		paimon-silver-customers \
-		paimon-gold-customers
-
 start-flink-paimon:
 	docker compose up -d flink-paimon-jobmanager flink-paimon-taskmanager
 	@echo "Waiting 10s for Flink Paimon JM to start..."
 	@sleep 10
 	docker compose up -d flink-paimon-submitter
 
-# ─── Integration test ──────────────────────────────────────────────────────────────
-# End-to-end validation: seeds a fixed CDC dataset, runs a stack's bronze→silver,
-# and asserts the silver current view (9 customers, deletes applied, per-country
-# counts). Deterministic with CLEAN=--clean and generators stopped.
-#   make integration-test                          # spark-paimon
-#   make integration-test STACK=flink-iceberg      # flink dual-silver (soft vs hard delete)
-#   make integration-test CLEAN=--clean            # wipe volumes first (deterministic)
-STACK ?= paimon
-integration-test:
-	bash scripts/integration_test.sh $(CLEAN) $(STACK)
-
-# Show the Iceberg .snapshots table (operation = append vs overwrite; delete-file
-# counts) for the flink bronze/silver tables — the arbiter of stream-readability.
-snapshots:
-	docker compose run --rm -v $(CURDIR)/scripts/integration:/opt/integration \
-	  -e JOB_FILE=/opt/integration/show_snapshots.py spark-bronze-customers
-
 # Interactive Spark SQL shell with Iceberg catalog pre-configured
 sql:
-	docker compose run --rm --no-deps --entrypoint /opt/spark/bin/spark-sql spark-bronze-customers \
+	docker compose run --rm --no-deps --entrypoint /opt/spark/bin/spark-sql spark-bronze-trades \
 	  --conf "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions" \
 	  --conf "spark.sql.catalog.rest=org.apache.iceberg.spark.SparkCatalog" \
 	  --conf "spark.sql.catalog.rest.type=rest" \
@@ -148,7 +95,6 @@ all: up
 	@sleep 15
 	@$(MAKE) start-generators
 	@$(MAKE) start-spark
-	@$(MAKE) start-flink
 	@$(MAKE) start-compactor
 	@echo ""
 	@echo "Stack is running."
@@ -168,19 +114,10 @@ logs:
 	docker compose logs -f --tail=50
 
 logs-spark:
-	docker compose logs -f --tail=50 spark-bronze-customers spark-silver-customers spark-gold-customers
-
-logs-flink:
-	docker compose logs -f --tail=50 flink-jobmanager flink-taskmanager flink-submitter
+	docker compose logs -f --tail=50 spark-bronze-trades spark-silver-trades spark-silver-accounts spark-gold-openpositions
 
 logs-delta:
 	docker compose logs -f --tail=50 delta-bronze-trades delta-silver-trades delta-gold-openpositions
-
-logs-hudi:
-	docker compose logs -f --tail=50 hudi-bronze-customers hudi-silver-customers hudi-gold-customers
-
-logs-paimon:
-	docker compose logs -f --tail=50 paimon-bronze-customers paimon-silver-customers paimon-gold-customers
 
 logs-flink-paimon:
 	docker compose logs -f --tail=50 flink-paimon-jobmanager flink-paimon-taskmanager flink-paimon-submitter

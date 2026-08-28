@@ -93,14 +93,17 @@ introducing v3 features (deletion vectors, row lineage); we must confirm nothing
 in our toolchain creates or silently upgrades tables to v3.
 
 **Tasks**
-- [ ] Pin `'format-version' = '2'` explicitly in all table DDL
-      (`ddl/create_tables.sql`, `ddl/create_tables_flink.sql`).
+- [ ] Pin `'format-version' = '2'` explicitly in all table DDL. DDL now lives
+      in the pipelines: `jobs/_shared/iceberg_tables.py` (`ensure_all`) for the
+      Spark engines, `jobs/flink-paimon/create_tables.sql` and
+      `jobs/flink-fluss/create_tables.sql` for the Flink ones. The old
+      `ddl/` directory went with the customers pipeline.
 - [ ] Check the Iceberg runtime versions in the Docker images / AWS runtimes for
       their default format version and any auto-upgrade behaviour.
 
 **Verification**
 - [ ] After the pipelines have run (including compaction —
-      `jobs/spark/maintenance_compaction.py`), check each table's metadata JSON
+      `jobs/spark-iceberg/maintenance_compaction.py`), check each table's metadata JSON
       or `SELECT * FROM <table>.metadata_log_entries` / table properties and
       confirm `format-version: 2`.
 - [ ] Query every bronze/silver/gold table from Athena (point-in-time SELECT +
@@ -139,8 +142,8 @@ Working hypotheses to confirm:
       expiration (automatic on commit). The Iceberg-compat metadata is derived
       and read-only — never run Iceberg maintenance procedures
       (`expire_snapshots`, `rewrite_data_files`, `remove_orphan_files`) against
-      it. `jobs/spark/maintenance_compaction.py` applies only to the native
-      Iceberg (Flink-written) tables.
+      it. `jobs/spark-iceberg/maintenance_compaction.py` applies only to the
+      native Iceberg tables — the four the spark-iceberg pipeline writes.
 - [ ] Multi-writer safety on S3 (maintenance job vs streaming writer):
       - **Delta OSS**: the default S3 LogStore only serializes commits within a
         single driver. A separate maintenance application committing

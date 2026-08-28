@@ -368,12 +368,15 @@ jobs:
           kubectl -n spark create configmap spark-iceberg-jobs --from-file=jobs/spark-iceberg/ --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n spark create configmap spark-delta-jobs   --from-file=jobs/spark-delta/   --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n spark create configmap spark-hudi-jobs    --from-file=jobs/spark-hudi/    --dry-run=client -o yaml | kubectl apply -f -
+          # WHOLE DIRECTORY, not a hand-maintained file list. The list form silently
+          # omitted jobs/_shared/scd2.py when the SCD2 work landed, and every Spark
+          # silver_accounts job imports it — all three would have died on AWS with
+          # ModuleNotFoundError while the manifests applied cleanly. kubectl skips
+          # subdirectories, so __pycache__ is not picked up.
+          # tests/check_configmaps.py now fails the build if a job imports a shared
+          # module that is not shipped.
           kubectl -n spark create configmap spark-shared \
-            --from-file=jobs/_shared/cdc.py \
-            --from-file=jobs/_shared/delta_tables.py \
-            --from-file=jobs/_shared/iceberg_tables.py \
-            --from-file=jobs/_shared/hudi_tables.py \
-            --from-file=jobs/_shared/latency.py \
+            --from-file=jobs/_shared/ \
             --dry-run=client -o yaml | kubectl apply -f -
           # PHASE 0 — every ${VAR} the manifests reference must be SET and non-empty.
           # envsubst does not fail on an unset variable, it substitutes EMPTY — which

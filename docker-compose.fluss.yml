@@ -102,7 +102,7 @@ services:
     command: jobmanager
     depends_on: [fluss-coordinator, fluss-tablet-server]
     restart: unless-stopped
-    ports: ["8085:8081"]   # Flink UI (8081=flink-iceberg, 8083=kafka-connect)
+    ports: ["8085:8081"]   # Flink UI (8082=flink-paimon, 8083=kafka-connect)
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: fluss-flink-jobmanager

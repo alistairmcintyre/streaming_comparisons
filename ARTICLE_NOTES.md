@@ -105,8 +105,10 @@ The `iceberg-flink-runtime` JAR is a fat JAR that bundles Iceberg core classes. 
 
 Spark SQL uses `USING iceberg` and `TBLPROPERTIES (...)` syntax. Flink SQL uses `PRIMARY KEY ... NOT ENFORCED` and does not support `TBLPROPERTIES`. These two dialects are incompatible in the same SQL file. The solution is to maintain two DDL files:
 
-- `create_tables.sql` — executed by the Spark `ddl-init` container, creates all `_spark` tables and namespaces
-- `create_tables_flink.sql` — executed by `flink-submitter` before job submission, creates all `_flink` tables with correct primary keys and then applies MoR properties via `ALTER TABLE`
+- DDL now lives in the pipelines themselves, not a separate step: `ensure_all()` in
+  `jobs/_shared/{delta,iceberg,hudi}_tables.py` for the Spark engines, and
+  `create_tables.sql` for flink-paimon / flink-fluss. (The old `ddl/` directory and the
+  `ddl-init` / `flink-submitter` containers went with the customers pipeline.)
 
 ### Connector options: `catalog-database` not `database-name`
 

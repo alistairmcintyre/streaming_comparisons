@@ -40,7 +40,7 @@ This one decision drives the entire design.
 | Metric type | Examples | Approach | Needs current-view silver? |
 |---|---|---|---|
 | **Immutable-event** | trade count / notional volume / VWAP per instrument per window | Aggregate the **append stream** with event-time **windows + watermark** | **No** — read the append log (bronze) directly |
-| **Current-state** | open exposure per counterparty, count/sum by *current* status, current balance, active customers per country | **Retraction-aware incremental view maintenance** over the changelog | Yes |
+| **Current-state** | open exposure per counterparty, count/sum by *current* status, current balance, net position per account and symbol | **Retraction-aware incremental view maintenance** over the changelog | Yes |
 
 A large share of analytics is actually the *immutable-event* case — and there the
 updates are irrelevant to the measure, so you skip current-view maintenance and
@@ -136,15 +136,23 @@ possible.
 
 ---
 
-## Concrete example (this repo): active customers per country
+## Concrete example (this repo): net open positions
 
-`jobs/spark-delta/gold_customers_per_country.py` — Delta CDF incremental gold:
-reads `silver` via `readChangeFeed` (only the changes), maps `_change_type` to
-`+/-1`, nets per country, and MERGEs the deltas into the tiny gold table with
-`(txnAppId, txnVersion)` idempotency. `maxFilesPerTrigger` bounds each batch so
-even the one-time catch-up from version 0 stays flat in memory. Work is
-proportional to changes, not to silver's size.
+`jobs/spark-delta/gold_open_positions.py` — Delta incremental gold: each
+micro-batch of fills is aggregated to per-`(account_id, symbol)` deltas and
+MERGEd into the book (`net_quantity += dq`, `least/greatest` folding
+`opened_at`/`last_updated_at`), stamped with `(txnAppId, txnVersion=batchId)`
+so a replayed batch is a no-op. `maxFilesPerTrigger` bounds each batch so even
+the one-time catch-up from version 0 stays flat in memory. Work is proportional
+to the fills in the batch, not to silver's size.
 
-The equivalent in Flink (`jobs/flink-paimon/gold_customers_per_country.sql`) is a
-one-liner — `SELECT country, COUNT(*) FROM silver GROUP BY country` over the
-Paimon changelog — because Flink maintains the retraction aggregate natively.
+The equivalent in Flink (`jobs/flink-paimon/gold_open_positions.sql`) is a
+streaming `SUM(...) ... GROUP BY account_id, symbol` over silver — Flink keeps
+the running net in checkpointed state and the PK gold table just upserts the
+current aggregate, so there is no hand-written MERGE and no idempotency trick.
+
+Note this gold reads an **insert-only** silver (a trade is an immutable
+execution, so `silver.trades` uses the first-row merge engine). That is what
+keeps the `MIN`/`MAX` state bounded: `MIN` and `MAX` cannot be un-applied the
+way `SUM` can, so over a *retracting* input Flink would keep a per-key multiset
+of every value ever seen — O(total rows) rather than O(size of the book).
