@@ -124,7 +124,9 @@ def main():
     parsed = (raw.select(
                 from_json(col("value").cast("string"), ENVELOPE).alias("env"),
                 col("offset").alias("kafka_offset"))
-              .filter(col("env.op").isNotNull())
+              # op != d, matching the other three engines. On a delete `after` is
+              # null, so without this a version lands with NULL name/country/tier.
+              .filter(col("env.op").isNotNull() & (col("env.op") != "d"))
               .select(
                 col("env.op").alias("op"),
                 coalesce(col("env.after.account_id"), col("env.before.account_id")).alias("account_id"),

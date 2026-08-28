@@ -7,7 +7,8 @@ rescanning it — see STREAMING_DESIGN_PRINCIPLES.md.
 import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, current_timestamp
-from hudi_tables import BRONZE_TRADES, SILVER_TRADES, silver_trades_opts
+from hudi_tables import BRONZE_TRADES, SILVER_TRADES as SILVER_TRADES_PATH, silver_trades_opts
+from schemas import SILVER_TRADES, conform
 
 CHECKPOINT_BASE = os.environ.get("CHECKPOINT_BASE", "s3a://warehouse/_chk")
 CHECKPOINT_PATH = f"{CHECKPOINT_BASE}/silver_trades_hudi"
@@ -30,16 +31,19 @@ def main():
     # instant and silently falling back to a full-table scan).
     src = (spark.readStream.format("hudi")
            .load(BRONZE_TRADES)
-           .select("trade_id", "account_id", "symbol", "side", "quantity", "price",
-                   "executed_at", "event_ts", "executed_date",
-                     # ordering key for last-wins (precombine); see hudi_tables.py
-                     "source_lsn")
            .withColumn("ingest_ts", current_timestamp())
            .filter(col("trade_id").isNotNull()))
+    # conform(), not a bare select. Hudi has NO DDL — the table's schema is whatever frame
+    # is written — so both the field ORDER and the TYPES have to be pinned here or they
+    # drift silently, as gold's net_notional did (decimal(33,4) vs the declared (38,4)).
+    # This projection previously emitted source_lsn and ingest_ts the other way round.
+    # executed_date is Hudi's partition FIELD: Hudi partitions by a column, so it must be
+    # present, and it is excluded from the parity contract (PARTITION_ARTEFACTS).
+    src = conform(src, SILVER_TRADES, extra=["executed_date"])
 
     (src.writeStream.format("hudi")
         .options(**silver_trades_opts())
-        .option("path", SILVER_TRADES)
+        .option("path", SILVER_TRADES_PATH)
         .option("checkpointLocation", CHECKPOINT_PATH)
         .outputMode("append")
         .trigger(processingTime="15 seconds")

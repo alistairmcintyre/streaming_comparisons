@@ -34,12 +34,13 @@ CREATE TABLE IF NOT EXISTS fluss_catalog.silver.trades (
     side        STRING,
     quantity    INT,
     price       DECIMAL(12,4),
-    -- TIMESTAMP(6): Iceberg's native micro precision. Paimon's Iceberg-compat
-    -- REJECTS precision < 4 (TIMESTAMP(3) → the tiering commit throws
-    -- "only support timestamp type with precision from 4 to 9" and no Iceberg
-    -- metadata.json is ever written → the table is invisible to Athena/Spark).
     executed_at TIMESTAMP(6),
-    -- strict total order across the CDC stream; kafka_offset is per-partition only
+    -- event_ts is the SOURCE commit time (Debezium source.ts_ms); ingest_ts is when this
+    -- pipeline wrote the row. Fluss has no bronze hop — silver IS its landing table — so
+    -- ingest_ts is stamped here rather than one hop earlier. Both were missing, leaving
+    -- silver.trades with a different field list on this engine than on the other four.
+    event_ts    TIMESTAMP(6),
+    ingest_ts   TIMESTAMP(6),
     source_lsn  BIGINT,
     PRIMARY KEY (trade_id) NOT ENFORCED
 ) WITH (
@@ -85,14 +86,15 @@ CREATE TABLE IF NOT EXISTS fluss_catalog.silver.accounts (
     country           STRING,
     tier              STRING,
     source_updated_at TIMESTAMP(6),
-    -- SCD2: source_lsn is the CDC total order AND the version half of the key, so a real
-    -- change writes a new row while an at-least-once re-delivery collapses onto the same
-    -- one. effective_to / is_current are derived at read via LEAD(effective_from).
+    event_ts          TIMESTAMP(6),
     effective_from    TIMESTAMP(6),
-    -- MATERIALISED by an atomic close-out; see silver_accounts.sql.
     effective_to      TIMESTAMP(6),
     is_current        BOOLEAN,
     source_lsn        BIGINT,
+    -- Raw Debezium op ('d' is filtered at the source, so this carries c/u/r) and the write
+    -- time. Both were absent here and present on Delta/Iceberg, so the field lists diverged.
+    op                STRING,
+    commit_ts         TIMESTAMP(6),
     PRIMARY KEY (account_id, source_lsn) NOT ENFORCED
 ) WITH (
     'table.datalake.enabled'          = 'true',

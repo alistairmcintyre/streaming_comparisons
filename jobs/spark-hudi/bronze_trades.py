@@ -10,7 +10,8 @@ from pyspark.sql.functions import col, from_json, current_timestamp, to_timestam
 from pyspark.sql.types import (
     StructType, StructField, StringType, LongType, IntegerType, DecimalType,
 )
-from hudi_tables import BRONZE_TRADES, bronze_trades_opts
+from schemas import BRONZE_TRADES, conform
+from hudi_tables import BRONZE_TRADES as BRONZE_TRADES_PATH, bronze_trades_opts
 from latency import observe_event_time, attach_latency_listener
 
 KAFKA_BROKERS   = os.environ.get("KAFKA_BROKERS", "kafka:9092")
@@ -81,6 +82,13 @@ def main():
                 col("kafka_offset"), col("kafka_partition"))
               .withColumn("executed_date", to_date(col("executed_at"))))
 
+    # conform(): Hudi has NO DDL, so this projection's order and inferred types BECOME the
+    # table's schema. It emitted source_lsn before ingest_ts and both before the kafka
+    # coordinates, where delta/iceberg/paimon all DECLARE ..., ingest_ts, kafka_offset,
+    # kafka_partition, source_lsn. executed_date is Hudi's partition field (schemas.py:
+    # PARTITION_ARTEFACTS) and has to stay in the written frame.
+    parsed = conform(parsed, BRONZE_TRADES, extra=["executed_date"])
+
     # observe() costs no extra action; the listener emits after each batch COMMITS
     # (for Hudi MOR that includes the inline compaction the write triggers).
     attach_latency_listener(spark, "hudi-bronze")
@@ -88,7 +96,7 @@ def main():
 
     (observed.writeStream.format("hudi")
         .options(**bronze_trades_opts())
-        .option("path", BRONZE_TRADES)
+        .option("path", BRONZE_TRADES_PATH)
         .option("checkpointLocation", CHECKPOINT_PATH)
         .outputMode("append")
         .trigger(processingTime="10 seconds")

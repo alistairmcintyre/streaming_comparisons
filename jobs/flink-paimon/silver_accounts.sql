@@ -18,8 +18,13 @@
 -- close-out only fires when source_lsn > prev_lsn, so an out-of-order delivery is skipped
 -- instead of silently writing a validity range that runs backwards.
 --
--- DELETES are kept as a version with row_kind '-D' rather than removed — a closed account
--- must stay joinable for trades that happened while it was open.
+-- DELETES are FILTERED at the source, on all five engines. This table used to set
+-- rowkind.field='row_kind' so an op='d' became a PHYSICAL DELETE — erasing that account's
+-- whole SCD2 history, the opposite of what the comment here claimed, and leaving trades
+-- that happened while the account was open with nothing to join to. Meanwhile Hudi and
+-- Fluss filtered deletes and Delta/Iceberg wrote a version with NULL attributes: four
+-- behaviours across five engines. Closing the current version on a delete would be the
+-- richer model; the generator never deletes accounts, so it is not built.
 --
 -- TEMPLATE: submit.sh runs envsubst.
 
@@ -64,8 +69,7 @@ SELECT
     `after`.tier                                                        AS tier,
     TO_TIMESTAMP(COALESCE(`after`.updated_at, `before`.updated_at), 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z''') AS source_updated_at,
     TO_TIMESTAMP_LTZ(`source`.ts_ms, 3)                                 AS event_ts,
-    CAST(TO_TIMESTAMP_LTZ(`source`.ts_ms, 3) AS DATE)                   AS event_date,
-    CASE WHEN op = 'd' THEN '-D' ELSE '+I' END                          AS row_kind,
+    op                                                                  AS op,
     TO_TIMESTAMP_LTZ(`source`.ts_ms, 3)                                 AS effective_from,
     `source`.lsn                                                        AS source_lsn,
     LAG(`after`.name)    OVER w                                         AS prev_name,
@@ -73,19 +77,23 @@ SELECT
     LAG(`after`.tier)    OVER w                                         AS prev_tier,
     LAG(TO_TIMESTAMP(COALESCE(`after`.updated_at, `before`.updated_at), 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z''')) OVER w AS prev_source_updated_at,
     LAG(TO_TIMESTAMP_LTZ(`source`.ts_ms, 3)) OVER w                     AS prev_effective_from,
-    LAG(CASE WHEN op = 'd' THEN '-D' ELSE '+I' END) OVER w              AS prev_row_kind,
+    LAG(TO_TIMESTAMP_LTZ(`source`.ts_ms, 3)) OVER w                     AS prev_event_ts,
+    LAG(op) OVER w                                                      AS prev_op,
     LAG(`source`.lsn)    OVER w                                         AS prev_lsn
 FROM kafka_accounts_src
-WHERE op IS NOT NULL
+-- Deletes are FILTERED, not written. This table used to set rowkind.field so an
+-- op='d' became a physical delete, erasing that account's whole SCD2 history —
+-- while Hudi and Fluss filtered deletes and Delta/Iceberg wrote a NULL-attribute
+-- version. All five now agree. (Closing the current version on a delete would be
+-- the richer model; the generator never deletes accounts, so it is not built.)
+WHERE op IS NOT NULL AND op <> 'd'
 WINDOW w AS (PARTITION BY COALESCE(`after`.account_id, `before`.account_id) ORDER BY proc);
 
 EXECUTE STATEMENT SET
 BEGIN
 
 INSERT INTO paimon.silver.accounts
-SELECT account_id, name, country, tier, source_updated_at, event_ts, event_date,
-       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, row_kind,
-       
+SELECT account_id, name, country, tier, source_updated_at, event_ts,
        effective_from,
        -- An OUT-OF-ORDER arrival is not current: it is a late historical version, valid
        -- until the row that already superseded it. Without this it would be written with
@@ -94,7 +102,9 @@ SELECT account_id, name, country, tier, source_updated_at, event_ts, event_date,
        CASE WHEN prev_lsn IS NULL OR source_lsn > prev_lsn
             THEN CAST(NULL AS TIMESTAMP(6)) ELSE prev_effective_from END,
        (prev_lsn IS NULL OR source_lsn > prev_lsn),
-       source_lsn
+       source_lsn,
+       op,
+       CAST(CURRENT_TIMESTAMP AS TIMESTAMP(6))
 FROM acct_changes
 -- A re-delivery (identical lsn to the record before it) must be a NO-OP. Without this
 -- guard it falls into the "not newer" branch and is emitted with is_current = FALSE — and
@@ -105,8 +115,9 @@ WHERE prev_lsn IS NULL OR source_lsn <> prev_lsn;
 
 INSERT INTO paimon.silver.accounts
 SELECT account_id, prev_name, prev_country, prev_tier, prev_source_updated_at,
-       event_ts, event_date, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, prev_row_kind,
-       prev_effective_from, effective_from, FALSE, prev_lsn
+       prev_event_ts,
+       prev_effective_from, effective_from, FALSE, prev_lsn, prev_op,
+       CAST(CURRENT_TIMESTAMP AS TIMESTAMP(6))
 FROM acct_changes
 WHERE prev_lsn IS NOT NULL AND source_lsn > prev_lsn;
 

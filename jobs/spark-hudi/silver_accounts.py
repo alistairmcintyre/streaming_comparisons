@@ -7,10 +7,11 @@ and the staged close row rewrites the superseded version in the same commit.
 """
 import os
 from scd2 import stage_scd2
+from schemas import SILVER_ACCOUNTS, conform
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, current_timestamp, to_timestamp, coalesce
 from pyspark.sql.types import StructType, StructField, StringType, LongType
-from hudi_tables import SILVER_ACCOUNTS, silver_accounts_opts
+from hudi_tables import SILVER_ACCOUNTS as SILVER_ACCOUNTS_PATH, silver_accounts_opts
 
 KAFKA_BROKERS   = os.environ.get("KAFKA_BROKERS", "kafka:9092")
 TOPIC           = "app.public.accounts"
@@ -54,7 +55,7 @@ def upsert_scd2(batch, batch_id):
         return
     ids = [r[0] for r in batch.select("account_id").distinct().collect()]
     try:
-        current = (spark.read.format("hudi").load(SILVER_ACCOUNTS)
+        current = (spark.read.format("hudi").load(SILVER_ACCOUNTS_PATH)
                    .filter(col("is_current") & col("account_id").isin(ids))
                    .select("account_id", "source_lsn", "effective_from", *ATTRS))
     except Exception:                      # first batch: the table does not exist yet
@@ -63,9 +64,14 @@ def upsert_scd2(batch, batch_id):
 
     staged = stage_scd2(batch, current,
                         attrs=ATTRS)
-    (staged.drop("action").withColumn("commit_ts", current_timestamp())
-        .write.format("hudi").options(**silver_accounts_opts())
-        .mode("append").save(SILVER_ACCOUNTS))
+    # conform(), not a bare write. stage_scd2 emits its own column order (key, version,
+    # validity, then attributes) and Hudi has NO DDL, so that order — and the inferred
+    # types — would become the table's schema, differing from the four engines that
+    # DECLARE this table. Pinned to jobs/_shared/schemas.py:SILVER_ACCOUNTS.
+    out = conform(staged.drop("action").withColumn("commit_ts", current_timestamp()),
+                  SILVER_ACCOUNTS)
+    (out.write.format("hudi").options(**silver_accounts_opts())
+        .mode("append").save(SILVER_ACCOUNTS_PATH))
 
 
 def main():

@@ -36,7 +36,10 @@ _STATEMENTS = [
       USING iceberg PARTITIONED BY (days(executed_at)) TBLPROPERTIES ({_APPEND_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.trades_spark (
         trade_id BIGINT, account_id BIGINT, symbol STRING, side STRING, quantity INT,
-        price DECIMAL(12,4), executed_at TIMESTAMP, event_ts TIMESTAMP, ingest_ts TIMESTAMP)
+        price DECIMAL(12,4), executed_at TIMESTAMP, event_ts TIMESTAMP, ingest_ts TIMESTAMP,
+        -- The CDC total order. bronze carried it and silver dropped it, so the ordering
+        -- key this repo documents everywhere existed on three engines of five.
+        source_lsn BIGINT)
       USING iceberg PARTITIONED BY (days(executed_at)) TBLPROPERTIES ({_APPEND_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.accounts_spark (
         account_id BIGINT NOT NULL, name STRING, country STRING, tier STRING,

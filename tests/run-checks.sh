@@ -53,15 +53,16 @@ expect "scd2 staging logic (shared by the Spark engines)" 0 \
     167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
     /w/tests/scd2_spark_test.py
 
-expect "shared modules a job imports actually reach the cluster" 0 \
+expect "job imports: all shipped, none shadowed" 0 \
   python3 tests/check_configmaps.py
 
-# All five golds must return the SAME FIELDS or the benchmark compares different tables.
-# This half parses the Flink DDL; the Spark half is MEASURED in gold_fold_test.py, which
-# is the only way to cover Hudi — it has no DDL, and its net_notional had silently
-# inferred to decimal(33,4) against the decimal(38,4) the other four declare.
-expect "flink golds declare the canonical field list" 0 \
-  python3 tests/gold_schema_test.py
+# All five pipelines must write the SAME FIELDS or the benchmark compares different
+# tables. This checks every DECLARED schema — delta, iceberg, paimon, fluss — for
+# silver.trades, silver.accounts AND gold.open_positions. Hudi has no DDL, so it is pinned
+# by conform() at each write and MEASURED on the real table by gold_fold_test.py; its gold
+# net_notional had inferred to decimal(33,4) against the declared (38,4).
+expect "all declared schemas match jobs/_shared/schemas.py" 0 \
+  python3 tests/schema_parity_test.py
 
 echo "== meta: each checker must REJECT a known-bad input =="
 expect "rejects an RFC1123-invalid name" 1 ./infra/aws/scripts/preflight-manifests.sh tests/fixtures
@@ -76,13 +77,20 @@ expect "image hash changes with content" 0 bash -c '
   git checkout -- docker/spark-hudi/Dockerfile
   [ "$a" != "$b" ]'
 
-expect "gold schema check catches a drifted field type" 1 bash -c '
-  d=$(mktemp -d); mkdir -p "$d/jobs/flink-paimon" "$d/jobs/flink-fluss" "$d/jobs/_shared"
-  cp jobs/_shared/gold_schema.py "$d/jobs/_shared/"
+expect "schema parity check catches a drifted field type" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/jobs/flink-paimon" "$d/jobs/flink-fluss"
+  cp -r jobs/_shared "$d/jobs/_shared"
   cp jobs/flink-fluss/create_tables.sql "$d/jobs/flink-fluss/"
   sed "s|net_notional    DECIMAL(38,4)|net_notional    DECIMAL(20,4)|" \
     jobs/flink-paimon/create_tables.sql > "$d/jobs/flink-paimon/create_tables.sql"
-  cd "$d" && python3 "$OLDPWD/tests/gold_schema_test.py"'
+  cd "$d" && python3 "$OLDPWD/tests/schema_parity_test.py"'
+
+expect "import check catches a shadowed shared name" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/.github/workflows"; cp -r jobs "$d/jobs"
+  cp .github/workflows/eks-run.yml "$d/.github/workflows/"
+  sed -i "s|from hudi_tables import SILVER_ACCOUNTS as SILVER_ACCOUNTS_PATH, silver_accounts_opts|from hudi_tables import SILVER_ACCOUNTS, silver_accounts_opts|" \
+    "$d/jobs/spark-hudi/silver_accounts.py"
+  cd "$d" && python3 "$OLDPWD/tests/check_configmaps.py"'
 
 expect "configmap check catches an unshipped shared module" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/.github/workflows"; cp -r jobs "$d/jobs"

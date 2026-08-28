@@ -37,7 +37,7 @@ from pyspark.sql.functions import (
     min as _min, max as _max, least, greatest,
 )
 from hudi_tables import SILVER_TRADES, GOLD_POSITIONS, gold_positions_opts
-from gold_schema import conform
+from schemas import conform
 
 CHECKPOINT_BASE = os.environ.get("CHECKPOINT_BASE", "s3a://warehouse/_chk")
 CHECKPOINT_PATH = f"{CHECKPOINT_BASE}/gold_open_positions_hudi"

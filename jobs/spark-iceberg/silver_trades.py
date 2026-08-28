@@ -48,7 +48,11 @@ def main():
         .withWatermark("event_ts", "2 hours")
         .dropDuplicatesWithinWatermark(["trade_id"])
         .select("trade_id", "account_id", "symbol", "side", "quantity",
-                "price", "executed_at", "event_ts", "ingest_ts")
+                "price", "executed_at", "event_ts", "ingest_ts",
+                # bronze has carried source_lsn all along; silver dropped it. It is the
+                # CDC total order, Hudi's precombine key, and the column every doc here
+                # points at — it belongs on all five silvers, not three.
+                "source_lsn")
     )
 
     (cleaned.writeStream.format("iceberg").outputMode("append")

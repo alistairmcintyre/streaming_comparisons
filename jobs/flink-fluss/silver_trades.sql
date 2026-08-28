@@ -69,6 +69,10 @@ SELECT
     `after`.quantity,
     CAST(`after`.price AS DECIMAL(12,4)),
     TO_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z'''),
+    -- event_ts = source commit time; ingest_ts = when this pipeline wrote the row. Fluss
+    -- has no bronze hop, so ingest_ts is stamped here. Both were missing entirely.
+    CAST(TO_TIMESTAMP_LTZ(`source`.ts_ms, 3) AS TIMESTAMP(6)),
+    CAST(CURRENT_TIMESTAMP AS TIMESTAMP(6)),
     `source`.lsn
 FROM kafka_trades_src
 WHERE `after`.trade_id IS NOT NULL;

@@ -62,6 +62,9 @@ def create_silver_trades(spark):
         StructField("quantity", IntegerType()), StructField("price", DecimalType(12, 4)),
         StructField("executed_at", TimestampType()), StructField("event_ts", TimestampType()),
         StructField("ingest_ts", TimestampType()),
+        # The CDC total order. bronze carried it and silver dropped it, so the ordering
+        # key this repo documents everywhere existed on three engines of five.
+        StructField("source_lsn", LongType()),
     ])
     (DeltaTable.createIfNotExists(spark)
         .tableName("delta_silver_trades").addColumns(schema)

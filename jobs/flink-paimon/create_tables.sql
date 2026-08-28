@@ -120,30 +120,29 @@ CREATE TABLE IF NOT EXISTS paimon.silver.accounts (
     tier              STRING,
     source_updated_at TIMESTAMP(6),
     event_ts          TIMESTAMP(6),
-    event_date        DATE,
-    ingest_ts         TIMESTAMP(6),
-    commit_ts         TIMESTAMP(6),
-    row_kind          STRING,
-    -- SCD2: effective_from is the SOURCE commit time (not ingest — as-of joins must not
-    -- depend on pipeline lag). source_lsn is the CDC total order and the version half of
-    -- the key: a genuine change writes a NEW row, while an at-least-once re-delivery has
-    -- the same (account_id, source_lsn) and collapses. effective_to / is_current are
-    -- DERIVED at read via LEAD(effective_from) — materialised close-out would mean
-    -- targeting (account_id, old_effective_from), which a stateless Flink job cannot know.
+    -- SCD2: effective_from is the SOURCE commit time (not ingest — an as-of join must not
+    -- depend on pipeline lag). effective_to / is_current are MATERIALISED by an atomic
+    -- close-out (see silver_accounts.sql): when version N+1 arrives the job writes BOTH
+    -- the new row AND version N again with effective_to set. PK is (account_id,
+    -- source_lsn), so rewriting version N merges onto the existing row.
     effective_from    TIMESTAMP(6),
-    -- MATERIALISED validity, written by an atomic close-out (see silver_accounts.sql):
-    -- when version N+1 arrives, the job writes BOTH the new row AND version N again with
-    -- effective_to set. PK is (account_id, source_lsn), so rewriting version N merges
-    -- onto the existing row rather than duplicating it.
     effective_to      TIMESTAMP(6),
     is_current        BOOLEAN,
+    -- source_lsn is the CDC total order and the version half of the key: a genuine change
+    -- writes a NEW row, an at-least-once re-delivery has the same (account_id, source_lsn)
+    -- and collapses.
     source_lsn        BIGINT NOT NULL,
+    -- Raw Debezium op, NOT a derived '+I'/'-D' row_kind. 'd' is filtered at the source on
+    -- all five engines (see silver_accounts.sql), so this carries c/u/r. It used to be a
+    -- row_kind rendering here and a raw op on Delta/Iceberg — same concept, different
+    -- field, so the five silver.accounts did not have the same schema.
+    op                STRING,
+    commit_ts         TIMESTAMP(6),
     PRIMARY KEY (account_id, source_lsn) NOT ENFORCED
 ) WITH (
     'bucket'                           = '1',
     'merge-engine'                     = 'deduplicate',
     'sequence.field'                   = 'event_ts',
-    'rowkind.field'                    = 'row_kind',
     'changelog-producer'               = 'lookup',
     'file.format'                      = 'parquet',
     'compaction.optimization-interval' = '${PAIMON_FULL_COMPACT_INTERVAL}',

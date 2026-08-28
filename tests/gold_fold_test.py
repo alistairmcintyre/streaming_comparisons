@@ -101,7 +101,7 @@ for i, rows in enumerate(BATCHES):
 # schema is whatever DataFrame was written — so this is the only way to catch it drifting.
 # It had: net_notional came out decimal(33,4) against the decimal(38,4) the other four
 # declare, and every value-based check passed regardless.
-from gold_schema import GOLD_OPEN_POSITIONS, HUDI_META_PREFIX
+from schemas import GOLD_OPEN_POSITIONS, HUDI_META_PREFIX
 _fields = READ().schema.fields
 _business = [(f.name, f.dataType.simpleString()) for f in _fields
              if not f.name.startswith(HUDI_META_PREFIX)]
