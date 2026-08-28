@@ -12,10 +12,18 @@
 # Never fails the run: diagnostics are best-effort by definition, and a missing log
 # must not mask the failure that prompted the collection.
 set -uo pipefail
-KB="${KUBECTL:-kubectl}"
+# --request-timeout so a call against something that is not answering fails in seconds
+# instead of sitting on the `timeout` backstop. Without it this script took NINE MINUTES
+# after a failed apply: the six Prometheus proxy calls below each hung for the full 90s
+# (6 x 90 = 540s) because nothing had been applied for Prometheus to scrape or answer
+# with. Diagnostics run on EVERY failure, so their cost is paid exactly when a run has
+# already gone wrong and the cluster is still billing.
+KB="${KUBECTL:-kubectl} --request-timeout=25s"
 OUT="${1:-diagnostics}"
 mkdir -p "$OUT"
-cap() { local f="$OUT/$1.txt"; shift; { echo "### $* ###"; timeout 90 "$@" 2>&1; echo; } >> "$f" || true; }
+# timeout is now a backstop for something --request-timeout cannot bound, not the normal
+# exit path.
+cap() { local f="$OUT/$1.txt"; shift; { echo "### $* ###"; timeout 45 "$@" 2>&1; echo; } >> "$f" || true; }
 
 # ── cluster-wide shape ───────────────────────────────────────────────────────
 cap cluster $KB get nodes -o wide
@@ -51,10 +59,17 @@ cap kafka $KB -n kafka get kafka,kafkatopic,kafkaconnect,kafkaconnector -o wide
 # silently wrong on the first run. Via the apiserver proxy — the prometheus container
 # is distroless and has no wget/curl, so `kubectl exec` cannot work here.
 PX="/api/v1/namespaces/monitoring/services/kube-prometheus-stack-prometheus:9090/proxy/api/v1"
-cap prometheus $KB get --raw "$PX/targets?state=active"
-cap prometheus $KB get --raw "$PX/rules"
-for m in kafka_consumergroup_lag flink_jobmanager_job_uptime pipeline_latency_events_total up; do
-  cap prometheus $KB get --raw "$PX/query?query=$m"
-done
+# PROBE ONCE. If Prometheus is not answering — which it will not be when the run died
+# before the manifests applied — the six calls below have nothing to say and used to cost
+# 90 seconds each. One cheap request decides whether to make them at all.
+if $KB get --raw "$PX/status/buildinfo" >/dev/null 2>&1; then
+  cap prometheus $KB get --raw "$PX/targets?state=active"
+  cap prometheus $KB get --raw "$PX/rules"
+  for m in kafka_consumergroup_lag flink_jobmanager_job_uptime pipeline_latency_events_total up; do
+    cap prometheus $KB get --raw "$PX/query?query=$m"
+  done
+else
+  echo "prometheus not reachable — targets/rules/metrics not captured" | tee "$OUT/prometheus.txt"
+fi
 
 echo "diagnostics written to $OUT/ ($(ls "$OUT" | wc -l) files)"
