@@ -9,6 +9,7 @@ would be added — none required yet, so it's a clean passthrough.
 import os
 from pyspark.sql import SparkSession
 from schemas import SILVER_TRADES as SILVER_TRADES_FIELDS, conform
+from latency import observe_event_time, attach_latency_listener
 from delta_tables import ensure_all  # in-pipeline DDL
 from pyspark.sql.functions import col
 
@@ -59,6 +60,12 @@ def main():
     )
     cleaned = conform(cleaned, SILVER_TRADES_FIELDS)
 
+    # LATENCY EMIT for the bronze->silver hop. Until now only bronze and gold emitted, so
+    # the dashboard could show end-to-end and gold but NOT where time goes in the middle —
+    # on four of five engines. Silver is where the dedupe and the SCD2 work happen, so an
+    # unmeasured silver hop is the least useful one to be missing.
+    attach_latency_listener(spark, "delta-silver")
+    cleaned = observe_event_time(cleaned)
     (cleaned.writeStream.format("delta").outputMode("append")
         .option("path", SILVER_TRADES)
         .option("checkpointLocation", CHECKPOINT_PATH)

@@ -7,6 +7,7 @@ rescanning it — see STREAMING_DESIGN_PRINCIPLES.md.
 import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, current_timestamp
+from latency import observe_event_time, attach_latency_listener
 from hudi_tables import BRONZE_TRADES, SILVER_TRADES as SILVER_TRADES_PATH, silver_trades_opts
 from schemas import SILVER_TRADES, conform
 
@@ -41,6 +42,12 @@ def main():
     # present, and it is excluded from the parity contract (PARTITION_ARTEFACTS).
     src = conform(src, SILVER_TRADES, extra=["executed_date"])
 
+    # LATENCY EMIT for the bronze->silver hop. Until now only bronze and gold emitted, so
+    # the dashboard could show end-to-end and gold but NOT where time goes in the middle —
+    # on four of five engines. Silver is where the dedupe and the SCD2 work happen, so an
+    # unmeasured silver hop is the least useful one to be missing.
+    attach_latency_listener(spark, "hudi-silver")
+    src = observe_event_time(src)
     (src.writeStream.format("hudi")
         .options(**silver_trades_opts())
         .option("path", SILVER_TRADES_PATH)

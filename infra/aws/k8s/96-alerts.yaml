@@ -56,12 +56,12 @@ spec:
         # so adding or removing an emitter without updating this threshold fails the
         # suite rather than silently weakening the alert.
         - alert: PipelinesMissing
-          expr: count(count by (pipeline) (pipeline_latency_events_total)) < 10
+          expr: count(count by (pipeline) (pipeline_latency_events_total)) < 14
           for: 10m
           labels: { severity: critical }
           annotations:
-            summary: "only {{ $value }} of 10 pipelines are reporting latency"
-            description: "A pipeline that never emitted has no series at all, so PipelineStoppedEmitting cannot see it. Expected 10: delta/iceberg/hudi bronze+gold, paimon-bronze+gold, fluss-silver+gold. The Flink golds emit through upsert-kafka, the only Kafka sink that accepts the updating stream a GROUP BY produces. The authoritative gold-hop number is still (commit_ts - last_updated_at) from the table via snapshot-results.sh; this dashboard is the live view."
+            summary: "only {{ $value }} of 14 pipelines are reporting latency"
+            description: "A pipeline that never emitted has no series at all, so PipelineStoppedEmitting cannot see it. Expected 14 = every engine x every hop it has: delta/iceberg/hudi/paimon bronze+silver+gold (12), fluss silver+gold (2 — Fluss has no bronze hop by design, its PK table IS the landing table). The Flink golds emit through upsert-kafka, the only Kafka sink that accepts the updating stream a GROUP BY produces. The authoritative gold-hop number is still (commit_ts - last_updated_at) from the table via snapshot-results.sh; this dashboard is the live view."
 
         - alert: PipelineStoppedEmitting
           expr: sum by (pipeline) (rate(pipeline_latency_events_total[5m])) == 0

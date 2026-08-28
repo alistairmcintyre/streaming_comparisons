@@ -7,6 +7,7 @@ stream (append snapshots are stream-readable in Iceberg — no merged-table issu
 import os
 from pyspark.sql import SparkSession
 from schemas import SILVER_TRADES as SILVER_TRADES_FIELDS, conform
+from latency import observe_event_time, attach_latency_listener
 from iceberg_tables import ensure_all  # in-pipeline DDL
 
 CHECKPOINT_BASE = os.environ.get("CHECKPOINT_BASE", "s3a://warehouse/_chk")
@@ -56,6 +57,12 @@ def main():
     )
     cleaned = conform(cleaned, SILVER_TRADES_FIELDS)
 
+    # LATENCY EMIT for the bronze->silver hop. Until now only bronze and gold emitted, so
+    # the dashboard could show end-to-end and gold but NOT where time goes in the middle —
+    # on four of five engines. Silver is where the dedupe and the SCD2 work happen, so an
+    # unmeasured silver hop is the least useful one to be missing.
+    attach_latency_listener(spark, "iceberg-silver")
+    cleaned = observe_event_time(cleaned)
     (cleaned.writeStream.format("iceberg").outputMode("append")
         .option("path", SILVER)
         .option("checkpointLocation", CHECKPOINT_PATH)
