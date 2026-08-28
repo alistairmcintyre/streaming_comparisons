@@ -1,8 +1,9 @@
 """
 Spark Structured Streaming: Kafka (Debezium) → Hudi silver.accounts
 
-SCD1 dimension: latest row per account_id wins, which Hudi gives directly via upsert
-with precombine on source_updated_at.
+SCD2 dimension: EVERY version is retained. The composite record key (account_id,
+source_lsn) means a new version inserts while an at-least-once re-delivery collapses,
+and the staged close row rewrites the superseded version in the same commit.
 """
 import os
 from scd2 import stage_scd2
@@ -32,6 +33,12 @@ ENVELOPE = StructType([
     StructField("source", SOURCE,       True),
 ])
 
+# The dimension's attribute columns. Both the incoming batch AND the current-row read
+# must project these: a close row is rebuilt from the CURRENT row, so if the read
+# omits an attribute the close writes a NULL over it — invisible on a MERGE, which
+# only updates two columns; fatal on Hudi, whose upsert replaces the whole record.
+ATTRS = ["name", "country", "tier", "source_updated_at", "event_ts", "op"]
+
 
 def upsert_scd2(batch, batch_id):
     """Same staging as Delta/Iceberg (jobs/_shared/scd2.py); the WRITE differs.
@@ -49,13 +56,13 @@ def upsert_scd2(batch, batch_id):
     try:
         current = (spark.read.format("hudi").load(SILVER_ACCOUNTS)
                    .filter(col("is_current") & col("account_id").isin(ids))
-                   .select("account_id", "source_lsn", "effective_from"))
+                   .select("account_id", "source_lsn", "effective_from", *ATTRS))
     except Exception:                      # first batch: the table does not exist yet
         current = spark.createDataFrame(
-            [], batch.select("account_id", "source_lsn", "effective_from").schema)
+            [], batch.select("account_id", "source_lsn", "effective_from", *ATTRS).schema)
 
     staged = stage_scd2(batch, current,
-                        attrs=["name", "country", "tier", "source_updated_at", "event_ts", "op"])
+                        attrs=ATTRS)
     (staged.drop("action").withColumn("commit_ts", current_timestamp())
         .write.format("hudi").options(**silver_accounts_opts())
         .mode("append").save(SILVER_ACCOUNTS))

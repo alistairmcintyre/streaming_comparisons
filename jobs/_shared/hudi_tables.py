@@ -133,8 +133,10 @@ def silver_trades_opts():
 # re-deliveries, but it no longer destroys history, because the version is part of the key.
 # Contrast silver.trades, where the key is trade_id alone: a trade is an immutable event
 # and has no versions.
-# effective_to / is_current are DERIVED at read via LEAD(effective_from); see
-# spark-delta/silver_accounts.py for why they are not materialised.
+# effective_to / is_current are MATERIALISED, closed by a staged row that carries the
+# superseded version's full attributes — Hudi's upsert replaces the whole record, so a
+# close row with nulled attributes would erase the history it exists to preserve
+# (tests/scd2_hudi_upsert_test.py).
 def silver_accounts_opts():
     return _opts("hudi_silver_accounts", "account_id,source_lsn", "source_lsn",
                  operation="upsert",

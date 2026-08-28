@@ -9,6 +9,10 @@ one definition of SCD2:
                                                 -> v400 stays current; v300 is a late
                                                    historical row, NOT a second current one
   account 4: v500 arrives twice (re-delivery)   -> collapses, one row
+  account 5: v600 ALREADY in the table, batch brings v700
+                                                -> close row carries v600's real attributes
+                                                   (a MERGE only updates two columns and
+                                                   hides a null here; a Hudi upsert does not)
 
 Plain DataFrames, no Delta/Iceberg/Hudi — the logic is engine-agnostic and this runs in
 seconds without a table format.
@@ -26,8 +30,8 @@ spark.sparkContext.setLogLevel("ERROR")
 
 schema = StructType([
     StructField("account_id", LongType()), StructField("tier", StringType()),
-    # a NON-STRING attribute on purpose: the close rows null every attribute out,
-    # and casting those nulls to string silently breaks unionByName.
+    # a NON-STRING attribute on purpose: close rows are rebuilt from `current` and cast
+    # back to the batch's types, and casting them all to string breaks unionByName.
     StructField("source_updated_at", TimestampType()),
     StructField("effective_from", TimestampType()), StructField("source_lsn", LongType())])
 
@@ -38,7 +42,14 @@ batch = spark.createDataFrame([
 ], schema)
 current = spark.createDataFrame([], schema)             # empty table to start
 
-staged = stage_scd2(batch, current, attrs=["tier", "source_updated_at"]).collect()
+ATTRS = ["tier", "source_updated_at"]
+staged = stage_scd2(batch, current, attrs=ATTRS).collect()
+
+# Second scenario: a key whose current row is ALREADY in the table. This is the only path
+# that produces a close row rebuilt from `current` rather than from the batch.
+existing = spark.createDataFrame([(5, "M", D(2), D(2), 600)], schema)
+staged += stage_scd2(spark.createDataFrame([(5, "N", D(9), D(9), 700)], schema),
+                     existing, attrs=ATTRS).collect()
 
 # model the sink: PK (account_id, source_lsn), last write wins
 merged = {}
@@ -64,13 +75,18 @@ chk("acct2 never closed",       g[(2,150)]["effective_to"] is None and g[(2,150)
 chk("acct3 v400 stays current", g[(3,400)]["is_current"] is True)
 chk("acct3 out-of-order v300 is NOT current", g[(3,300)]["is_current"] is False)
 chk("acct4 re-delivery collapsed to one row", len([r for r in rows if r["account_id"] == 4]) == 1)
+chk("acct5 v600 closed from the TABLE at day 9",
+    g[(5,600)]["effective_to"] == D(9) and g[(5,600)]["is_current"] is False)
+chk("acct5 close row kept v600's attributes", g[(5,600)]["tier"] == "M"
+    and g[(5,600)]["source_updated_at"] == D(2))
+chk("acct5 v700 current", g[(5,700)]["is_current"] is True)
 # A validity range must never run backwards. It cannot happen with ordered input, but an
 # out-of-order arrival makes it reachable, and a backwards range would silently match
 # nothing in an as-of join rather than erroring.
 bad = [r for r in rows if r["effective_to"] is not None and r["effective_to"] < r["effective_from"]]
 chk("no validity range runs backwards", not bad)
 
-for a in (1, 2, 3, 4):
+for a in (1, 2, 3, 4, 5):
     n = len([r for r in rows if r["account_id"] == a and r["is_current"]])
     chk(f"acct{a} has exactly one current row", n == 1)
 

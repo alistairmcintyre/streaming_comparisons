@@ -8,6 +8,7 @@
 #   account 1: tier A at lsn 100 (day 1), then tier B at lsn 200 (day 5)
 #   account 2: tier X at lsn 150, never changed
 #   account 3: tier P at lsn 400, then an OUT-OF-ORDER arrival at lsn 300
+#   account 4: tier Z at lsn 500, delivered TWICE (at-least-once CDC re-delivery)
 #
 # Expected:
 #   (1, A) closed  -> effective_to = day 5, is_current false
@@ -33,6 +34,8 @@ cat > "$W/data/changes.csv" <<'CSV'
 1,B,2026-01-05 00:00:00,200
 3,P,2026-01-06 00:00:00,400
 3,Q,2026-01-07 00:00:00,300
+4,Z,2026-01-08 00:00:00,500
+4,Z,2026-01-08 00:00:00,500
 CSV
 
 cat > "$W/sql/scd2.sql" <<'SQL'
@@ -72,7 +75,8 @@ SELECT account_id, tier, effective_from,
             THEN CAST(NULL AS TIMESTAMP(3)) ELSE prev_effective_from END,
        (prev_lsn IS NULL OR source_lsn > prev_lsn),
        source_lsn
-FROM changes;
+FROM changes
+WHERE prev_lsn IS NULL OR source_lsn <> prev_lsn;
 
 INSERT INTO out_sink
 SELECT account_id, prev_tier, prev_effective_from, effective_from, FALSE, prev_lsn
@@ -118,6 +122,10 @@ chk "account 1 v100 CLOSED at day 5"      '^1, ?A, ?2026-01-01.*2026-01-05.*fals
 chk "account 1 v200 is current"           '^1, ?B, ?2026-01-05.*(null|NULL).*true'
 chk "account 2 never closed"              '^2, ?X, ?2026-01-03.*(null|NULL).*true'
 chk "account 3 v400 emitted as current"   '^3, ?P, ?2026-01-06.*(null|NULL).*true'
+# A re-delivery must be a NO-OP. Restating it as a non-current row is not harmless: the PK
+# table merges it onto the live row and the account ends up with ZERO current versions.
+# The equivalent bug in the Spark staging was found by tests/scd2_hudi_upsert_test.py.
+chk "account 4 re-delivery left the row current" '^4, ?Z, ?2026-01-08.*(null|NULL).*true'
 if echo "$rows" | grep -qE '^3, ?P.*false'; then
   echo "  FAIL  out-of-order guard: lsn 300 closed lsn 400 — validity would run backwards"; fail=1
 else
@@ -126,7 +134,7 @@ fi
 # THE invariant: exactly one current row per account. The first version of this logic
 # marked the out-of-order arrival current too, giving account 3 two current rows — which
 # compiles, plans, and silently fans out every downstream join.
-for a in 1 2 3; do
+for a in 1 2 3 4; do
   n=$(echo "$rows" | grep -cE "^$a, .*, true, ")
   if [ "$n" = 1 ]; then echo "  PASS  account $a has exactly one current row"
   else echo "  FAIL  account $a has $n current rows (must be 1)"; fail=1; fi

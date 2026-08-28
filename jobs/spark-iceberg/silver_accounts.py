@@ -48,13 +48,23 @@ PAYLOAD = StructType([
     StructField("tier",       StringType(), True),
     StructField("updated_at", StringType(), True),
 ])
-SOURCE = StructType([StructField("ts_ms", LongType(), True)])
+SOURCE = StructType([StructField("ts_ms", LongType(), True),
+                     # source.lsn is projected below as source_lsn (the SCD2 version
+                     # and half the merge key). from_json drops anything not declared
+                     # here, so omitting it fails the job at analysis, not at runtime.
+                     StructField("lsn",   LongType(), True)])
 ENVELOPE = StructType([
     StructField("op",     StringType(), True),
     StructField("before", PAYLOAD,      True),
     StructField("after",  PAYLOAD,      True),
     StructField("source", SOURCE,       True),
 ])
+
+# The dimension's attribute columns. Both the incoming batch AND the current-row read
+# must project these: a close row is rebuilt from the CURRENT row, so if the read
+# omits an attribute the close writes a NULL over it — invisible on a MERGE, which
+# only updates two columns; fatal on Hudi, whose upsert replaces the whole record.
+ATTRS = ["name", "country", "tier", "source_updated_at", "event_ts", "op", "commit_ts"]
 
 
 
@@ -72,12 +82,12 @@ def upsert_scd2(batch, batch_id):
     try:
         current = (spark.table(TABLE)
                    .filter(col("is_current") & col("account_id").isin(ids))
-                   .select("account_id", "source_lsn", "effective_from"))
+                   .select("account_id", "source_lsn", "effective_from", *ATTRS))
     except Exception:                      # first batch: the table does not exist yet
         current = spark.createDataFrame(
-            [], batch.select("account_id", "source_lsn", "effective_from").schema)
+            [], batch.select("account_id", "source_lsn", "effective_from", *ATTRS).schema)
 
-    stage_scd2(batch, current, attrs=["name", "country", "tier", "source_updated_at", "event_ts", "op", "commit_ts"]).createOrReplaceTempView("_scd2")
+    stage_scd2(batch, current, attrs=ATTRS).createOrReplaceTempView("_scd2")
     spark.sql(f"""
         MERGE INTO {TABLE} AS t
         USING _scd2 AS s

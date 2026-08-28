@@ -112,6 +112,24 @@ if grep -vE '^\s*>|^\s*--' "$WORK/out.txt" | grep -qiE 'InvalidConfigException|I
   exit 1
 fi
 
+# PLANNING/VALIDATION FAILURES. The per-file check below only asserts that a file
+# produced AT LEAST ONE job — which is not the same as "every statement in it compiled".
+# A file whose STATEMENT SET submits fine and whose NEXT statement fails planning still
+# counts 1 job and passed silently; the meta-check in tests/run-checks.sh caught exactly
+# that. This is the same scan validate-flink-sql.sh runs, and it was simply missing here.
+# Runtime failures are EXPECTED (no Kafka broker on this network) and must not fail the
+# check. Echoed input ('>') and SQL comments are stripped first: these files quote the
+# very exception names being grepped for, in comments written to document them.
+PLAN_ERR=$(grep -vE '^\s*>|^\s*--' "$WORK/out.txt" \
+           | grep -nE 'TableException|ValidationException|SqlParserException|Could not execute SQL' \
+           | grep -viE 'TimeoutException|UnknownHostException|ConnectException|Connection refused|Failed to send data to Kafka|NetworkException' || true)
+if [ -n "$PLAN_ERR" ]; then
+  echo "SQL PLANNING ERRORS — these would have cost a cluster:"
+  echo "$PLAN_ERR" | head -20 | sed 's/^/  /'
+  [ "${KEEP:-0}" = 1 ] && cp "$WORK/out.txt" ./fluss-sql-validate.log
+  exit 1
+fi
+
 FAILED=""
 for f in silver_trades.sql silver_accounts.sql gold_open_positions.sql; do
   grep -q "@@@BEGIN $f@@@" "$WORK/out.txt" || continue

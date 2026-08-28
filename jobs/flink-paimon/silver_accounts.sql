@@ -95,7 +95,13 @@ SELECT account_id, name, country, tier, source_updated_at, event_ts, event_date,
             THEN CAST(NULL AS TIMESTAMP(6)) ELSE prev_effective_from END,
        (prev_lsn IS NULL OR source_lsn > prev_lsn),
        source_lsn
-FROM acct_changes;
+FROM acct_changes
+-- A re-delivery (identical lsn to the record before it) must be a NO-OP. Without this
+-- guard it falls into the "not newer" branch and is emitted with is_current = FALSE — and
+-- because the target is a PK table on (account_id, source_lsn) that write MERGES onto the
+-- live row, leaving the account with ZERO current versions. Verified by
+-- tests/scd2-behaviour.sh; the same bug in the Spark staging was found on Hudi.
+WHERE prev_lsn IS NULL OR source_lsn <> prev_lsn;
 
 INSERT INTO paimon.silver.accounts
 SELECT account_id, prev_name, prev_country, prev_tier, prev_source_updated_at,

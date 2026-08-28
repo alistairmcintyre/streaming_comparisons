@@ -79,6 +79,22 @@ if [ -n "$ALL" ]; then
       167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
       /w/tests/scd2_delta_merge_test.py
 
+  echo "== slow: SCD2 against REAL Iceberg and Hudi tables =="
+  # Same scenario, different WRITE MECHANISMS — and they do not agree by default. Iceberg's
+  # MERGE is a separate planner and row-level-operation path; Hudi has no MERGE at all here
+  # and rides entirely on the composite record key plus precombine. Running it on Hudi is
+  # what found the two staging bugs that Delta's MERGE clauses had been hiding: a close row
+  # with nulled attributes ERASES the version it closes, and a re-delivery restated as a
+  # non-current row overwrites the live one. Both were invisible on Delta and Iceberg.
+  expect "scd2 iceberg MERGE closes across micro-batches" 0 \
+    docker run --rm -u 0 -v "$PWD:/w" -w /w --entrypoint python3 \
+      167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-iceberg:latest \
+      /w/tests/scd2_iceberg_merge_test.py
+  expect "scd2 hudi upsert closes across micro-batches" 0 \
+    docker run --rm -u 0 -v "$PWD:/w" -w /w --entrypoint python3 \
+      167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-hudi:latest \
+      /w/tests/scd2_hudi_upsert_test.py
+
   echo "== slow: SCD2 close-out BEHAVIOUR (not just that it compiles) =="
   # The compile checks prove the SQL plans. This proves it is right — it runs the real
   # close-out over fixed account changes and asserts the validity ranges, including the
