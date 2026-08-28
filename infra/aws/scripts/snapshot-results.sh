@@ -5,6 +5,7 @@
 #   s3://$WAREHOUSE_BUCKET/benchmarks/$RUN_ID/wire_format=$WIRE_FORMAT/results.json
 #   ...                                                        /processing_delay.csv   <- headline metric
 #   ...                                                        /invariants.csv         <- fold correctness
+#   ...                                                        /dedupe.csv             <- silver dedupe correctness
 #   ...                                                        /latency_percentiles.csv
 #   ...                                                        /correctness.csv
 #
@@ -57,11 +58,15 @@ echo "source_events (kafka end offset): ${SRC:-unavailable}"
 echo "engine,table,rows,status" > "$WORK/correctness.csv"
 # Fluss's landing table is silver.trades, not bronze: its PK table IS the cleaned
 # deduped view, so it has one hop fewer by design (see `hops` in results.json).
+# Hudi is queried through _rt, NOT _ro. A MOR table's _ro view reads base files only and
+# does not merge the log files, so it returns STALE counts — jobs/_shared/hudi_tables.py
+# states the rule outright. The fold invariant below was counting silver through _ro and
+# gold through _rt, which would have reported drift that was purely the query view.
 for spec in "iceberg:bronze.trades_spark" \
             "delta:bronze.trades_delta" \
             "paimon:bronze.trades_paimon" \
             "fluss:silver.trades_fluss" \
-            "hudi:bronze.trades_hudi_ro"; do
+            "hudi:bronze.trades_hudi_rt"; do
   eng="${spec%%:*}"; tbl="${spec##*:}"
   if rows=$(athena "SELECT count(*) FROM ${tbl}"); then
     echo "${eng},${tbl},${rows},ok" >> "$WORK/correctness.csv"
@@ -97,7 +102,7 @@ for spec in "iceberg:silver.trades_spark:gold.open_positions_spark" \
             "delta:silver.trades_delta:gold.open_positions_delta" \
             "paimon:silver.trades_paimon:gold.open_positions_paimon" \
             "fluss:silver.trades_fluss:gold.open_positions_fluss" \
-            "hudi:silver.trades_hudi_ro:gold.open_positions_hudi_rt"; do
+            "hudi:silver.trades_hudi_rt:gold.open_positions_hudi_rt"; do
   eng="${spec%%:*}"; rest="${spec#*:}"; sil="${rest%%:*}"; gld="${rest#*:}"
   SN=$(athena "SELECT CAST(count(*) AS varchar) FROM ${sil}") || SN=""
   GN=$(athena "SELECT CAST(COALESCE(sum(trade_count), 0) AS varchar) FROM ${gld}") || GN=""
@@ -109,6 +114,47 @@ for spec in "iceberg:silver.trades_spark:gold.open_positions_spark" \
     echo "  ${eng}: silver=${SN} gold=${GN} drift=${D} (${PCT}%) ${ST}"
   else
     echo "${eng},${SN},${GN},,,${QUIESCED},query_failed" >> "$WORK/invariants.csv"
+    echo "  ${eng}: query FAILED (hudi is expected — Athena supports 0.14/0.15, we write 1.2.0)"
+  fi
+done
+
+# ── DEDUPE INVARIANT (is silver actually one row per trade?) ─────────────────
+#
+#     count(*) == count(DISTINCT trade_id)   on silver.trades
+#
+# COMPLEMENTARY to the fold invariant above, which cannot see this: a duplicate row in
+# silver IS folded into gold, so sum(gold.trade_count) still equals count(silver.trades)
+# and the drift figure stays zero while the book is wrong.
+#
+# It matters because the five engines dedupe by different mechanisms. Paimon and Fluss
+# hold silver.trades as a PK table with the first-row merge engine and Hudi as an upsert
+# on trade_id, so on those three a duplicate CANNOT become a row — the dedupe is
+# structural and unbounded. Delta and Iceberg keep silver.trades APPEND-ONLY and dedupe
+# in operator state (dropDuplicatesWithinWatermark), which is necessarily BOUNDED: the
+# window is 2h, chosen to span a whole run. A re-delivery arriving outside it is appended
+# as a genuine second row and nothing downstream can undo it — the gold fold is `+=` over
+# (account_id, symbol) and never sees trade_id at all.
+#
+# So this is the number that says whether that bound held. DETECTED, not repaired, for
+# the same reason as the fold invariant: a reconcile job would add write amplification to
+# whichever engine drifted and contaminate the measurement.
+echo "invariant: count(*) vs count(DISTINCT trade_id) on silver.trades"
+echo "engine,silver_rows,distinct_trade_ids,duplicates,status" > "$WORK/dedupe.csv"
+for spec in "iceberg:silver.trades_spark" \
+            "delta:silver.trades_delta" \
+            "paimon:silver.trades_paimon" \
+            "fluss:silver.trades_fluss" \
+            "hudi:silver.trades_hudi_rt"; do
+  eng="${spec%%:*}"; tbl="${spec##*:}"
+  R=$(athena "SELECT CAST(count(*) AS varchar) FROM ${tbl}") || R=""
+  U=$(athena "SELECT CAST(count(DISTINCT trade_id) AS varchar) FROM ${tbl}") || U=""
+  if [ -n "$R" ] && [ -n "$U" ]; then
+    DUP=$(( R - U ))
+    ST=$([ "$DUP" -eq 0 ] && echo ok || echo DUPLICATES)
+    echo "${eng},${R},${U},${DUP},${ST}" >> "$WORK/dedupe.csv"
+    echo "  ${eng}: rows=${R} distinct=${U} duplicates=${DUP} ${ST}"
+  else
+    echo "${eng},${R},${U},,query_failed" >> "$WORK/dedupe.csv"
     echo "  ${eng}: query FAILED (hudi is expected — Athena supports 0.14/0.15, we write 1.2.0)"
   fi
 done
@@ -218,6 +264,7 @@ aws s3 cp "$WORK/results.json"              "${DEST}/results.json"              
 aws s3 cp "$WORK/correctness.csv"           "${DEST}/correctness.csv"           --only-show-errors
 aws s3 cp "$WORK/processing_delay.csv"      "${DEST}/processing_delay.csv"      --only-show-errors
 aws s3 cp "$WORK/invariants.csv"           "${DEST}/invariants.csv"           --only-show-errors
+aws s3 cp "$WORK/dedupe.csv"                "${DEST}/dedupe.csv"                --only-show-errors
 aws s3 cp "$WORK/latency_percentiles.csv"   "${DEST}/latency_percentiles.csv"   --only-show-errors
 echo "wrote:"
 aws s3 ls "${DEST}/" | sed 's|^|  |'

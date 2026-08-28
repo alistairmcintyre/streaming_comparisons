@@ -95,6 +95,20 @@ if [ -n "$ALL" ]; then
       167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-hudi:latest \
       /w/tests/scd2_hudi_upsert_test.py
 
+  echo "== slow: SILVER dedupe survives a restart, on the RocksDB state store =="
+  # The only place a re-delivered trade_id can be removed on Delta/Iceberg — gold folds
+  # `+=` over (account_id, symbol) and never sees trade_id, so it cannot repair a
+  # duplicate. Checks the state is genuinely CHECKPOINTED (the re-delivery arrives in a
+  # later query run) and that the RocksDB provider the manifests set really loads.
+  expect "silver dedupe holds across a restart" 0 \
+    docker run --rm -u 0 -v "$PWD:/w" -w /w --entrypoint python3 \
+      167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
+      /w/tests/dedupe_state_test.py
+  expect "dedupe check catches a missing dedupe" 1 \
+    docker run --rm -u 0 -v "$PWD:/w" -w /w -e NO_DEDUPE=1 --entrypoint python3 \
+      167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
+      /w/tests/dedupe_state_test.py
+
   echo "== slow: GOLD fold against REAL tables, all three Spark engines =="
   # Drives each engine's OWN fold_to_book over three micro-batches — not a copy of it —
   # and asserts the exact book. The scenario forces every incremental rule: a position

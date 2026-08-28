@@ -30,6 +30,15 @@ spec:
   # alert in 96-alerts.yaml can surface it.
   restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
+    # State store on DISK, not executor heap. silver.trades dedupes with
+    # dropDuplicatesWithinWatermark over a 2h window, and the default
+    # HDFSBackedStateStoreProvider holds every distinct trade_id in the window in JVM
+    # heap — ~7.2M entries at 1k/s, against executors sized 4g. It also removes a
+    # measurement asymmetry: the Flink engines already run state.backend=rocksdb, so
+    # holding Spark's state on-heap would be a difference in the harness rather than
+    # in the engines. Verified loading and surviving a restart by
+    # tests/dedupe_state_test.py (27 rocksdb* metrics reported, state restored).
+    "spark.sql.streaming.stateStore.providerClass": "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider"
     "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
     "spark.databricks.delta.optimizeWrite.enabled": "true"
@@ -86,6 +95,15 @@ spec:
   sparkVersion: "3.5.1"
   restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
+    # State store on DISK, not executor heap. silver.trades dedupes with
+    # dropDuplicatesWithinWatermark over a 2h window, and the default
+    # HDFSBackedStateStoreProvider holds every distinct trade_id in the window in JVM
+    # heap — ~7.2M entries at 1k/s, against executors sized 4g. It also removes a
+    # measurement asymmetry: the Flink engines already run state.backend=rocksdb, so
+    # holding Spark's state on-heap would be a difference in the harness rather than
+    # in the engines. Verified loading and surviving a restart by
+    # tests/dedupe_state_test.py (27 rocksdb* metrics reported, state restored).
+    "spark.sql.streaming.stateStore.providerClass": "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider"
     "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
     "spark.databricks.delta.optimizeWrite.enabled": "true"
@@ -142,6 +160,15 @@ spec:
   sparkVersion: "3.5.1"
   restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
+    # State store on DISK, not executor heap. silver.trades dedupes with
+    # dropDuplicatesWithinWatermark over a 2h window, and the default
+    # HDFSBackedStateStoreProvider holds every distinct trade_id in the window in JVM
+    # heap — ~7.2M entries at 1k/s, against executors sized 4g. It also removes a
+    # measurement asymmetry: the Flink engines already run state.backend=rocksdb, so
+    # holding Spark's state on-heap would be a difference in the harness rather than
+    # in the engines. Verified loading and surviving a restart by
+    # tests/dedupe_state_test.py (27 rocksdb* metrics reported, state restored).
+    "spark.sql.streaming.stateStore.providerClass": "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider"
     "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
     "spark.databricks.delta.optimizeWrite.enabled": "true"
@@ -198,6 +225,15 @@ spec:
   sparkVersion: "3.5.1"
   restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
+    # State store on DISK, not executor heap. silver.trades dedupes with
+    # dropDuplicatesWithinWatermark over a 2h window, and the default
+    # HDFSBackedStateStoreProvider holds every distinct trade_id in the window in JVM
+    # heap — ~7.2M entries at 1k/s, against executors sized 4g. It also removes a
+    # measurement asymmetry: the Flink engines already run state.backend=rocksdb, so
+    # holding Spark's state on-heap would be a difference in the harness rather than
+    # in the engines. Verified loading and surviving a restart by
+    # tests/dedupe_state_test.py (27 rocksdb* metrics reported, state restored).
+    "spark.sql.streaming.stateStore.providerClass": "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider"
     "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
     "spark.databricks.delta.optimizeWrite.enabled": "true"
