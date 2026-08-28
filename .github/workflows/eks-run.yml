@@ -572,55 +572,69 @@ jobs:
                   -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" 2>&1 \
                 | grep -oE '[0-9a-f]{8}-[0-9a-f-]{27}' | head -1 || true)
           [ -n "$LID" ] && terraform force-unlock -force "$LID" || true
-            # PHASE 1 — destroy ONLY the EKS cluster. That kills Karpenter, so the nodes
-            # it launched stop being replaced. Running the FULL destroy here instead is
-            # what cost ~13 minutes on every teardown: Terraform reaches the node
-            # security group, finds ENIs still attached to Karpenter instances that are
-            # NOT in its state, and retries ~15 minutes for a detach that cannot happen —
-            # because the step that terminates those instances is queued BEHIND the
-            # destroy it has to unblock. Seen live 2026-08-27: EKS already deleted, 2
-            # instances still running, 4 ENIs held, a full cluster still billing.
-            terraform destroy -target=module.eks -auto-approve -input=false -lock-timeout=300s \
+          # PHASE 1 — destroy ONLY the EKS cluster. That kills Karpenter, so the nodes
+          # it launched stop being replaced. Running the FULL destroy here instead is
+          # what cost ~13 minutes on every teardown: Terraform reaches the node
+          # security group, finds ENIs still attached to Karpenter instances that are
+          # NOT in its state, and retries ~15 minutes for a detach that cannot happen —
+          # because the step that terminates those instances is queued BEHIND the
+          # destroy it has to unblock. Seen live 2026-08-27: EKS already deleted, 2
+          # instances still running, 4 ENIs held, a full cluster still billing.
+          terraform destroy -target=module.eks -auto-approve -input=false -lock-timeout=300s \
               -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
               echo "targeted EKS destroy failed — continuing; the sweep below still runs"
 
-            # PHASE 2 — terminate the orphans NOW, in the window between "control plane
-            # gone" and "Terraform needs the security group". Karpenter is dead, so they
-            # stay dead. Same three moves as before, reordered so this one is not trapped
-            # behind the destroy it exists to unblock.
-            IDS=$(aws ec2 describe-instances --region "$AWS_REGION" \
+          # PHASE 2 — terminate the orphans NOW, in the window between "control plane
+          # gone" and "Terraform needs the security group". Karpenter is dead, so they
+          # stay dead. Same three moves as before, reordered so this one is not trapped
+          # behind the destroy it exists to unblock.
+          IDS=$(aws ec2 describe-instances --region "$AWS_REGION" \
               --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
               --query 'Reservations[].Instances[].InstanceId' --output text)
-            if [ -n "$IDS" ]; then
+          if [ -n "$IDS" ]; then
               echo "terminating orphaned Karpenter nodes: $IDS"
               aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $IDS >/dev/null
               aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids $IDS || true
-            fi
-            for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+          fi
+          for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
               --filters "Name=description,Values=aws-K8S-*" "Name=status,Values=available" \
               --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
               aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
-            done
+          done
 
-            # PHASE 3 — everything else. The security group and VPC now delete promptly.
-            terraform destroy -auto-approve -input=false -lock-timeout=300s \
-              -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
-              echo "destroy pass failed — sweeping blockers, then retrying"
-          # Terminate leftover cluster EC2 (Karpenter is dead now; they stay dead)
+          # PHASE 3 — everything else. The security group and VPC now delete promptly.
+          if terraform destroy -auto-approve -input=false -lock-timeout=300s \
+               -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150"; then
+          DESTROYED=1
+          else
+          DESTROYED=0
+          echo "destroy pass failed — sweeping blockers, then retrying ONCE"
+          fi
+
+          # RETRY ONLY IF PHASE 3 FAILED. This sweep and second full destroy used to run
+          # UNCONDITIONALLY: the edit that introduced phases 1-3 added them above and left
+          # the original block in place, so every SUCCESSFUL teardown still paid for a
+          # third `terraform destroy` (provider init + full refresh) and a redundant
+          # `aws ec2 wait instance-terminated`. That is why destroy kept outlasting apply.
+          # On the happy path phase 3 leaves nothing to sweep, so there is nothing to do.
+          if [ "${DESTROYED:-0}" != 1 ]; then
           IDS=$(aws ec2 describe-instances --region "$AWS_REGION" \
-            --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-            --query 'Reservations[].Instances[].InstanceId' --output text)
-          if [ -n "$IDS" ]; then aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $IDS; aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids $IDS || true; fi
+              --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+              --query 'Reservations[].Instances[].InstanceId' --output text)
+          if [ -n "$IDS" ]; then
+              aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $IDS
+              aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids $IDS || true
+          fi
           # Their CNI ENIs linger 'available' and block subnet/SG deletion
           for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
-            --filters "Name=description,Values=aws-K8S-*" "Name=status,Values=available" \
-            --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
-            aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
+              --filters "Name=description,Values=aws-K8S-*" "Name=status,Values=available" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
+              aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
           done
-          # Second pass finishes whatever the leftovers blocked (VPC/subnet/SG)
-          terraform destroy -auto-approve -input=false \
-            -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
-            echo "destroy still failing — EventBridge kill switch will tear down at the 2.5h mark"
+          terraform destroy -auto-approve -input=false -lock-timeout=300s \
+              -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
+              echo "destroy still failing — EventBridge kill switch will tear down at the 2.5h mark"
+          fi
           # Sweep CSI-provisioned EBS orphans (PVCs; reclaimPolicy Delete, but the
           # cluster is gone before they're deleted → orphaned).
           # CSI-provisioned volumes do NOT all carry kubernetes.io/cluster/<name>: some
@@ -628,20 +642,20 @@ jobs:
           # the first key alone left 190GiB of Kafka/Postgres/Fluss volumes billing
           # after a teardown that reported success. Match every variant.
           for key in "tag:kubernetes.io/cluster/$CN" "tag:KubernetesCluster" "tag:ebs.csi.aws.com/cluster-name"; do
-            case "$key" in *cluster/$CN) VAL=owned ;; *) VAL="$CN" ;; esac
-            for v in $(aws ec2 describe-volumes --region "$AWS_REGION" \
+          case "$key" in *cluster/$CN) VAL=owned ;; *) VAL="$CN" ;; esac
+          for v in $(aws ec2 describe-volumes --region "$AWS_REGION" \
                 --filters "Name=$key,Values=$VAL" "Name=status,Values=available" \
                 --query 'Volumes[].VolumeId' --output text); do
               aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v" || true
-            done
+          done
           done
           # Sweep EKS control-plane log groups. EKS auto-creates /aws/eks/$CN/cluster
           # when control-plane logging is on; an interrupted/forced destroy can leave it
           # behind and out of state, and the NEXT apply then fails CreateLogGroup with
           # ResourceAlreadyExistsException (shared run_id=iter state).
           for lg in $(aws logs describe-log-groups --region "$AWS_REGION" \
-            --log-group-name-prefix "/aws/eks/$CN/" --query 'logGroups[].logGroupName' --output text); do
-            aws logs delete-log-group --region "$AWS_REGION" --log-group-name "$lg" || true
+          --log-group-name-prefix "/aws/eks/$CN/" --query 'logGroups[].logGroupName' --output text); do
+          aws logs delete-log-group --region "$AWS_REGION" --log-group-name "$lg" || true
           done
 
       - name: Teardown skipped — cluster left running
