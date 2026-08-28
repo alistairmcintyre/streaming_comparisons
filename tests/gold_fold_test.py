@@ -97,6 +97,16 @@ BATCHES = [
 for i, rows in enumerate(BATCHES):
     job.fold_to_book(spark.createDataFrame([r + (r[6], r[6]) for r in rows], SILVER), i)
 
+# FIELD PARITY, measured on the table this engine actually built. Hudi has no DDL — its
+# schema is whatever DataFrame was written — so this is the only way to catch it drifting.
+# It had: net_notional came out decimal(33,4) against the decimal(38,4) the other four
+# declare, and every value-based check passed regardless.
+from gold_schema import GOLD_OPEN_POSITIONS, HUDI_META_PREFIX
+_fields = READ().schema.fields
+_business = [(f.name, f.dataType.simpleString()) for f in _fields
+             if not f.name.startswith(HUDI_META_PREFIX)]
+_extra = [f.name for f in _fields if f.name.startswith(HUDI_META_PREFIX)]
+
 book = sorted(READ().collect(), key=lambda r: (r["account_id"], r["symbol"]))
 lines = [f"{r['account_id']}|{r['symbol']}|{r['net_quantity']}|{float(r['net_notional']):.4f}"
          f"|{r['trade_count']}|{r['status']}|{r['opened_at']:%Y-%m-%d}|{r['last_updated_at']:%Y-%m-%d}"
@@ -116,6 +126,18 @@ def chk(d, ok):
     print(("  PASS  " if ok else "  FAIL  ") + d)
     if not ok: fails.append(d)
 
+chk(f"gold returns the canonical {len(GOLD_OPEN_POSITIONS)} fields, in order, with the same types",
+    _business == GOLD_OPEN_POSITIONS)
+if _business != GOLD_OPEN_POSITIONS:
+    _want = dict(GOLD_OPEN_POSITIONS); _got = dict(_business)
+    for _n, _t in GOLD_OPEN_POSITIONS:
+        if _got.get(_n) != _t:
+            print(f"          {_n}: got {_got.get(_n, '<missing>')}  want {_t}")
+    for _n, _t in _business:
+        if _n not in _want:
+            print(f"          {_n}: EXTRA column ({_t})")
+# Hudi carries _hoodie_* metadata on every table; anything ELSE extra is real drift.
+chk("no non-metadata extra columns", all(e.startswith(HUDI_META_PREFIX) for e in _extra))
 chk("exactly one row per (account, symbol)", len(lines) == 3)
 for want in EXPECT:
     a, s = want.split("|")[0], want.split("|")[1]

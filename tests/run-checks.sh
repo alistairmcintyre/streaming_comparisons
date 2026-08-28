@@ -56,6 +56,13 @@ expect "scd2 staging logic (shared by the Spark engines)" 0 \
 expect "shared modules a job imports actually reach the cluster" 0 \
   python3 tests/check_configmaps.py
 
+# All five golds must return the SAME FIELDS or the benchmark compares different tables.
+# This half parses the Flink DDL; the Spark half is MEASURED in gold_fold_test.py, which
+# is the only way to cover Hudi — it has no DDL, and its net_notional had silently
+# inferred to decimal(33,4) against the decimal(38,4) the other four declare.
+expect "flink golds declare the canonical field list" 0 \
+  python3 tests/gold_schema_test.py
+
 echo "== meta: each checker must REJECT a known-bad input =="
 expect "rejects an RFC1123-invalid name" 1 ./infra/aws/scripts/preflight-manifests.sh tests/fixtures
 expect "rejects a duplicate YAML key"    1 bash -c 'cd "$(git rev-parse --show-toplevel)"; d=$(mktemp -d); cp tests/fixtures/bad-dupkey.yaml "$d/"; ./infra/aws/scripts/preflight-manifests.sh "$d"'
@@ -68,6 +75,14 @@ expect "image hash changes with content" 0 bash -c '
   b=$(./infra/aws/scripts/image-hashes.sh spark-hudi | awk "{print \$2}")
   git checkout -- docker/spark-hudi/Dockerfile
   [ "$a" != "$b" ]'
+
+expect "gold schema check catches a drifted field type" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/jobs/flink-paimon" "$d/jobs/flink-fluss" "$d/jobs/_shared"
+  cp jobs/_shared/gold_schema.py "$d/jobs/_shared/"
+  cp jobs/flink-fluss/create_tables.sql "$d/jobs/flink-fluss/"
+  sed "s|net_notional    DECIMAL(38,4)|net_notional    DECIMAL(20,4)|" \
+    jobs/flink-paimon/create_tables.sql > "$d/jobs/flink-paimon/create_tables.sql"
+  cd "$d" && python3 "$OLDPWD/tests/gold_schema_test.py"'
 
 expect "configmap check catches an unshipped shared module" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/.github/workflows"; cp -r jobs "$d/jobs"

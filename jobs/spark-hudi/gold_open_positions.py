@@ -37,6 +37,7 @@ from pyspark.sql.functions import (
     min as _min, max as _max, least, greatest,
 )
 from hudi_tables import SILVER_TRADES, GOLD_POSITIONS, gold_positions_opts
+from gold_schema import conform
 
 CHECKPOINT_BASE = os.environ.get("CHECKPOINT_BASE", "s3a://warehouse/_chk")
 CHECKPOINT_PATH = f"{CHECKPOINT_BASE}/gold_open_positions_hudi"
@@ -100,11 +101,14 @@ def fold_to_book(batch_df, batch_id):
 
         # OPEN/CLOSED, matching the other four engines. This job previously wrote
         # LONG/SHORT/FLAT, which made `status` incomparable across engines.
+        # conform(), not a bare select: Hudi has NO DDL, so the table's schema is whatever
+        # DataFrame is written to it. Left to infer, net_notional came out decimal(33,4)
+        # — what SUM(int * decimal(12,4)) widens to — against the decimal(38,4) the other
+        # four engines DECLARE. Nothing failed; one engine of five just had a different
+        # type for the column, invisible to any check that only compares values.
         out = (j.withColumn("status", when(col("net_quantity") != 0, lit("OPEN")).otherwise(lit("CLOSED")))
-                .withColumn("commit_ts", current_timestamp())
-                .select("account_id", "symbol", "net_quantity", "net_notional",
-                        "trade_count", "status",
-                        "opened_at", "last_updated_at", "commit_ts"))
+                .withColumn("commit_ts", current_timestamp()))
+        out = conform(out)
 
         (out.write.format("hudi").options(**gold_positions_opts())
             .mode("append").save(GOLD_POSITIONS))
