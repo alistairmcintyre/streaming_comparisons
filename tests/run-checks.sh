@@ -79,6 +79,12 @@ expect "post-run steps are gated so a failed apply does not bill" 0 \
 expect "every custom resource is covered by the kind pre-flight" 0 \
   python3 tests/check_kind_coverage.py
 
+# `kubectl apply --dry-run=server` CREATES NOTHING, so a namespace that is only ever
+# dry-run does not exist when the manifests inside it are checked — and the gate reports
+# them REJECTED with "namespaces ... not found". A real run died on exactly that: fluss.
+expect "every namespace exists before the server dry-run" 0 \
+  python3 tests/check_namespace_prereqs.py
+
 expect "job imports: all shipped, none shadowed" 0 \
   python3 tests/check_configmaps.py
 
@@ -110,6 +116,13 @@ expect "schema parity check catches a drifted field type" 1 bash -c '
   sed "s|net_notional    DECIMAL(38,4)|net_notional    DECIMAL(20,4)|" \
     jobs/flink-paimon/create_tables.sql > "$d/jobs/flink-paimon/create_tables.sql"
   cd "$d" && python3 "$OLDPWD/tests/schema_parity_test.py"'
+
+expect "namespace check catches an only-dry-run namespace" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/.github/workflows" "$d/infra/aws"
+  cp -r infra/aws/k8s "$d/infra/aws/k8s"
+  grep -v "envsubst < infra/aws/k8s/00-namespaces.yaml | kubectl apply -f -" \
+    .github/workflows/eks-run.yml > "$d/.github/workflows/eks-run.yml"
+  cd "$d" && python3 "$OLDPWD/tests/check_namespace_prereqs.py"'
 
 expect "kind-coverage check catches an uninstalled CRD" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/infra/aws/scripts"

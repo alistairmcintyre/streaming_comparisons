@@ -422,6 +422,19 @@ jobs:
           # manifest from 80-* onward never applied at all.
           # Dry-running first means a rejection costs seconds and leaves NOTHING
           # half-created. --validate=false skips openapi download, not the webhooks.
+          # NAMESPACES MUST EXIST, NOT BE DRY-RUN. `kubectl apply --dry-run=server` of
+          # 00-namespaces.yaml creates NOTHING, so every resource in a namespace that does
+          # not already exist is rejected with `namespaces "<ns>" not found`. That is
+          # exactly what happened: `fluss` is declared in 00-namespaces.yaml and created
+          # nowhere else, so 00/20/60-*.yaml were all reported REJECTED without a single
+          # real defect between them, and the run was torn down for nothing.
+          # validate-against-kind.sh has always created namespaces for real for precisely
+          # this reason; the workflow's own dry-run never did.
+          # This applies namespaces, service accounts and RBAC before the gate. They are
+          # prerequisites for validating anything else, they are idempotent, and they cost
+          # nothing to leave behind if the gate then rejects a later manifest.
+          envsubst < infra/aws/k8s/00-namespaces.yaml | kubectl apply -f -
+
           echo "== phase 1: server dry-run (no changes) =="
           DRYFAIL=0
           for f in $(ls infra/aws/k8s/*.yaml | sort); do
