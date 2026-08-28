@@ -1,8 +1,14 @@
 name: Teardown (manual cleanup)
 
-# Tear down a run and sweep anything it left behind. Run this whenever a run was
-# CANCELLED or FAILED: eks-run.yml only destroys on success (destroy_mode=on-success),
-# so a cancelled run leaves the cluster billing until the 2.5h kill-switch fires.
+# Tear down a run and sweep anything it left behind. Two cases need it:
+#   - a run launched with destroy_mode=never, which is the right mode for ITERATING on a
+#     manifest bug: the cluster survives so the next attempt re-applies in seconds instead
+#     of paying a ~15 minute rebuild and a ~15 minute teardown per try;
+#   - a run that was cancelled hard enough to skip its own destroy step.
+# eks-run.yml now defaults to destroy_mode=always and destroys on failure and cancellation
+# alike, so this is no longer the usual path — but the 2.5h EventBridge kill switch is the
+# only thing standing behind a destroy_mode=never cluster, and it fires 150 minutes after
+# the FIRST apply, not after the most recent one.
 #
 # Safe to run at any time, including when nothing exists — every step tolerates
 # absent resources. It verifies against the AWS API at the end and FAILS if anything
