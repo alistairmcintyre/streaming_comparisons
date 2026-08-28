@@ -89,7 +89,11 @@ jobs:
       - name: Terraform destroy
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform init -input=false
+          # -reconfigure: the backend changed from dynamodb_table to use_lockfile, and
+          # without it init stops with "Backend configuration changed" and, under
+          # -input=false, simply fails. Bucket and key are unchanged, so there is no state
+          # to migrate — only the lock mechanism differs.
+          terraform init -input=false -reconfigure
           # An interrupted destroy leaves the DynamoDB state lock HELD, and every later
           # attempt dies with "Error acquiring the state lock" while the steps after it
           # still report success. That stranded a VPC + EIP twice.

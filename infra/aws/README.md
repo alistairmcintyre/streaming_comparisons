@@ -93,8 +93,12 @@ each format's compaction sawtooth + baseline drift over the run.
 ## Two Terraform states: `bootstrap/` (standing) + `.` (per-run)
 
 `infra/aws/bootstrap/` is applied ONCE and never torn down — GitHub OIDC provider +
-deploy role, the `streaming-comparison-tflock` table, and ECR repos (images persist
-across runs). If the account already has a GitHub OIDC provider, import it first.
+deploy role and ECR repos (images persist across runs). If the account already has a
+GitHub OIDC provider, import it first.
+
+State locking no longer needs a DynamoDB table: the backend uses `use_lockfile`, so the
+lock is a `.tflock` object beside the state in the warehouse bucket. The old
+`streaming-comparison-tflock` table is unused and can be deleted — nothing reads it.
 ```bash
 cd infra/aws/bootstrap && terraform init && \
   terraform apply -var 'github_repo=<owner>/<repo>'

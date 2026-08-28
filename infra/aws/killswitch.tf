@@ -57,7 +57,10 @@ resource "aws_codebuild_project" "teardown" {
       phases:
         install:
           commands:
-            - curl -fsSL -o /tmp/tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
+            # 1.10+ is REQUIRED, not cosmetic: the backend uses use_lockfile (S3 native
+            # locking) and 1.9.8 does not understand it, so init would fail here and
+            # the dead-man's switch would quietly stop being able to destroy anything.
+            - curl -fsSL -o /tmp/tf.zip https://releases.hashicorp.com/terraform/1.10.5/terraform_1.10.5_linux_amd64.zip
             - unzip -o /tmp/tf.zip -d /usr/local/bin
         build:
           commands:
@@ -66,7 +69,9 @@ resource "aws_codebuild_project" "teardown" {
             # within minutes) — but a FULL destroy first blocks on a security group those
             # same nodes hold. So: kill the control plane, terminate, then destroy the
             # rest. Same moves as before, ordered so neither blocks the other.
-            - terraform init -input=false
+            # -reconfigure: backend moved from dynamodb_table to use_lockfile; without it
+            # init fails with "Backend configuration changed" under -input=false.
+            - terraform init -input=false -reconfigure
             # PHASE 1 — EKS only. Kills Karpenter so its nodes stop being replaced.
             # A full destroy here blocks ~13 minutes on the node security group, whose
             # ENIs belong to Karpenter instances that are NOT in Terraform state and are
@@ -193,13 +198,10 @@ resource "aws_iam_role_policy" "teardown" {
           "arn:aws:s3:::${var.warehouse_bucket}", "arn:aws:s3:::${var.warehouse_bucket}/*",
           "arn:aws:s3:::${var.paimon_bucket}", "arn:aws:s3:::${var.paimon_bucket}/*"
         ]
-      },
-      {
-        Sid      = "Lock"
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
-        Resource = "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${var.project_tag}-tflock"
       }
+      # No DynamoDB "Lock" statement any more: the backend uses use_lockfile, so the lock
+      # is a .tflock object next to the state and the S3 grant above already covers it.
+      # (The TearDown statement's dynamodb:* still covers the Delta log-store table.)
     ]
   })
 }

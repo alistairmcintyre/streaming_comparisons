@@ -187,7 +187,11 @@ jobs:
       - name: Terraform apply (run)
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform init -input=false
+          # -reconfigure: the backend changed from dynamodb_table to use_lockfile, and
+          # without it init stops with "Backend configuration changed" and, under
+          # -input=false, simply fails. Bucket and key are unchanged, so there is no state
+          # to migrate — only the lock mechanism differs.
+          terraform init -input=false -reconfigure
           terraform apply -auto-approve -input=false \
             -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150"
           echo "CLUSTER_NAME=$(terraform output -raw cluster_name)" >> "$GITHUB_ENV"
@@ -636,6 +640,42 @@ jobs:
             [ -z "$REMAINING" ] && break
             echo "  ENIs still present, waiting for detach: $REMAINING"
             sleep 30
+          done
+
+          # PHASE 2c — clear whatever makes DeleteSecurityGroup return DependencyViolation.
+          # Seen live: `deleting Security Group (sg-048dbde20f2c4d2ac): DependencyViolation:
+          # resource ... has a dependent object`, after ~15 minutes of retries. A security
+          # group has exactly two kinds of dependent object, and the description-based ENI
+          # sweep above only addresses part of the first:
+          #   (a) ENIs that reference it — swept here BY GROUP ID, so it does not matter
+          #       what created them or how they are described;
+          #   (b) rules in OTHER security groups that reference it. AWS refuses to delete
+          #       a group while another group's rule points at it, and efs.tf does exactly
+          #       that: aws_security_group.efs has `security_groups =
+          #       [module.eks.node_security_group_id]`. Terraform normally orders that
+          #       correctly, but if the EFS SG survives (its mount target still detaching)
+          #       the node SG is unreachable and Terraform just retries until it gives up.
+          for SG in $(aws ec2 describe-security-groups --region "$AWS_REGION" \
+              --filters "Name=tag:kubernetes.io/cluster/$CN,Values=owned" \
+              --query 'SecurityGroups[].GroupId' --output text); do
+            for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+                --filters "Name=group-id,Values=$SG" "Name=status,Values=available" \
+                --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
+              echo "deleting ENI $eni holding $SG"
+              aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
+            done
+            for OTHER in $(aws ec2 describe-security-groups --region "$AWS_REGION" \
+                --filters "Name=ip-permission.group-id,Values=$SG" \
+                --query "SecurityGroups[?GroupId!='"'"'$SG'"'"'].GroupId" --output text); do
+              PERMS=$(aws ec2 describe-security-groups --region "$AWS_REGION" --group-ids "$OTHER" \
+                --query "SecurityGroups[0].IpPermissions[?UserIdGroupPairs[?GroupId=='"'"'$SG'"'"']]" \
+                --output json)
+              if [ -n "$PERMS" ] && [ "$PERMS" != "[]" ]; then
+                echo "revoking $OTHER ingress that references $SG"
+                aws ec2 revoke-security-group-ingress --region "$AWS_REGION" \
+                  --group-id "$OTHER" --ip-permissions "$PERMS" || true
+              fi
+            done
           done
 
           # PHASE 3 — everything else. The security group and VPC now delete promptly.
