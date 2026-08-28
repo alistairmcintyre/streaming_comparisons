@@ -75,9 +75,32 @@ def create_silver_accounts(spark):
     if _is_delta(spark, "silver/accounts"):
         return  # exists: properties are converged by _converge_properties()
     schema = StructType([
+        # SCD2 — ALL VERSIONS RETAINED, validity derived at read.
+        # Accounts are a MUTABLE dimension (gen_accounts.py issues real UPDATEs to
+        # country/tier), and in a regulated trading platform you must be able to answer
+        # "what was this client's classification AT THE TIME OF THE TRADE" — MiFID II
+        # categorisation, suitability, best execution. SCD1 overwrites destroy that.
+        #
+        # Validity is DERIVED, not materialised:
+        #     effective_to = LEAD(effective_from) OVER (PARTITION BY account_id
+        #                                               ORDER BY effective_from)
+        #     is_current   = that LEAD being NULL
+        # Materialised close-out (UPDATE the old row's effective_to, INSERT the new) is
+        # the classic form and is natural in a Spark MERGE — but it is not expressible in
+        # Flink SQL for a PK table, because closing the prior row means targeting
+        # (account_id, old_effective_from), which a stateless job does not know. Deriving
+        # keeps ALL FIVE engines on an identical model; the cost is a window function at
+        # read instead of an extra write.
+        #
+        # The natural key is (account_id, source_lsn): source_lsn is the CDC total order,
+        # so an at-least-once re-delivery collapses onto the same row while a genuine
+        # change gets a new one.
         StructField("account_id", LongType(), False), StructField("name", StringType()),
         StructField("country", StringType()), StructField("tier", StringType()),
         StructField("source_updated_at", TimestampType()), StructField("event_ts", TimestampType()),
+        StructField("effective_from", TimestampType(), False),
+        StructField("source_lsn", LongType(), False),
+        StructField("op", StringType()),          # 'd' marks the version that closed the account
         StructField("commit_ts", TimestampType()),
     ])
     (DeltaTable.createIfNotExists(spark)

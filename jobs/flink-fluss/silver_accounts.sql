@@ -22,7 +22,7 @@ CREATE TEMPORARY TABLE kafka_accounts_src (
     op       STRING,
     `before` ROW<account_id BIGINT, name STRING, country STRING, tier STRING, updated_at STRING>,
     `after`  ROW<account_id BIGINT, name STRING, country STRING, tier STRING, updated_at STRING>,
-    `source` ROW<ts_ms BIGINT>,
+    `source` ROW<ts_ms BIGINT, lsn BIGINT>,
     ts_ms    BIGINT
 ) WITH (
     'connector'                    = 'kafka',
@@ -40,6 +40,8 @@ SELECT
     `after`.name,
     `after`.country,
     `after`.tier,
-    TO_TIMESTAMP(`after`.updated_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z''')
+    TO_TIMESTAMP(`after`.updated_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z'''),
+    TO_TIMESTAMP_LTZ(`source`.ts_ms, 3),
+    `source`.lsn
 FROM kafka_accounts_src
 WHERE op <> 'd' AND `after`.account_id IS NOT NULL;

@@ -40,7 +40,14 @@ _STATEMENTS = [
       USING iceberg PARTITIONED BY (days(executed_at)) TBLPROPERTIES ({_APPEND_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.accounts_spark (
         account_id BIGINT NOT NULL, name STRING, country STRING, tier STRING,
-        source_updated_at TIMESTAMP, event_ts TIMESTAMP, commit_ts TIMESTAMP)
+          source_updated_at TIMESTAMP, event_ts TIMESTAMP,
+          -- SCD2: every version retained. effective_to / is_current are DERIVED at read
+          -- via LEAD(effective_from) OVER (PARTITION BY account_id ORDER BY
+          -- effective_from) — materialised close-out is not expressible in Flink SQL for
+          -- a PK table, and keeping all five engines on one model matters more here.
+          -- Natural key (account_id, source_lsn): a CDC re-delivery collapses, a real
+          -- change does not.
+          effective_from TIMESTAMP, source_lsn BIGINT, op STRING, commit_ts TIMESTAMP)
       USING iceberg TBLPROPERTIES ({_MOR_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.gold.open_positions_spark (
         account_id BIGINT NOT NULL, symbol STRING NOT NULL, net_quantity BIGINT,

@@ -22,7 +22,8 @@ PAYLOAD = StructType([
     StructField("tier",       StringType(), True),
     StructField("updated_at", StringType(), True),
 ])
-SOURCE = StructType([StructField("ts_ms", LongType(), True)])
+SOURCE = StructType([StructField("ts_ms", LongType(), True),
+                     StructField("lsn",   LongType(), True)])
 ENVELOPE = StructType([
     StructField("op",     StringType(), True),
     StructField("before", PAYLOAD,      True),
@@ -61,6 +62,10 @@ def main():
                 col("env.after.tier").alias("tier"),
                 to_timestamp(col("env.after.updated_at")).alias("source_updated_at"),
                 (col("env.source.ts_ms") / 1000).cast("timestamp").alias("event_ts"),
+                # effective_from = source commit time; source_lsn = CDC total order and the
+                # version half of the composite record key.
+                (col("env.source.ts_ms") / 1000).cast("timestamp").alias("effective_from"),
+                col("env.source.lsn").alias("source_lsn"),
                 current_timestamp().alias("commit_ts"))
               .filter(col("account_id").isNotNull() & (col("op") != "d")))
 

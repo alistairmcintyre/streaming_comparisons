@@ -124,7 +124,15 @@ CREATE TABLE IF NOT EXISTS paimon.silver.accounts (
     ingest_ts         TIMESTAMP(6),
     commit_ts         TIMESTAMP(6),
     row_kind          STRING,
-    PRIMARY KEY (account_id) NOT ENFORCED
+    -- SCD2: effective_from is the SOURCE commit time (not ingest — as-of joins must not
+    -- depend on pipeline lag). source_lsn is the CDC total order and the version half of
+    -- the key: a genuine change writes a NEW row, while an at-least-once re-delivery has
+    -- the same (account_id, source_lsn) and collapses. effective_to / is_current are
+    -- DERIVED at read via LEAD(effective_from) — materialised close-out would mean
+    -- targeting (account_id, old_effective_from), which a stateless Flink job cannot know.
+    effective_from    TIMESTAMP(6),
+    source_lsn        BIGINT NOT NULL,
+    PRIMARY KEY (account_id, source_lsn) NOT ENFORCED
 ) WITH (
     'bucket'                           = '1',
     'merge-engine'                     = 'deduplicate',

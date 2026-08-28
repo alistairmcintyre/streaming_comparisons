@@ -126,10 +126,21 @@ def silver_trades_opts():
                  extra=_sync("silver", "trades_hudi", "executed_date"))
 
 
-# silver accounts: SCD1 dimension, latest row per account wins.
+# silver accounts: SCD2 — EVERY version retained, not just the latest.
+# The record key is composite (account_id, source_lsn), so a genuine change writes a NEW
+# row while an at-least-once CDC re-delivery — identical account_id AND source_lsn —
+# collapses onto the existing one. That is the whole trick: upsert still deduplicates
+# re-deliveries, but it no longer destroys history, because the version is part of the key.
+# Contrast silver.trades, where the key is trade_id alone: a trade is an immutable event
+# and has no versions.
+# effective_to / is_current are DERIVED at read via LEAD(effective_from); see
+# spark-delta/silver_accounts.py for why they are not materialised.
 def silver_accounts_opts():
-    return _opts("hudi_silver_accounts", "account_id", "source_updated_at",
-                 operation="upsert", extra=_sync("silver", "accounts_hudi"))
+    return _opts("hudi_silver_accounts", "account_id,source_lsn", "source_lsn",
+                 operation="upsert",
+                 extra={**_sync("silver", "accounts_hudi"),
+                        "hoodie.datasource.write.keygenerator.class":
+                        "org.apache.hudi.keygen.ComplexKeyGenerator"})
 
 
 # gold: net book per (account_id, symbol). Compound key, partitioned by symbol so the

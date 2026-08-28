@@ -20,7 +20,7 @@ CREATE TEMPORARY TABLE kafka_accounts_src (
     op       STRING,
     `before` ROW<account_id BIGINT, name STRING, country STRING, tier STRING, updated_at STRING>,
     `after`  ROW<account_id BIGINT, name STRING, country STRING, tier STRING, updated_at STRING>,
-    `source` ROW<ts_ms BIGINT, db STRING, `table` STRING>,
+    `source` ROW<ts_ms BIGINT, db STRING, `table` STRING, lsn BIGINT>,
     ts_ms    BIGINT
 ) WITH (
     'connector'                    = 'kafka',
@@ -43,6 +43,8 @@ SELECT
     CAST(TO_TIMESTAMP_LTZ(`source`.ts_ms, 3) AS DATE)                   AS event_date,
     CURRENT_TIMESTAMP                                                    AS ingest_ts,
     CURRENT_TIMESTAMP                                                    AS commit_ts,
-    CASE WHEN op = 'd' THEN '-D' ELSE '+I' END                          AS row_kind
+    CASE WHEN op = 'd' THEN '-D' ELSE '+I' END                          AS row_kind,
+    TO_TIMESTAMP_LTZ(`source`.ts_ms, 3)                                 AS effective_from,
+    `source`.lsn                                                        AS source_lsn
 FROM kafka_accounts_src
 WHERE op IS NOT NULL;

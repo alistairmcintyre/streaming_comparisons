@@ -85,7 +85,12 @@ CREATE TABLE IF NOT EXISTS fluss_catalog.silver.accounts (
     country           STRING,
     tier              STRING,
     source_updated_at TIMESTAMP(6),
-    PRIMARY KEY (account_id) NOT ENFORCED
+    -- SCD2: source_lsn is the CDC total order AND the version half of the key, so a real
+    -- change writes a new row while an at-least-once re-delivery collapses onto the same
+    -- one. effective_to / is_current are derived at read via LEAD(effective_from).
+    effective_from    TIMESTAMP(6),
+    source_lsn        BIGINT,
+    PRIMARY KEY (account_id, source_lsn) NOT ENFORCED
 ) WITH (
     'table.datalake.enabled'          = 'true',
     'table.datalake.freshness'        = '30s',
