@@ -142,7 +142,7 @@ jobs:
                    "shell:${{ steps.shell.outcome }}" \
                    "python:${{ steps.python.outcome }}" \
                    "terraform:${{ steps.terraform.outcome }}" \
-                   "webhooks:${{ steps.webhooks.outcome }}" \\
+                   "webhooks:${{ steps.webhooks.outcome }}" \
                    "flink-sql:${{ steps.flinksql.outcome }}"; do
             n="${c%%:*}"; o="${c##*:}"
             if [ "$o" = "success" ]; then echo "  PASS  $n"; else echo "  FAIL  $n ($o)"; fail=1; fi

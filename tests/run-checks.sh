@@ -53,6 +53,12 @@ expect "scd2 staging logic (shared by the Spark engines)" 0 \
     167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
     /w/tests/scd2_spark_test.py
 
+# Valid YAML is not valid SHELL. A doubled line-continuation backslash inside a run:
+# block keeps the YAML perfectly parseable and breaks bash — which is how a broken
+# validate job reached GitHub and failed there instead of here.
+expect "every workflow run: block is valid shell" 0 \
+  python3 tests/check_workflow_shell.py
+
 expect "job imports: all shipped, none shadowed" 0 \
   python3 tests/check_configmaps.py
 
@@ -84,6 +90,11 @@ expect "schema parity check catches a drifted field type" 1 bash -c '
   sed "s|net_notional    DECIMAL(38,4)|net_notional    DECIMAL(20,4)|" \
     jobs/flink-paimon/create_tables.sql > "$d/jobs/flink-paimon/create_tables.sql"
   cd "$d" && python3 "$OLDPWD/tests/schema_parity_test.py"'
+
+expect "workflow shell check catches a doubled backslash" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/.github/workflows"
+  sed "145s|\" \\\\$|\" \\\\\\\\|" .github/workflows/eks-run.yml > "$d/.github/workflows/eks-run.yml"
+  cd "$d" && python3 "$OLDPWD/tests/check_workflow_shell.py"'
 
 expect "import check catches a shadowed shared name" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/.github/workflows"; cp -r jobs "$d/jobs"
