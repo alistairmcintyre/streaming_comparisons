@@ -189,7 +189,26 @@ PROXY="/api/v1/namespaces/monitoring/services/kube-prometheus-stack-prometheus:9
 # The prometheus container is distroless — it has no wget/curl, so `kubectl exec` can
 # never work here and an exec-based check fails identically whether or not the rules
 # loaded. Query through the apiserver proxy instead.
-promq() { timeout 25 $KB get --raw "${PROXY}$1" 2>/dev/null; }
+# The apiserver proxy is the cheap path but it TIMED OUT for every metric on a real run,
+# so every metric check degraded to WARN and the section gave no signal at all. Fall back
+# to a port-forward, which works: verified against the same cluster the proxy refused.
+PROM_PF=""
+_prom_pf() {
+  [ -n "$PROM_PF" ] && return 0
+  $KB -n monitoring port-forward svc/kube-prometheus-stack-prometheus 19090:9090 >/dev/null 2>&1 &
+  PROM_PF=$!
+  for _ in $(seq 1 10); do
+    curl -sf --max-time 2 localhost:19090/-/ready >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+trap '[ -n "$PROM_PF" ] && kill "$PROM_PF" 2>/dev/null' EXIT
+promq() {
+  out=$(timeout 15 $KB get --raw "${PROXY}$1" 2>/dev/null)
+  [ -n "$out" ] && { echo "$out"; return 0; }
+  _prom_pf && curl -sf --max-time 20 "localhost:19090/api/v1$1" 2>/dev/null
+}
 
 RG=$(promq "/rules" | python3 -c "
 import json,sys
@@ -214,6 +233,37 @@ except Exception: print(-1)" 2>/dev/null)
     *)     ok "metric $m present ($N series)" ;;
   esac
 done
+
+# EVERY pipeline must be REPORTING, not just the metric existing. `pipeline_latency_events_total
+# present (N series)` above passes with 10 of 14, which is exactly what a real run looked
+# like while the whole bronze->silver hop was unmeasured on four of five engines.
+# The expected set is derived FROM THE CODE, the same inventory tests/run-checks.sh checks
+# the PipelinesMissing threshold against, so it cannot drift from what actually emits.
+# NOTE ON TIMING: the PipelinesMissing ALERT waits `for: 10m` to avoid flapping. This check
+# has no such dwell — it reports the truth at the moment it runs. A pipeline that has not
+# emitted yet is indistinguishable from one that never will, so run this a few minutes in
+# and again later; bronze emits within a trigger or two, but gold cannot emit until silver
+# has produced rows for it to fold.
+REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
+WANT=$( { grep -rho 'attach_latency_listener(spark, "[a-z-]*"' "$REPO"/jobs/spark-*/*.py 2>/dev/null | sed 's/.*"\(.*\)"/\1/';
+          grep -rho '"pipeline":"[a-z-]*"' "$REPO"/jobs/flink-*/*.sql 2>/dev/null | sed 's/.*:"\(.*\)"/\1/'; } | sort -u )
+HAVE=$(promq "/query?query=pipeline_latency_events_total" | python3 -c "
+import json,sys
+try: r=json.load(sys.stdin)['data']['result']
+except Exception: raise SystemExit
+print('\n'.join(sorted({s['metric'].get('pipeline','') for s in r if s['metric'].get('pipeline')})))" 2>/dev/null)
+if [ -z "$WANT" ]; then
+  warn "could not read the pipeline inventory from $REPO/jobs — skipping the per-pipeline check"
+elif [ -z "$HAVE" ]; then
+  warn "prometheus returned no pipeline_latency series — cannot verify the $(echo "$WANT" | wc -l) pipelines"
+else
+  MISSING=$(comm -23 <(echo "$WANT") <(echo "$HAVE"))
+  if [ -z "$MISSING" ]; then
+    ok "all $(echo "$WANT" | wc -l | tr -d ' ') pipelines are reporting latency"
+  else
+    bad "pipelines NOT reporting: $(echo "$MISSING" | tr '\n' ' ')(have $(echo "$HAVE" | wc -l | tr -d ' ') of $(echo "$WANT" | wc -l | tr -d ' ') — early in a run they may still be starting)"
+  fi
+fi
 
 # Gold table presence. NOT a schema check — this only proves the Delta log exists.
 # Field parity across the five engines is checked OFFLINE and for every layer by
