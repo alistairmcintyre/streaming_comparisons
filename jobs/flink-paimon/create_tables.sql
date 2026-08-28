@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS paimon.bronze.trades (
     event_ts          TIMESTAMP(6),
     ingest_ts         TIMESTAMP(6),
     kafka_offset      BIGINT,
-    kafka_partition   INT
+    kafka_partition   INT,
+    -- strict total order across the CDC stream; kafka_offset is per-partition only
+    source_lsn        BIGINT
 ) WITH (
     'bucket'      = '-1',
     'file.format' = 'parquet',

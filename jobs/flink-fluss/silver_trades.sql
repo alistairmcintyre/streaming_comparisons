@@ -19,7 +19,9 @@ CREATE TEMPORARY TABLE kafka_trades_src (
     op       STRING,
     `after`  ROW<trade_id BIGINT, account_id BIGINT, symbol STRING, side STRING,
                  quantity INT, price STRING, executed_at STRING>,   -- price: exact decimal as STRING
-    `source` ROW<ts_ms BIGINT>,
+    -- lsn: strict TOTAL order across the CDC stream (kafka_offset is per-partition
+    -- only, and valid as a tiebreaker solely because Debezium keys by PK).
+    `source` ROW<ts_ms BIGINT, lsn BIGINT>,
     ts_ms    BIGINT
 ) WITH (
     'connector'                    = 'kafka',
@@ -66,7 +68,8 @@ SELECT
     `after`.side,
     `after`.quantity,
     CAST(`after`.price AS DECIMAL(12,4)),
-    TO_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z''')
+    TO_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z'''),
+    `source`.lsn
 FROM kafka_trades_src
 WHERE `after`.trade_id IS NOT NULL;
 

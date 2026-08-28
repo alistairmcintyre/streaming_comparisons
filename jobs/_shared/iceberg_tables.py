@@ -27,7 +27,12 @@ _STATEMENTS = [
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.bronze.trades_spark (
         op STRING, trade_id BIGINT, account_id BIGINT, symbol STRING, side STRING,
         quantity INT, price DECIMAL(12,4), executed_at TIMESTAMP, event_ts TIMESTAMP,
-        ingest_ts TIMESTAMP, kafka_offset BIGINT, kafka_partition INT)
+        ingest_ts TIMESTAMP, kafka_offset BIGINT, kafka_partition INT,
+          -- Postgres LSN: a strict TOTAL order across the replication stream.
+          -- kafka_offset only orders within a partition, so it is a valid
+          -- tiebreaker only because Debezium keys by primary key. lsn has no
+          -- such precondition — the definitive key for a backfill ranking.
+          source_lsn BIGINT)
       USING iceberg PARTITIONED BY (days(executed_at)) TBLPROPERTIES ({_APPEND_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.trades_spark (
         trade_id BIGINT, account_id BIGINT, symbol STRING, side STRING, quantity INT,

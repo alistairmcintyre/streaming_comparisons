@@ -38,6 +38,10 @@ def create_bronze_trades(spark):
         StructField("price", DecimalType(12, 4)), StructField("executed_at", TimestampType()),
         StructField("event_ts", TimestampType()), StructField("ingest_ts", TimestampType()),
         StructField("kafka_offset", LongType()), StructField("kafka_partition", IntegerType()),
+        # Postgres LSN: a strict TOTAL order across the replication stream, unlike
+        # kafka_offset which only orders within a partition. The definitive tiebreaker
+        # for a backfill ranking on (event_ts, ingest_ts, source_lsn).
+        StructField("source_lsn", LongType()),
     ])
     (DeltaTable.createIfNotExists(spark)
         .tableName("delta_bronze_trades").addColumns(schema)

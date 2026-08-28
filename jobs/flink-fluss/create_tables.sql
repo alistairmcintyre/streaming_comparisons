@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS fluss_catalog.silver.trades (
     -- "only support timestamp type with precision from 4 to 9" and no Iceberg
     -- metadata.json is ever written → the table is invisible to Athena/Spark).
     executed_at TIMESTAMP(6),
+    -- strict total order across the CDC stream; kafka_offset is per-partition only
+    source_lsn  BIGINT,
     PRIMARY KEY (trade_id) NOT ENFORCED
 ) WITH (
     -- first_row keeps the FIRST row per primary key. That is the correct semantic for

@@ -29,7 +29,17 @@ PAYLOAD = StructType([
     StructField("price",       StringType(),  True),
     StructField("executed_at", StringType(),  True),
 ])
-SOURCE = StructType([StructField("ts_ms", LongType(), True)])
+# lsn is Postgres's Log Sequence Number from the Debezium envelope — a STRICT TOTAL
+# ORDER across the whole replication stream. kafka_offset only orders within a
+# partition, so it is a valid tiebreaker solely because Debezium keys by the table's
+# primary key and every version of a trade therefore lands in the same partition; if
+# that keying ever changed, offset comparison would silently become meaningless. lsn
+# has no such precondition, which is what makes a backfill ranking
+#   ROW_NUMBER() OVER (PARTITION BY trade_id ORDER BY event_ts DESC, ingest_ts DESC,
+#                      source_lsn DESC)
+# robust rather than incidentally correct.
+SOURCE = StructType([StructField("ts_ms", LongType(), True),
+                     StructField("lsn",   LongType(), True)])
 ENVELOPE = StructType([
     StructField("op",     StringType(), True),
     StructField("after",  PAYLOAD,      True),
@@ -66,6 +76,7 @@ def main():
                 col("env.after.price").cast(DecimalType(12, 4)).alias("price"),
                 to_timestamp(col("env.after.executed_at")).alias("executed_at"),
                 (col("env.source.ts_ms") / 1000).cast("timestamp").alias("event_ts"),
+                col("env.source.lsn").alias("source_lsn"),
                 current_timestamp().alias("ingest_ts"),
                 col("kafka_offset"), col("kafka_partition"))
               .withColumn("executed_date", to_date(col("executed_at"))))

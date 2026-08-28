@@ -27,6 +27,9 @@ CREATE TEMPORARY TABLE kafka_trades_src (
     >,
     `source` ROW<
         ts_ms   BIGINT,
+        -- Postgres LSN: strict TOTAL order across the replication stream. kafka_offset
+        -- orders only within a partition (valid here solely because Debezium keys by PK).
+        lsn     BIGINT,
         db      STRING,
         `table` STRING
     >,
@@ -80,7 +83,8 @@ SELECT
     TO_TIMESTAMP_LTZ(`source`.ts_ms, 3)                                AS event_ts,
     CURRENT_TIMESTAMP                                                   AS ingest_ts,
     CAST(NULL AS BIGINT)                                               AS kafka_offset,
-    CAST(NULL AS INT)                                                  AS kafka_partition
+    CAST(NULL AS INT)                                                  AS kafka_partition,
+    `source`.lsn                                                       AS source_lsn
 FROM kafka_trades_src
 WHERE `after`.trade_id IS NOT NULL;
 
