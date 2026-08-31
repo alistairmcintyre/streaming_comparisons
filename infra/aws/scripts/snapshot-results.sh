@@ -40,8 +40,18 @@
 #           1-based changed nothing, and the original 0-based metadata reads fine once the
 #           Glue columns are present. Tested both ways rather than assumed.
 #
-# So Athena now covers delta, spark-iceberg, paimon and fluss. Only Hudi's PARTITIONED
-# tables remain unreadable, for the positional reason above; query those through Spark.
+#   delta — silver.accounts and gold.open_positions failed to REGISTER on the last run
+#           (register-glue-tables.sh), so they are absent from Athena rather than
+#           unreadable. Cause UNKNOWN: the script printed a bare "FAILED" and the reason
+#           was lost. Deletion vectors were the obvious suspect — they are enabled on
+#           exactly those two tables — but Athena engine v3 has READ deletion vectors
+#           since July 2024, so that is ruled out. They are also the 3rd and 4th DDL
+#           statements issued back-to-back, which fits equally well. The script now echoes
+#           the reason and retries transient DDL errors, so the next run settles it.
+#
+# So Athena covers spark-iceberg, paimon, fluss and two of the four delta tables. Hudi's
+# PARTITIONED tables remain unreadable for the positional reason above; query those
+# through Spark.
 set -uo pipefail
 
 : "${AWS_REGION:?}" ; : "${WAREHOUSE_BUCKET:?}" ; : "${RUN_ID:?}"

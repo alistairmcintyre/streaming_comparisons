@@ -65,26 +65,34 @@ for spec in "bronze:trades_delta:delta/bronze/trades" \
   fi
   # Athena infers the schema from the Delta log, so no column list is given.
   #
-  # EXPECT TWO OF THESE FOUR TO FAIL, and it is not a bug in this script.
-  # delta_tables.py sets delta.enableDeletionVectors=true on silver.accounts and
-  # gold.open_positions (Delta's merge-on-read analogue, chosen so its write profile is
-  # comparable to Iceberg MOR and Hudi MOR) and false on the two append-only trades
-  # tables. Athena's Delta reader does not support deletion vectors, and the failures
-  # correlate EXACTLY with that setting:
-  #     bronze.trades   DV=false -> registered
-  #     silver.trades   DV=false -> registered
-  #     silver.accounts DV=true  -> FAILED
-  #     gold.open_positions DV=true -> FAILED
-  # Turning DVs off would make those two Athena-readable at the cost of changing what the
-  # benchmark measures on the update-heavy tables. Read them through Spark instead.
-  # The reason is echoed rather than swallowed so this is diagnosable next time.
-  if reason=$(athena_sql "CREATE EXTERNAL TABLE IF NOT EXISTS \`${db}\`.\`${tbl}\`
-              LOCATION '${loc}'
-              TBLPROPERTIES ('table_type' = 'DELTA')" 2>&1); then
-    echo "  registered ${db}.${tbl}"
-  else
-    echo "  FAILED ${db}.${tbl}: $(echo "$reason" | tr '\n' ' ' | head -c 160)"
-  fi
+  # TWO OF THESE FOUR FAILED on the last live run (silver.accounts, gold.open_positions)
+  # and the script printed a bare "FAILED", so the reason was never read. I guessed
+  # deletion vectors, because delta_tables.py enables them on exactly those two tables and
+  # not the other two. THAT GUESS IS WRONG: Athena engine v3 has read Delta deletion
+  # vectors since July 2024 (release notes, with a partitioned-table fix that December).
+  #
+  # A second explanation fits the same evidence exactly — they are also the THIRD and
+  # FOURTH CREATE statements issued back-to-back, and Athena/Glue DDL against one database
+  # can fail under concurrent modification or throttling. Two hypotheses, one 2-of-4 split,
+  # no error text to separate them.
+  #
+  # So: the reason is echoed rather than swallowed, and transient failures are retried.
+  # Whichever it is, the next run says so instead of leaving it to be inferred.
+  ok=0
+  for attempt in 1 2 3; do
+    if reason=$(athena_sql "CREATE EXTERNAL TABLE IF NOT EXISTS \`${db}\`.\`${tbl}\`
+                LOCATION '${loc}'
+                TBLPROPERTIES ('table_type' = 'DELTA')" 2>&1); then
+      echo "  registered ${db}.${tbl}${attempt:+$([ "$attempt" -gt 1 ] && echo " (attempt $attempt)")}"
+      ok=1; break
+    fi
+    case "$reason" in
+      *ConcurrentModification*|*Throttl*|*TooManyRequests*|*SlowDown*)
+        sleep $(( attempt * 5 )); continue ;;
+      *) break ;;
+    esac
+  done
+  [ "$ok" = 1 ] || echo "  FAILED ${db}.${tbl}: $(echo "$reason" | tr '\n' ' ' | head -c 200)"
 done
 
 # ── Hudi: registers ITSELF, so only verify ───────────────────────────────────
