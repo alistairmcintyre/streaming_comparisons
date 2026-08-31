@@ -40,12 +40,19 @@ $KB get pods -A --no-headers 2>/dev/null | awk '$4!="Running" && $4!="Completed"
 for spec in "flink:job/fluss-submitter" "flink:job/paimon-submitter" \
             "flink:deploy/fluss-flink" "flink:deploy/flink-paimon" \
             "flink:deploy/flink-kubernetes-operator" \
-            "kafka:deploy/debezium-connect" "streaming:deploy/latency-exporter"; do
+            "streaming:deploy/latency-exporter"; do
   ns="${spec%%:*}"; obj="${spec##*:}"
-  cap "logs-${ns}-$(echo "$obj" | tr '/' '-')" $KB -n "$ns" logs "$obj" --tail=500
+  cap "logs-${ns}-$(echo "$obj" | tr '/' '-')" $KB -n "$ns" logs "$obj" --tail=2000
 done
+# Debezium is a StrimziPodSet, NOT a Deployment: Strimzi creates the pod
+# `debezium-connect-0` and no deploy/debezium-connect exists, so the entry above captured
+# nothing for the whole CDC layer and said so only inside the file
+#   error from server (NotFound): deployments.apps "debezium-connect" not found
+# A label selector survives the rename and the pod count.
+cap logs-kafka-debezium-connect $KB -n kafka logs -l strimzi.io/cluster=debezium --tail=2000 --max-log-requests=6
+
 for d in $($KB -n spark get pods --no-headers 2>/dev/null | awk '/driver/{print $1}'); do
-  cap "logs-spark-$d" $KB -n spark logs "$d" --tail=300
+  cap "logs-spark-$d" $KB -n spark logs "$d" --tail=2000
 done
 
 # ── the state that is invisible once the cluster is gone ────────────────────
@@ -72,4 +79,22 @@ else
   echo "prometheus not reachable — targets/rules/metrics not captured" | tee "$OUT/prometheus.txt"
 fi
 
-echo "diagnostics written to $OUT/ ($(ls "$OUT" | wc -l) files)"
+# ── the error MESSAGES, pulled out of the logs ───────────────────────────────
+# A tail is not a diagnosis. A Spark analyzer failure emits a stack trace hundreds of
+# frames deep, so a --tail window fills with `at org.apache.spark...` and the ONE LINE
+# that says what went wrong scrolls out of the capture. That happened: hudi-silver-accounts
+# died after exhausting its 10 retries and the bundle recorded only ColumnResolutionHelper
+# frames — enough to know it failed, not enough to know why.
+# So: tails are larger now, AND every captured log is grepped for the message lines and
+# collected here, which is the file to open first.
+{
+  echo "### error lines across every captured log ###"
+  for f in "$OUT"/logs-*.txt; do
+    [ -f "$f" ] || continue
+    hits=$(grep -hoiE "(Caused by|[A-Za-z.]*(Exception|Error)):[^$]{0,200}|\[[A-Z_]{4,40}\][^$]{0,160}" "$f" 2>/dev/null \
+           | grep -viE "^at |OriginalTryStackTrace" | sort -u | head -8)
+    [ -n "$hits" ] && { echo; echo "-- $(basename "$f")"; echo "$hits" | sed 's/^/   /'; }
+  done
+} > "$OUT/errors.txt" 2>/dev/null
+
+echo "diagnostics written to $OUT/ ($(ls "$OUT" | wc -l) files) — start with errors.txt"
