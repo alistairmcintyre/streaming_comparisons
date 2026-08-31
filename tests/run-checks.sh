@@ -85,6 +85,15 @@ expect "every custom resource is covered by the kind pre-flight" 0 \
 expect "every namespace exists before the server dry-run" 0 \
   python3 tests/check_namespace_prereqs.py
 
+# ATHENA IS SELECT-ONLY. Its DDL engine is a second, weaker path to the same catalog: it
+# rejected the Delta tables outright ("Delta protocol version is too new for Athena DDL
+# engine") while its QUERY engine reads them perfectly well. Everything that creates a
+# catalog object goes through the Glue API, which works for every format here and is
+# testable offline (tests/glue-registration-test.sh).
+expect "nothing creates catalog objects with Athena DDL" 0 bash -c '
+  hits=$(grep -rnE "athena \"(CREATE|DROP|ALTER|MSCK)" infra/aws/scripts/ .github/workflows/ tests/ 2>/dev/null || true)
+  [ -z "$hits" ] || { echo "Athena DDL found — use the Glue API instead:"; echo "$hits"; exit 1; }'
+
 # A DDL constrains the TABLE, not the frame written to it. Iceberg matches a positional
 # append BY POSITION and crash-looped on `source_lsn is out of order`; Delta appends by
 # NAME and never noticed the same defect. Every Spark write must be pinned to the canon —

@@ -275,11 +275,30 @@ done
 LAT_LOC="s3://${WAREHOUSE_BUCKET}/benchmarks/${RUN_ID}/latency"
 echo "pipeline,p50_ms,p95_ms,p99_ms,events" > "$WORK/latency_percentiles.csv"
 if aws s3 ls "${LAT_LOC}/" >/dev/null 2>&1; then
-  athena "CREATE DATABASE IF NOT EXISTS benchmarks" >/dev/null 2>&1
-  athena "DROP TABLE IF EXISTS benchmarks.latency_${RUN_ID}" >/dev/null 2>&1
-  athena "CREATE EXTERNAL TABLE benchmarks.latency_${RUN_ID} (
-            pipeline string, executed_at_ms bigint, ingest_ts_ms bigint)
-          STORED AS PARQUET LOCATION '${LAT_LOC}/'" >/dev/null 2>&1
+  # REGISTERED THROUGH THE GLUE API, not Athena DDL. Athena's DDL engine is a second,
+  # weaker path to the same catalog: it rejected the Delta tables outright ("protocol
+  # version is too new") while its QUERY engine reads them fine, and it can only express
+  # what its own dialect covers. The Glue API states the table directly, works for every
+  # format here, and is testable offline against a local emulator
+  # (tests/glue-registration-test.sh). Nothing in this repo creates catalog objects with
+  # Athena DDL any more; Athena is used only to SELECT.
+  aws glue create-database --database-input "Name=benchmarks" >/dev/null 2>&1 || true
+  aws glue delete-table --database-name benchmarks --name "latency_${RUN_ID}" >/dev/null 2>&1 || true
+  # A plain Parquet external table — the exporter writes ordinary Parquet here, so the
+  # Hive Parquet SerDe is the CORRECT one. (It is emphatically not correct for Delta: over
+  # a Delta location it ignores _delta_log and serves deleted rows as live data.)
+  aws glue create-table --database-name benchmarks --table-input "{
+      \"Name\": \"latency_${RUN_ID}\", \"TableType\": \"EXTERNAL_TABLE\",
+      \"Parameters\": {\"EXTERNAL\": \"TRUE\", \"classification\": \"parquet\"},
+      \"StorageDescriptor\": {
+        \"Location\": \"${LAT_LOC}/\",
+        \"Columns\": [{\"Name\":\"pipeline\",\"Type\":\"string\"},
+                     {\"Name\":\"executed_at_ms\",\"Type\":\"bigint\"},
+                     {\"Name\":\"ingest_ts_ms\",\"Type\":\"bigint\"}],
+        \"InputFormat\": \"org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat\",
+        \"OutputFormat\": \"org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat\",
+        \"SerdeInfo\": {\"SerializationLibrary\": \"org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe\"}}
+    }" >/dev/null 2>&1 || true
   ROWS=$(athena "SELECT count(*) FROM benchmarks.latency_${RUN_ID}" || echo "")
   echo "latency events captured: ${ROWS:-0}"
   for p in $(athena "SELECT array_join(array_agg(DISTINCT pipeline), ' ') FROM benchmarks.latency_${RUN_ID}" || echo ""); do
