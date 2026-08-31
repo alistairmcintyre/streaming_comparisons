@@ -17,13 +17,20 @@
 # THREE ENGINES ARE EXPECTED TO FAIL THEIR ATHENA QUERIES, each for a different and
 # VERIFIED reason. None is a pipeline defect; all were confirmed against a live run.
 #
-#   hudi  — the PARTITIONED tables (bronze/silver trades, gold) cannot be read. Glue holds
-#           the partition field as a partition KEY and omits it from the column list, but
-#           Hudi writes it into the parquet, so Athena's positional mapping is one out:
+#   hudi  — READS FINE in a controlled test, contrary to what this comment used to say.
+#           A 1-row MOR table with the production options (crucially
+#           hoodie.write.table.version=6), synced to Glue and upserted until log files
+#           existed, returned correct data from Athena on the partitioned table, its _rt
+#           and its _ro (stale, as RO should be), and on an unpartitioned one. `symbol`
+#           resolves from the partition key. Without write.table.version=6 every query
+#           failed with a bare HIVE_UNKNOWN_ERROR, so that setting is what makes Hudi
+#           readable at all.
+#           A live gold table nonetheless failed with
 #             HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
-#           hoodie.datasource.write.drop.partition.columns=true does not fix it — Hudi
-#           1.2.0 ignores it and then fails the next write on a config conflict. See
-#           jobs/_shared/hudi_tables.py. silver.accounts is unpartitioned and reads fine.
+#           which is the signature of a one-column shift. Unexplained: the controlled test
+#           has the same Glue/parquet shape and reads correctly. That table had accumulated
+#           files over five job restarts — compare per-partition parquet schemas against
+#           the Glue column list before concluding anything.
 #           NOTE the un-suffixed table (open_positions_hudi) is the REAL-TIME view.
 #
 #   paimon and fluss — FIXED. Their Glue tables were registered with "Columns": [], and

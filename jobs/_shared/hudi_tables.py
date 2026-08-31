@@ -23,20 +23,28 @@ Glue: gold.open_positions_hudi uses HoodieParquetRealtimeInputFormat, identical 
 while _ro uses HoodieParquetInputFormat. So `open_positions_hudi` is the one to query;
 _ro and _rt are the extra pair, not the only two.
 
-ATHENA CANNOT READ THE PARTITIONED HUDI TABLES, and it is not fixable from here. Glue
-registers a partition field as a PARTITION KEY, so it is absent from the table's column
-list — but Hudi still writes it INTO the parquet. Athena maps positionally, so every
-column after the partition field is read one place out:
-    Glue: ... account_id bigint | net_quantity bigint | net_notional decimal ...
-    file: ... account_id bigint | symbol       string | net_quantity  bigint  ...
-    -> HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
-The obvious remedy, hoodie.datasource.write.drop.partition.columns=true, DOES NOT WORK on
-Hudi 1.2.0 and is actively harmful. Verified by probe: Hudi stores `false` in
-hoodie.properties whatever you pass, and the NEXT write then dies with
-    Config conflict: hoodie.datasource.write.drop.partition.columns:  true   false
-so every pipeline would break after its first micro-batch. Query Hudi through SPARK, which
-reconstructs partition values from the path and is unaffected. silver.accounts is
-unpartitioned and reads from Athena fine.
+ATHENA CAN READ THESE TABLES — TESTED, not assumed. A 1-row MOR table written with the
+options below, synced to Glue, then upserted three times so real log files existed:
+    p_gold_hudi     (partitioned by symbol)   -> account_id=1 symbol=AAPL net_quantity=40
+    p_gold_hudi_rt                            -> 40   (matches Spark exactly)
+    p_gold_hudi_ro                            -> 10   (stale base file — correct RO semantics)
+    p_accounts_hudi (unpartitioned)           -> reads fine
+`symbol` resolves from the PARTITION KEY even though it is absent from the Glue column
+list, so the positional-shift theory below is WRONG as a general claim.
+
+WHAT DOES MATTER is hoodie.write.table.version = 6 in _COMMON. Without it the same probe
+failed every query with a bare HIVE_UNKNOWN_ERROR — Hudi 1.2.0 otherwise writes table
+version 9 / timeline layout 2, which Athena cannot parse. The comment on that setting used
+to say it was "CURRENTLY INEFFECTIVE"; the probe shows it is doing the work.
+
+STILL UNEXPLAINED: a live gold table failed with
+    HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
+which IS the signature of a column shifted by one — Glue holds the partition field as a
+partition KEY and omits it from the column list while Hudi writes it into the parquet.
+That shift is real in the Glue metadata, but the controlled test above reads correctly
+anyway, so it is not sufficient on its own. The live table had accumulated files across
+five job restarts, which is the obvious remaining difference and the first thing to check:
+compare the schema of the parquet under each partition against the Glue column list.
 """
 import os
 
