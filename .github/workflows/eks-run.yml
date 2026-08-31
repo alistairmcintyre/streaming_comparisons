@@ -475,7 +475,34 @@ jobs:
       - name: Run for ${{ inputs.run_minutes }} min (live Grafana via port-forward)
         run: |
           echo "Cluster up. Grafana: kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80"
+          echo "  user admin / password: kubectl -n monitoring get secret kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d"
+
+          # REGISTER THE CATALOG DURING THE RUN, not only after it.
+          # Only the self-registering formats appear on their own: spark-iceberg (via the
+          # Iceberg Glue catalog) and Hudi (Glue sync on every commit). Delta, Paimon and
+          # Fluss are registered by register-glue-tables.sh, which used to run ONLY after
+          # the load window — so for a 120-minute run three of five engines were
+          # unqueryable for two hours while the data was sitting there.
+          # It is idempotent and UPDATES metadata_location, which is why it can run
+          # repeatedly: Paimon's Iceberg pointer advances with every commit, so a mid-run
+          # registration goes stale and the refresh is what keeps it current. The
+          # end-of-run registration still runs and is the authoritative one.
+          # Failures are swallowed: the OIDC creds live ~1h, so late loops in a long run
+          # will fail, and that must not touch the run. The post-run step re-assumes.
+          WARM="${REGISTER_AFTER_SECONDS:-300}"
+          (
+            sleep "$WARM"
+            while :; do
+              ./infra/aws/scripts/register-glue-tables.sh >/dev/null 2>&1 || true
+              sleep "${REGISTER_EVERY_SECONDS:-600}"
+            done
+          ) &
+          REG_PID=$!
+          trap 'kill "$REG_PID" 2>/dev/null || true' EXIT
+          echo "catalog registration starts in ${WARM}s, then refreshes every ${REGISTER_EVERY_SECONDS:-600}s"
+
           sleep "$(( ${{ inputs.run_minutes }} * 60 ))"
+          kill "$REG_PID" 2>/dev/null || true
 
       # The OIDC-assumed creds from the start of the job live ~1h; after a 120-min
       # run window they are EXPIRED, so the snapshot/destroy AWS calls fail with
