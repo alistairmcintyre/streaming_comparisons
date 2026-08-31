@@ -23,27 +23,8 @@ set -euo pipefail
 : "${AWS_REGION:?}" ; : "${WAREHOUSE_BUCKET:?}" ; : "${PAIMON_BUCKET:?}"
 ATHENA_OUT="s3://${WAREHOUSE_BUCKET}/athena-results/"
 
-athena_sql() {
-  local sql="$1"
-  local qid
-  qid=$(aws athena start-query-execution --region "$AWS_REGION" \
-        --query-string "$sql" --result-configuration "OutputLocation=${ATHENA_OUT}" \
-        --query QueryExecutionId --output text)
-  for _ in $(seq 1 60); do
-    local st
-    st=$(aws athena get-query-execution --region "$AWS_REGION" --query-execution-id "$qid" \
-         --query 'QueryExecution.Status.State' --output text)
-    case "$st" in
-      SUCCEEDED) return 0 ;;
-      FAILED|CANCELLED)
-        aws athena get-query-execution --region "$AWS_REGION" --query-execution-id "$qid" \
-          --query 'QueryExecution.Status.StateChangeReason' --output text >&2
-        return 1 ;;
-    esac
-    sleep 2
-  done
-  echo "athena query timed out" >&2; return 1
-}
+# (athena_sql removed: the Delta path used Athena DDL until its engine rejected the
+# deletion-vector protocol; everything now goes through the Glue API.)
 
 echo "== databases =="
 for db in bronze silver gold; do

@@ -233,6 +233,17 @@ if [ -n "$ALL" ]; then
       167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
       /w/tests/dedupe_state_test.py
 
+  echo "== slow: Glue registration, against a local AWS emulator (floci) =="
+  # register-glue-tables.sh once registered paimon and fluss with "Columns": [], and Athena
+  # reads an Iceberg table's columns FROM THE GLUE DEFINITION — so count(*) worked while
+  # SELECT * failed with "Relation contains no accessible columns". Three of five engines
+  # unqueryable, found by hand on a live cluster. This runs the real script against floci
+  # and asserts every table carries the canonical column list.
+  # It does NOT test whether Athena can READ these formats: floci's Athena is a DuckDB
+  # sidecar that is not wired to the Glue catalog. Deletion vectors, Hudi timelines and
+  # Iceberg deletes were settled against real AWS and are out of scope here.
+  expect "glue registration builds valid tables" 0 ./tests/glue-registration-test.sh
+
   echo "== slow: HUDI's written schemas, measured (it has no DDL to check) =="
   # Every other engine DECLARES its schema and schema_parity_test.py reads the
   # declaration. A Hudi table's schema is whatever DataFrame was written, so the only
@@ -247,6 +258,12 @@ if [ -n "$ALL" ]; then
   # to the new type and the comparison would still pass. Dropping executed_date from
   # PARTITION_ARTEFACTS instead leaves a real column unaccounted for, which the
   # comparison must report as EXTRA.
+  expect "glue check catches an empty Columns list" 1 bash -c '
+    d=$(mktemp -d); cp -r jobs infra tests "$d/"
+    sed -i "s|\\\\\"Columns\\\\\": \${COLS}|\\\\\"Columns\\\\\": []|g" \
+      "$d/infra/aws/scripts/register-glue-tables.sh"
+    cd "$d" && FLOCI_PORT=4601 ./tests/glue-registration-test.sh'
+
   expect "hudi schema check catches an unaccounted column" 1 bash -c '
     d=$(mktemp -d); cp -r jobs "$d/jobs"
     sed -i "s|^PARTITION_ARTEFACTS = .*|PARTITION_ARTEFACTS = set()|" "$d/jobs/_shared/schemas.py"
