@@ -23,28 +23,38 @@ Glue: gold.open_positions_hudi uses HoodieParquetRealtimeInputFormat, identical 
 while _ro uses HoodieParquetInputFormat. So `open_positions_hudi` is the one to query;
 _ro and _rt are the extra pair, not the only two.
 
-ATHENA CAN READ THESE TABLES — TESTED, not assumed. A 1-row MOR table written with the
-options below, synced to Glue, then upserted three times so real log files existed:
-    p_gold_hudi     (partitioned by symbol)   -> account_id=1 symbol=AAPL net_quantity=40
-    p_gold_hudi_rt                            -> 40   (matches Spark exactly)
-    p_gold_hudi_ro                            -> 10   (stale base file — correct RO semantics)
-    p_accounts_hudi (unpartitioned)           -> reads fine
-`symbol` resolves from the PARTITION KEY even though it is absent from the Glue column
-list, so the positional-shift theory below is WRONG as a general claim.
+ATHENA AND THE PARTITION COLUMN'S POSITION — the whole story, proven by experiment.
 
-WHAT DOES MATTER is hoodie.write.table.version = 6 in _COMMON. Without it the same probe
-failed every query with a bare HIVE_UNKNOWN_ERROR — Hudi 1.2.0 otherwise writes table
-version 9 / timeline layout 2, which Athena cannot parse. The comment on that setting used
-to say it was "CURRENTLY INEFFECTIVE"; the probe shows it is doing the work.
+Glue registers a partition field as a partition KEY and omits it from the table's column
+list, but Hudi still writes it INTO the parquet. Athena maps positionally, so if that
+column sits in the MIDDLE of the written frame every column after it is read one place
+out:
+    Glue: ... account_id bigint | net_quantity bigint | net_notional decimal ...
+    file: ... account_id bigint | symbol       string | net_quantity  bigint  ...
+    -> HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
 
-STILL UNEXPLAINED: a live gold table failed with
-    HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
-which IS the signature of a column shifted by one — Glue holds the partition field as a
-partition KEY and omits it from the column list while Hudi writes it into the parquet.
-That shift is real in the Glue metadata, but the controlled test above reads correctly
-anyway, so it is not sufficient on its own. The live table had accumulated files across
-five job restarts, which is the obvious remaining difference and the first thing to check:
-compare the schema of the parquet under each partition against the Glue column list.
+Isolated to ONE variable: the same row written twice with identical options, differing
+only in where `symbol` sits.
+    symbol mid-frame -> SELECT * fails with the cast error
+    symbol last      -> SELECT * succeeds
+gold now writes partition columns LAST (hive_order() in schemas.py). bronze and silver
+trades were always correct by accident: executed_date is appended last as an `extra`.
+
+TWO THINGS THAT MISLED ME, recorded so they do not mislead again:
+  * `SELECT count(*)` and NARROW projections SUCCEED on a shifted table — they read no
+    columns, or only ones whose types happen to line up. Only a wide projection fails.
+    Test with SELECT *, never with count(*).
+  * hoodie.datasource.write.drop.partition.columns=true looks like the fix and is not:
+    Hudi 1.2.0 writes `false` into hoodie.properties whatever you pass, then the NEXT
+    write dies with `Config conflict ... true false`, breaking the pipeline.
+
+Also required: hoodie.write.table.version=6 in _COMMON. Without it every query fails with
+a bare HIVE_UNKNOWN_ERROR — Hudi 1.2.0 otherwise writes table version 9 with the LSM
+timeline, which Athena cannot parse. That setting is load-bearing, not vestigial.
+
+GLUE SYNC ALSO REGISTERS AN UN-SUFFIXED TABLE and it is the REAL-TIME one:
+gold.open_positions_hudi uses HoodieParquetRealtimeInputFormat, identical to _rt, while
+_ro uses HoodieParquetInputFormat.
 """
 import os
 

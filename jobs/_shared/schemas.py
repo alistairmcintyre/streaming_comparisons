@@ -117,3 +117,22 @@ SILVER_ACCOUNTS = [
 #                  Delta as a clusterBy, neither of which adds a field. Excluding it is the
 #                  honest comparison — one physical layout, declared three ways.
 PARTITION_ARTEFACTS = {"executed_date"}
+
+# HIVE PUTS PARTITION COLUMNS LAST, and Athena's positional mapping depends on it.
+# Glue registers a partition field as a partition KEY and omits it from the column list,
+# while Hudi still writes it into the parquet. If that column sits in the MIDDLE of the
+# written frame, every column after it is read one place out:
+#     Glue: ... account_id bigint | net_quantity bigint | net_notional decimal ...
+#     file: ... account_id bigint | symbol       string | net_quantity  bigint  ...
+#     -> HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
+# Proven by writing the SAME row twice, changing only the position of `symbol`: mid-frame
+# fails, last succeeds. bronze/silver trades were already correct by accident — their
+# partition field (executed_date) is appended last as an `extra`.
+HIVE_PARTITION_COLUMNS = {"GOLD_OPEN_POSITIONS": ("symbol",)}
+
+
+def hive_order(schema, partition_cols):
+    """Same fields, partition columns moved to the end — the layout Hive expects."""
+    part = tuple(partition_cols)
+    return ([c for c in schema if c[0] not in part] +
+            [c for c in schema if c[0] in part])

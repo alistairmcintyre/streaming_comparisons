@@ -101,7 +101,8 @@ for i, rows in enumerate(BATCHES):
 # schema is whatever DataFrame was written — so this is the only way to catch it drifting.
 # It had: net_notional came out decimal(33,4) against the decimal(38,4) the other four
 # declare, and every value-based check passed regardless.
-from schemas import GOLD_OPEN_POSITIONS, HUDI_META_PREFIX
+from schemas import (GOLD_OPEN_POSITIONS, HIVE_PARTITION_COLUMNS, HUDI_META_PREFIX,
+                     hive_order)
 _fields = READ().schema.fields
 _business = [(f.name, f.dataType.simpleString()) for f in _fields
              if not f.name.startswith(HUDI_META_PREFIX)]
@@ -126,11 +127,16 @@ def chk(d, ok):
     print(("  PASS  " if ok else "  FAIL  ") + d)
     if not ok: fails.append(d)
 
-chk(f"gold returns the canonical {len(GOLD_OPEN_POSITIONS)} fields, in order, with the same types",
-    _business == GOLD_OPEN_POSITIONS)
-if _business != GOLD_OPEN_POSITIONS:
-    _want = dict(GOLD_OPEN_POSITIONS); _got = dict(_business)
-    for _n, _t in GOLD_OPEN_POSITIONS:
+# Hudi writes the Hive-partitioned layout: same fields, partition columns LAST. Anything
+# else and Athena reads every later column one place out (see hive_order in schemas.py).
+_expect = (hive_order(GOLD_OPEN_POSITIONS, HIVE_PARTITION_COLUMNS["GOLD_OPEN_POSITIONS"])
+           if ENGINE == "hudi" else GOLD_OPEN_POSITIONS)
+chk(f"gold returns the canonical {len(_expect)} fields, in order, with the same types"
+    + (" (partition column last, Hive layout)" if ENGINE == "hudi" else ""),
+    _business == _expect)
+if _business != _expect:
+    _want = dict(_expect); _got = dict(_business)
+    for _n, _t in _expect:
         if _got.get(_n) != _t:
             print(f"          {_n}: got {_got.get(_n, '<missing>')}  want {_t}")
     for _n, _t in _business:

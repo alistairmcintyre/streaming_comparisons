@@ -37,7 +37,8 @@ from pyspark.sql.functions import (
     min as _min, max as _max, least, greatest,
 )
 from hudi_tables import SILVER_TRADES, GOLD_POSITIONS, gold_positions_opts
-from schemas import conform
+from schemas import (GOLD_OPEN_POSITIONS, HIVE_PARTITION_COLUMNS, conform,
+                     hive_order)
 
 CHECKPOINT_BASE = os.environ.get("CHECKPOINT_BASE", "s3a://warehouse/_chk")
 CHECKPOINT_PATH = f"{CHECKPOINT_BASE}/gold_open_positions_hudi"
@@ -108,7 +109,15 @@ def fold_to_book(batch_df, batch_id):
         # type for the column, invisible to any check that only compares values.
         out = (j.withColumn("status", when(col("net_quantity") != 0, lit("OPEN")).otherwise(lit("CLOSED")))
                 .withColumn("commit_ts", current_timestamp()))
-        out = conform(out)
+        # PARTITION COLUMN LAST. Hudi partitions gold by `symbol`, Glue then registers it
+        # as a partition KEY and drops it from the column list — but Hudi still writes it
+        # into the parquet. With `symbol` in its canonical 2nd position every later column
+        # is read one place out and Athena dies with
+        #   HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
+        # Same fields, same types; only the write order changes, and Spark reads by name
+        # so it is unaffected. See hive_order() in schemas.py.
+        out = conform(out, hive_order(GOLD_OPEN_POSITIONS,
+                                      HIVE_PARTITION_COLUMNS["GOLD_OPEN_POSITIONS"]))
 
         (out.write.format("hudi").options(**gold_positions_opts())
             .mode("append").save(GOLD_POSITIONS))
