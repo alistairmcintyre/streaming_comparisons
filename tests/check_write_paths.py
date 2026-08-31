@@ -53,10 +53,26 @@ for job in sorted(pathlib.Path("jobs").glob("spark-*/*.py")):
             for a in n.names:
                 alias[a.asname or a.name] = a.name
 
+    def schema_arg(call):
+        """Which canon does this conform() call pin to?
+
+        conform(df)                              -> the gold default
+        conform(df, SILVER_TRADES)               -> that name
+        conform(df, hive_order(GOLD_..., (...))) -> the name inside hive_order, which
+            reorders partition columns last for Hive/Athena but keeps the same fields.
+        """
+        if len(call.args) == 1:
+            return "GOLD_OPEN_POSITIONS"
+        a = call.args[1]
+        if isinstance(a, ast.Name):
+            return a.id
+        if (isinstance(a, ast.Call) and isinstance(a.func, ast.Name)
+                and a.func.id == "hive_order" and a.args and isinstance(a.args[0], ast.Name)):
+            return a.args[0].id
+        return None
+
     conform_args = [
-        (c.args[1].id if len(c.args) > 1 and isinstance(c.args[1], ast.Name)
-         else "GOLD_OPEN_POSITIONS" if len(c.args) == 1 else None)
-        for c in ast.walk(tree)
+        schema_arg(c) for c in ast.walk(tree)
         if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "conform"
     ]
     resolved = {alias.get(a, a) for a in conform_args if a}
