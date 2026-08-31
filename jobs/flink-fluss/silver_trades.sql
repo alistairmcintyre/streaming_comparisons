@@ -80,7 +80,17 @@ WHERE `after`.trade_id IS NOT NULL;
 INSERT INTO latency_sink
 SELECT
     '{"pipeline":"fluss-silver","executed_at_ms":'
-    || CAST(UNIX_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z''') * 1000 AS STRING)
+    -- UNIX_TIMESTAMP(string, format) and TO_TIMESTAMP(string, format) do NOT agree on
+    -- this pattern. 'SSSSSS' is a MILLISECOND field padded to six digits, not a
+    -- microsecond fraction, so UNIX_TIMESTAMP reads .999999 as 999999 ms and pushes the
+    -- event up to ~1000s into the FUTURE — which is why this pipeline reported NEGATIVE
+    -- latency for most of its events (min -998000 ms, against a predicted floor of
+    -- -999999). TO_TIMESTAMP handles it correctly: the stored executed_at was verified
+    -- against the Spark-parsed engines and agrees to the millisecond.
+    -- So go through the parsed TIMESTAMP, exactly as the gold emits already do.
+    || CAST(UNIX_TIMESTAMP(DATE_FORMAT(
+           TO_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z'''),
+           'yyyy-MM-dd HH:mm:ss')) * 1000 AS STRING)
     || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING) || '}'
 FROM kafka_trades_src
 WHERE `after`.trade_id IS NOT NULL AND MOD(`after`.trade_id, 997) = 0;

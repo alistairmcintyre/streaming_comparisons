@@ -164,6 +164,19 @@ done
 # whatever is in the current micro-batch. `quiesced` records whether that ran, so a
 # drift figure can never be read as data loss when it was really just a race.
 QUIESCED="${QUIESCED:-unknown}"
+# READ BOTH SIDES AT COMPARABLE TIMES, or say that you did not. This invariant compares a
+# gold aggregate against a silver row count, and for the Iceberg-metadata engines those are
+# two DIFFERENT SNAPSHOTS taken whenever each table last committed. A live run showed:
+#     silver.trades_paimon        snapshot 11:41:56Z
+#     gold.open_positions_paimon  snapshot 11:42:26Z   (+30s)
+# 30 seconds at 1000 trades/s is ~30,000 trades, and the reported "drift" was 22,000. The
+# fold was exact; the clock was not.
+#
+# FLUSS IS WORSE AND NOT A SKEW AT ALL. Its `silver` here is the LAKE TIERING MIRROR
+# (fluss/paimon/iceberg/silver/trades) — a Paimon copy that lags the Fluss PK table by
+# design — while its gold is computed by Flink from the LIVE table. Comparing them is
+# apples to oranges: the run reported 29% "drift" that is tiering lag, not a fold error.
+# Treat a Fluss drift figure as unproven until gold and silver are read from the same side.
 echo "invariant: sum(gold.trade_count) vs count(silver.trades)   [quiesced=${QUIESCED}]"
 echo "engine,silver_trades,gold_trade_count_sum,drift,drift_pct,quiesced,status" > "$WORK/invariants.csv"
 for spec in "iceberg:silver.trades_spark:gold.open_positions_spark" \
