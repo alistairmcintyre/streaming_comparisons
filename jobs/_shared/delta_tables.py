@@ -171,12 +171,41 @@ _TABLE_PATHS = ["bronze/trades", "silver/trades", "silver/accounts", "gold/open_
 
 
 def _converge_properties(spark):
-    """Make existing tables match _TABLE_PROPERTIES (idempotent, safe on new tables)."""
-    props = ", ".join(f"'{k}' = '{v}'" for k, v in _TABLE_PROPERTIES.items())
+    """Make existing tables match _TABLE_PROPERTIES, ALTERing ONLY when they differ.
+
+    READ BEFORE WRITE, and the reason is not tidiness. ALTER TABLE ... SET TBLPROPERTIES
+    writes a Delta METADATA COMMIT even when every value is already correct, and a metadata
+    change on a table another job is STREAMING FROM kills that stream outright:
+
+        DELTA_METADATA_CHANGED: The metadata of the Delta table has been changed by a
+        concurrent update. Please try the operation again.
+
+    All four Delta jobs call ensure_all() at startup and this loop covers ALL FOUR tables,
+    so every job start — and every restart — could kill the other jobs' source streams.
+    Seen live: delta-silver-trades failed repeatedly and ended the run 37 source versions
+    behind bronze, 2,240,000 rows against bronze's 4,086,000. Its invariant still read `ok`,
+    because that check compares gold to SILVER rather than to bronze, so a silver that has
+    fallen behind passes cleanly.
+
+    The previous version called itself "idempotent" and was — in final STATE. It was not a
+    no-op, which is the property that actually mattered here.
+    """
     for rel in _TABLE_PATHS:
+        tbl = f"delta.`{_BASE}/{rel}`"
         try:
-            spark.sql(f"ALTER TABLE delta.`{_BASE}/{rel}` SET TBLPROPERTIES ({props})")
+            cur = {r["key"]: r["value"]
+                   for r in spark.sql(f"SHOW TBLPROPERTIES {tbl}").collect()}
         except Exception as e:  # table may not exist yet on a first run
+            print(f"skip property converge for {rel}: {str(e)[:160]}", flush=True)
+            continue
+        drift = {k: v for k, v in _TABLE_PROPERTIES.items() if cur.get(k) != v}
+        if not drift:
+            continue
+        props = ", ".join(f"'{k}' = '{v}'" for k, v in drift.items())
+        try:
+            spark.sql(f"ALTER TABLE {tbl} SET TBLPROPERTIES ({props})")
+            print(f"converged {rel}: {sorted(drift)}", flush=True)
+        except Exception as e:
             print(f"skip property converge for {rel}: {str(e)[:160]}", flush=True)
 
 

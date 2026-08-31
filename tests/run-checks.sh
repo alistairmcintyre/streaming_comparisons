@@ -228,6 +228,16 @@ if [ -n "$ALL" ]; then
       167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-hudi:latest \
       /w/tests/scd2_hudi_upsert_test.py
 
+  echo "== slow: ensure_all() must not disturb tables other jobs are streaming =="
+  # ALTER TABLE ... SET TBLPROPERTIES writes a Delta metadata commit even when nothing
+  # changed, and all four Delta jobs call ensure_all() over all four tables at startup —
+  # so any job start killed the others' source streams with DELTA_METADATA_CHANGED.
+  # delta-silver-trades finished a live run 37 versions behind bronze because of it.
+  expect "ensure_all writes nothing when properties match" 0 \
+    docker run --rm -u 0 -v "$PWD:/w" -w /w --entrypoint python3 \
+      167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/spark-delta:latest \
+      /w/tests/delta_converge_test.py
+
   echo "== slow: SILVER dedupe survives a restart, on the RocksDB state store =="
   # The only place a re-delivered trade_id can be removed on Delta/Iceberg — gold folds
   # `+=` over (account_id, symbol) and never sees trade_id, so it cannot repair a
