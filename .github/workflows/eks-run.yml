@@ -775,7 +775,13 @@ jobs:
           done
 
       - name: Teardown skipped — cluster left running
-        if: ${{ inputs.destroy_mode != 'always' && !success() }}
+        # WHENEVER THE CLUSTER SURVIVES, not only when the run failed. This used to be
+        # `destroy_mode != 'always' && !success()`, so a SUCCESSFUL run with
+        # destroy_mode=never printed nothing at all — neither this notice nor the destroy
+        # step ran, and the workflow reported success while an EKS cluster and its nodes
+        # kept billing. That is exactly how a run was believed torn down while 3 x
+        # m6a.4xlarge stayed up (~$2.30/hr) until the kill switch caught it.
+        if: ${{ always() && inputs.destroy_mode != 'always' && !(inputs.destroy_mode == 'on-success' && success()) }}
         run: |
           echo "Run did not fully succeed and destroy_mode=${{ inputs.destroy_mode }}."
           echo "Cluster '${{ inputs.run_id }}' LEFT RUNNING for debugging / incremental re-apply."
