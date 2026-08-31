@@ -90,6 +90,13 @@ expect "every namespace exists before the server dry-run" 0 \
 # engine") while its QUERY engine reads them perfectly well. Everything that creates a
 # catalog object goes through the Glue API, which works for every format here and is
 # testable offline (tests/glue-registration-test.sh).
+# The kill switch is the BACKSTOP — it runs when the workflow's destroy did not. It was
+# weaker than the path it backs up: every teardown fix went into the workflow and none into
+# killswitch.tf, so when it finally ran it died on a SG DependencyViolation and left a VPC,
+# an EIP and 190GB of EBS billing for ~5 hours.
+expect "both teardown paths handle every blocker we have hit" 0 \
+  python3 tests/check_teardown_parity.py
+
 expect "nothing creates catalog objects with Athena DDL" 0 bash -c '
   hits=$(grep -rnE "athena \"(CREATE|DROP|ALTER|MSCK)" infra/aws/scripts/ .github/workflows/ tests/ 2>/dev/null || true)
   [ -z "$hits" ] || { echo "Athena DDL found — use the Glue API instead:"; echo "$hits"; exit 1; }'
@@ -151,6 +158,12 @@ expect "kind-coverage check catches an uninstalled CRD" 1 bash -c '
   grep -v "spark-operator/spark-operator" infra/aws/scripts/validate-against-kind.sh \
     > "$d/infra/aws/scripts/validate-against-kind.sh"
   cd "$d" && python3 "$OLDPWD/tests/check_kind_coverage.py"'
+
+expect "teardown parity catches a weaker backstop" 1 bash -c '
+  d=$(mktemp -d); mkdir -p "$d/.github/workflows" "$d/infra/aws"
+  cp .github/workflows/eks-run.yml "$d/.github/workflows/"
+  grep -v "revoke-security-group-ingress" infra/aws/killswitch.tf > "$d/infra/aws/killswitch.tf"
+  cd "$d" && python3 "$OLDPWD/tests/check_teardown_parity.py"'
 
 expect "gating check catches an ungated quiesce" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/.github/workflows"

@@ -84,12 +84,62 @@ resource "aws_codebuild_project" "teardown" {
                           "Name=instance-state-name,Values=pending,running,stopping,stopped" \
                 --query 'Reservations[].Instances[].InstanceId' --output text)
               if [ -n "$IDS" ]; then echo "Terminating $IDS"; aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $IDS || true; aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids $IDS || true; fi
-            # 2b) their CNI ENIs linger 'available' and block subnet/SG delete
+            # 2b) EFS mount targets hold an ENI in the node subnet and the EFS security
+            #     group has an ingress rule referencing the NODE security group, so
+            #     neither the subnet nor that SG can go until the mount target does.
+            #     Deletion is asynchronous, so start it before the sweep.
             - |
-              for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
-                --filters "Name=description,Values=aws-K8S-*" "Name=status,Values=available" \
-                --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
-                aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
+              for fs in $(aws efs describe-file-systems --region "$AWS_REGION" \
+                  --query "FileSystems[?contains(CreationToken, '$CLUSTER_NAME')].FileSystemId" --output text); do
+                for mt in $(aws efs describe-mount-targets --region "$AWS_REGION" --file-system-id "$fs" \
+                    --query 'MountTargets[].MountTargetId' --output text); do
+                  echo "deleting EFS mount target $mt"
+                  aws efs delete-mount-target --region "$AWS_REGION" --mount-target-id "$mt" || true
+                done
+              done
+            # 2c) CNI ENIs linger 'available' and block subnet/SG delete. POLL: `wait
+            #     instance-terminated` returns when the INSTANCE is gone, but its ENIs take
+            #     another minute or two to detach, so a single sweep finds nothing.
+            - |
+              for _ in $(seq 1 6); do
+                for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+                  --filters "Name=description,Values=aws-K8S-*" "Name=status,Values=available" \
+                  --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
+                  aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
+                done
+                REMAINING=$(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+                  --filters "Name=description,Values=aws-K8S-*" \
+                  --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)
+                [ -z "$REMAINING" ] && break
+                sleep 30
+              done
+            # 2d) THE ONE THAT ACTUALLY FAILED. This kill switch died with
+            #       DependencyViolation: resource sg-... has a dependent object
+            #     leaving a VPC, subnets, an IGW, an EIP and 190GB of EBS behind. A
+            #     security group has exactly two kinds of dependent object: ENIs that use
+            #     it, and RULES IN OTHER GROUPS that reference it. efs.tf creates the
+            #     second kind, and nothing here cleared it — the GHA destroy path gained
+            #     this fix and the BACKSTOP did not, which is precisely backwards.
+            - |
+              for SG in $(aws ec2 describe-security-groups --region "$AWS_REGION" \
+                  --filters "Name=tag:kubernetes.io/cluster/$CLUSTER_NAME,Values=owned" \
+                  --query 'SecurityGroups[].GroupId' --output text); do
+                for eni in $(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+                    --filters "Name=group-id,Values=$SG" "Name=status,Values=available" \
+                    --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
+                  aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni" || true
+                done
+                for OTHER in $(aws ec2 describe-security-groups --region "$AWS_REGION" \
+                    --filters "Name=ip-permission.group-id,Values=$SG" \
+                    --query "SecurityGroups[?GroupId!='$SG'].GroupId" --output text); do
+                  PERMS=$(aws ec2 describe-security-groups --region "$AWS_REGION" --group-ids "$OTHER" \
+                    --query "SecurityGroups[0].IpPermissions[?UserIdGroupPairs[?GroupId=='$SG']]" --output json)
+                  if [ -n "$PERMS" ] && [ "$PERMS" != "[]" ]; then
+                    echo "revoking $OTHER ingress that references $SG"
+                    aws ec2 revoke-security-group-ingress --region "$AWS_REGION" \
+                      --group-id "$OTHER" --ip-permissions "$PERMS" || true
+                  fi
+                done
               done
             # PHASE 3 — everything else; SG and VPC now delete promptly.
             - terraform destroy -auto-approve -input=false
