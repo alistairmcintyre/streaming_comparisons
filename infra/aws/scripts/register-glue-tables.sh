@@ -64,10 +64,27 @@ for spec in "bronze:trades_delta:delta/bronze/trades" \
     echo "  skip ${db}.${tbl} — no _delta_log yet"; continue
   fi
   # Athena infers the schema from the Delta log, so no column list is given.
-  athena_sql "CREATE EXTERNAL TABLE IF NOT EXISTS \`${db}\`.\`${tbl}\`
+  #
+  # EXPECT TWO OF THESE FOUR TO FAIL, and it is not a bug in this script.
+  # delta_tables.py sets delta.enableDeletionVectors=true on silver.accounts and
+  # gold.open_positions (Delta's merge-on-read analogue, chosen so its write profile is
+  # comparable to Iceberg MOR and Hudi MOR) and false on the two append-only trades
+  # tables. Athena's Delta reader does not support deletion vectors, and the failures
+  # correlate EXACTLY with that setting:
+  #     bronze.trades   DV=false -> registered
+  #     silver.trades   DV=false -> registered
+  #     silver.accounts DV=true  -> FAILED
+  #     gold.open_positions DV=true -> FAILED
+  # Turning DVs off would make those two Athena-readable at the cost of changing what the
+  # benchmark measures on the update-heavy tables. Read them through Spark instead.
+  # The reason is echoed rather than swallowed so this is diagnosable next time.
+  if reason=$(athena_sql "CREATE EXTERNAL TABLE IF NOT EXISTS \`${db}\`.\`${tbl}\`
               LOCATION '${loc}'
-              TBLPROPERTIES ('table_type' = 'DELTA')" \
-    && echo "  registered ${db}.${tbl}" || echo "  FAILED ${db}.${tbl}"
+              TBLPROPERTIES ('table_type' = 'DELTA')" 2>&1); then
+    echo "  registered ${db}.${tbl}"
+  else
+    echo "  FAILED ${db}.${tbl}: $(echo "$reason" | tr '\n' ' ' | head -c 160)"
+  fi
 done
 
 # ── Hudi: registers ITSELF, so only verify ───────────────────────────────────
