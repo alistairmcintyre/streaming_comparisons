@@ -47,6 +47,30 @@
 #           1-based changed nothing, and the original 0-based metadata reads fine once the
 #           Glue columns are present. Tested both ways rather than assumed.
 #
+#   delta — FIXED. silver.accounts and gold.open_positions could not be registered by
+#           Athena DDL: enabling deletion vectors (Delta's merge-on-read analogue, on
+#           exactly those two) raises the protocol past what the DDL engine accepts —
+#             CREATE EXTERNAL TABLE ... table_type=DELTA
+#             -> Delta protocol version is too new for Athena DDL engine
+#           Athena's QUERY engine reads deletion vectors fine (since July 2024); only DDL
+#           refuses. register-glue-tables.sh now registers them through the Glue API in the
+#           NATIVE DELTA shape instead. Verified on a table carrying 5 deletion-vector
+#           files: Athena returns 20000, exactly matching Spark.
+#
+#   paimon and fluss — FIXED. Their Glue tables were registered with "Columns": [], and
+#           Athena reads an Iceberg table's columns FROM THE GLUE DEFINITION, not from the
+#           metadata file the pointer names. So `SELECT count(*)` worked (it only needs the
+#           snapshot) while `SELECT *` failed with
+#             COLUMN_NOT_FOUND: Relation contains no accessible columns
+#           register-glue-tables.sh now derives the columns from the metadata's own schema.
+#           Verified against the live run: all four paimon/fluss tables return rows.
+#
+#           NOTE for anyone who reads the metadata and gets suspicious: Paimon numbers
+#           Iceberg field ids from 0 where a native Iceberg writer starts at 1. That is a
+#           real difference and it is NOT the cause — re-registering with ids shifted to
+#           1-based changed nothing, and the original 0-based metadata reads fine once the
+#           Glue columns are present. Tested both ways rather than assumed.
+#
 #   delta — silver.accounts and gold.open_positions failed to REGISTER on the last run
 #           (register-glue-tables.sh), so they are absent from Athena rather than
 #           unreadable. Cause UNKNOWN: the script printed a bare "FAILED" and the reason

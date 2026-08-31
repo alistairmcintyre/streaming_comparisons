@@ -54,45 +54,66 @@ done
 # ── Delta → Glue (Athena reads _delta_log natively) ──────────────────────────
 echo "== delta =="
 # db:table:s3-subpath
-for spec in "bronze:trades_delta:delta/bronze/trades" \
-            "silver:trades_delta:delta/silver/trades" \
-            "silver:accounts_delta:delta/silver/accounts" \
-            "gold:open_positions_delta:delta/gold/open_positions"; do
-  db="${spec%%:*}"; rest="${spec#*:}"; tbl="${rest%%:*}"; path="${rest#*:}"
+for spec in "bronze:trades_delta:delta/bronze/trades:BRONZE_TRADES" \
+            "silver:trades_delta:delta/silver/trades:SILVER_TRADES" \
+            "silver:accounts_delta:delta/silver/accounts:SILVER_ACCOUNTS" \
+            "gold:open_positions_delta:delta/gold/open_positions:GOLD_OPEN_POSITIONS"; do
+  db="${spec%%:*}"; rest="${spec#*:}"; tbl="${rest%%:*}"; rest2="${rest#*:}"
+  path="${rest2%%:*}"; canon="${rest2#*:}"
   loc="s3://${WAREHOUSE_BUCKET}/${path}"
   if ! aws s3 ls "${loc}/_delta_log/" >/dev/null 2>&1; then
     echo "  skip ${db}.${tbl} — no _delta_log yet"; continue
   fi
-  # Athena infers the schema from the Delta log, so no column list is given.
+  # REGISTERED THROUGH THE GLUE API, NOT ATHENA DDL.
+  # `CREATE EXTERNAL TABLE ... TBLPROPERTIES('table_type'='DELTA')` fails on any table with
+  # deletion vectors:
+  #     Delta protocol version is too new for Athena DDL engine
+  # which is why silver.accounts and gold.open_positions never registered — delta_tables.py
+  # enables DVs on exactly those two (Delta's merge-on-read analogue). Athena's QUERY engine
+  # reads deletion vectors perfectly well (since July 2024); only its DDL engine refuses the
+  # protocol. So skip the DDL.
   #
-  # TWO OF THESE FOUR FAILED on the last live run (silver.accounts, gold.open_positions)
-  # and the script printed a bare "FAILED", so the reason was never read. I guessed
-  # deletion vectors, because delta_tables.py enables them on exactly those two tables and
-  # not the other two. THAT GUESS IS WRONG: Athena engine v3 has read Delta deletion
-  # vectors since July 2024 (release notes, with a partitioned-table fix that December).
-  #
-  # A second explanation fits the same evidence exactly — they are also the THIRD and
-  # FOURTH CREATE statements issued back-to-back, and Athena/Glue DDL against one database
-  # can fail under concurrent modification or throttling. Two hypotheses, one 2-of-4 split,
-  # no error text to separate them.
-  #
-  # So: the reason is echoed rather than swallowed, and transient failures are retried.
-  # Whichever it is, the next run says so instead of leaving it to be inferred.
-  ok=0
-  for attempt in 1 2 3; do
-    if reason=$(athena_sql "CREATE EXTERNAL TABLE IF NOT EXISTS \`${db}\`.\`${tbl}\`
-                LOCATION '${loc}'
-                TBLPROPERTIES ('table_type' = 'DELTA')" 2>&1); then
-      echo "  registered ${db}.${tbl}${attempt:+$([ "$attempt" -gt 1 ] && echo " (attempt $attempt)")}"
-      ok=1; break
-    fi
-    case "$reason" in
-      *ConcurrentModification*|*Throttl*|*TooManyRequests*|*SlowDown*)
-        sleep $(( attempt * 5 )); continue ;;
-      *) break ;;
-    esac
-  done
-  [ "$ok" = 1 ] || echo "  FAILED ${db}.${tbl}: $(echo "$reason" | tr '\n' ' ' | head -c 200)"
+  # The shape below is the NATIVE DELTA one, copied from a table Athena itself created:
+  # table_type=delta plus spark.sql.sources.provider=delta and the Spark JSON schema, over
+  # SequenceFile/LazySimpleSerDe. Getting this wrong is dangerous, not merely broken — a
+  # Glue table with a PARQUET SerDe over the same location also "works" and is silently
+  # WRONG: it reads the directory as raw parquet, ignores _delta_log entirely, returns
+  # DELETED ROWS AS LIVE DATA, and then dies with `HIVE_BAD_DATA: Malformed Parquet file
+  # ... deletion_vector_*.bin`. Verified on a live table carrying 5 deletion-vector files:
+  # this registration returns 20000, exactly matching Spark.
+  ti=$(python3 - "$tbl" "$loc" "$canon" <<'PYEOF'
+import json, sys
+sys.path.insert(0, "jobs/_shared")
+import schemas
+HIVE2SPARK = {"bigint":"long","int":"integer","string":"string","boolean":"boolean",
+              "timestamp":"timestamp","double":"double","float":"float","date":"date"}
+tbl, loc, canon = sys.argv[1], sys.argv[2].rstrip("/") + "/", sys.argv[3]
+cols = getattr(schemas, canon)
+def spark_t(t):
+    return t if t.startswith("decimal") else HIVE2SPARK.get(t, "string")
+schema = {"type": "struct", "fields": [
+    {"name": n, "type": spark_t(t), "nullable": True, "metadata": {}} for n, t in cols]}
+print(json.dumps({
+  "Name": tbl, "TableType": "EXTERNAL_TABLE",
+  "Parameters": {"EXTERNAL": "TRUE", "table_type": "delta",
+                 "spark.sql.sources.provider": "delta",
+                 "spark.sql.sources.schema.numParts": "1",
+                 "spark.sql.sources.schema.part.0": json.dumps(schema),
+                 "spark.sql.partitionProvider": "catalog"},
+  "StorageDescriptor": {
+    "Location": loc,
+    "Columns": [{"Name": n, "Type": t} for n, t in cols],
+    "InputFormat": "org.apache.hadoop.mapred.SequenceFileInputFormat",
+    "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat",
+    "SerdeInfo": {"SerializationLibrary": "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe",
+                  "Parameters": {"serialization.format": "1", "path": loc}}}}))
+PYEOF
+)
+  if aws glue create-table --database-name "$db" --table-input "$ti" >/dev/null 2>&1   || aws glue update-table --database-name "$db" --table-input "$ti" >/dev/null 2>&1; then
+    echo "  registered ${db}.${tbl}"
+  else
+    echo "  FAILED ${db}.${tbl}"
+  fi
 done
 
 # ── Hudi: registers ITSELF, so only verify ───────────────────────────────────
