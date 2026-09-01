@@ -47,6 +47,15 @@ resource "aws_codebuild_project" "teardown" {
       name  = "TF_STATE_BUCKET"
       value = var.warehouse_bucket
     }
+    # aws_account_id has no default (the account is never hardcoded in this repo), so
+    # every terraform invocation must be handed one. This CodeBuild project is the
+    # dead-man's switch: it runs `terraform destroy` with no workflow and no env/aws.env
+    # around it, so without this the 2.5h teardown would fail on "No value for required
+    # variable" and a run could bill until someone noticed by hand.
+    environment_variable {
+      name  = "TF_VAR_aws_account_id"
+      value = var.aws_account_id
+    }
   }
 
   source {

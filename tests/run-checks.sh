@@ -37,6 +37,7 @@ echo "== checks: the real repo must PASS =="
 expect "manifests lint clean"            0 ./infra/aws/scripts/preflight-manifests.sh
 expect "shell scripts parse"             0 bash -c 'for f in $(git ls-files "*.sh"); do bash -n "$f" || exit 1; done'
 expect "no AWS account id is hardcoded" 0 python3 tests/check_no_account_id.py
+expect "terraform callers supply every required variable" 0 python3 tests/check_tf_vars.py
 
 expect "python jobs parse"               0 bash -c 'for f in $(git ls-files "jobs/**/*.py" "generators/*.py"); do python3 -c "import ast,sys;ast.parse(open(sys.argv[1]).read())" "$f" || exit 1; done'
 expect "workflows are valid YAML"        0 python3 -c "import yaml,glob;[list(yaml.safe_load_all(open(f))) for f in glob.glob('.github/workflows/*.yml')]"
@@ -210,6 +211,14 @@ expect "workflow shell check catches a doubled backslash" 1 bash -c '
   d=$(mktemp -d); mkdir -p "$d/.github/workflows"
   python3 tests/fixtures/inject_doubled_backslash.py "$d/.github/workflows/eks-run.yml"
   cd "$d" && python3 "$OLDPWD/tests/check_workflow_shell.py"'
+
+expect "tf-vars check catches an unsupplied variable" 1 bash -c '
+  d=$(mktemp -d); cp -r infra "$d/infra"; mkdir -p "$d/.github/workflows" "$d/tests"
+  cp .github/workflows/eks-run.yml .github/workflows/teardown.yml "$d/.github/workflows/"
+  cp tests/check_tf_vars.py "$d/tests/"
+  # drop the kill-switch buildspec variable, exactly the regression this exists to catch
+  sed -i "/TF_VAR_aws_account_id/,+2d" "$d/infra/aws/killswitch.tf"
+  cd "$d" && python3 tests/check_tf_vars.py'
 
 expect "account-id check catches a committed id" 1 bash -c '
   d=$(mktemp -d); cd "$d"; git init -q .
