@@ -62,13 +62,21 @@ spec:
     # in place, it held attempt 1 for over ten minutes with zero, and kept committing
     # (20260901213555915.deltacommit). hudi-bronze-trades likewise went to attempt 1.
     #
-    # IT DOES NOT FIX GOLD. With the credential failure gone, hudi-gold-open-positions
-    # still crash-loops on a different error that only appears once the cache is off:
+    # Gold needed one more thing. Once the credential failure was gone it surfaced
     #   IllegalArgumentException: Wrong FS: s3a://.../gold/open_positions/symbol=JPM,
     #   expected: file:///
-    # so some Hudi path there resolves the default filesystem rather than the table's.
-    # Gold was already dead before this change, so it is no worse, but it needs its own
-    # fix and that one is still open.
+    # from RollbackHelperV1 -> HoodieHadoopStorage.listDirectEntries, which asks for
+    # FileSystem.get(conf) with no URI and so gets the DEFAULT filesystem. Setting
+    # spark.hadoop.fs.defaultFS does NOT help: the driver picks it up and the executors
+    # still resolve file:///, so Hudi is not using Spark's Hadoop conf on that path.
+    # It only runs during a ROLLBACK, which is why silver (nothing pending) never hit
+    # it and gold (a commit left inflight when credentials died) hit it every attempt.
+    # Recovered by deleting the markers for the two genuinely incomplete instants,
+    # after which gold held attempt 1 and its deltacommits started climbing again.
+    # Note Hudi keeps .requested/.inflight next to COMPLETED instants too, so counting
+    # those files overstates how wedged a table is: 18 markers, only 2 incomplete.
+    # The credential fix is what stops this recurring, since a table only wedges when
+    # a commit dies mid-flight. The rollback bug itself is still latent.
     "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
@@ -151,13 +159,21 @@ spec:
     # in place, it held attempt 1 for over ten minutes with zero, and kept committing
     # (20260901213555915.deltacommit). hudi-bronze-trades likewise went to attempt 1.
     #
-    # IT DOES NOT FIX GOLD. With the credential failure gone, hudi-gold-open-positions
-    # still crash-loops on a different error that only appears once the cache is off:
+    # Gold needed one more thing. Once the credential failure was gone it surfaced
     #   IllegalArgumentException: Wrong FS: s3a://.../gold/open_positions/symbol=JPM,
     #   expected: file:///
-    # so some Hudi path there resolves the default filesystem rather than the table's.
-    # Gold was already dead before this change, so it is no worse, but it needs its own
-    # fix and that one is still open.
+    # from RollbackHelperV1 -> HoodieHadoopStorage.listDirectEntries, which asks for
+    # FileSystem.get(conf) with no URI and so gets the DEFAULT filesystem. Setting
+    # spark.hadoop.fs.defaultFS does NOT help: the driver picks it up and the executors
+    # still resolve file:///, so Hudi is not using Spark's Hadoop conf on that path.
+    # It only runs during a ROLLBACK, which is why silver (nothing pending) never hit
+    # it and gold (a commit left inflight when credentials died) hit it every attempt.
+    # Recovered by deleting the markers for the two genuinely incomplete instants,
+    # after which gold held attempt 1 and its deltacommits started climbing again.
+    # Note Hudi keeps .requested/.inflight next to COMPLETED instants too, so counting
+    # those files overstates how wedged a table is: 18 markers, only 2 incomplete.
+    # The credential fix is what stops this recurring, since a table only wedges when
+    # a commit dies mid-flight. The rollback bug itself is still latent.
     "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
@@ -240,13 +256,21 @@ spec:
     # in place, it held attempt 1 for over ten minutes with zero, and kept committing
     # (20260901213555915.deltacommit). hudi-bronze-trades likewise went to attempt 1.
     #
-    # IT DOES NOT FIX GOLD. With the credential failure gone, hudi-gold-open-positions
-    # still crash-loops on a different error that only appears once the cache is off:
+    # Gold needed one more thing. Once the credential failure was gone it surfaced
     #   IllegalArgumentException: Wrong FS: s3a://.../gold/open_positions/symbol=JPM,
     #   expected: file:///
-    # so some Hudi path there resolves the default filesystem rather than the table's.
-    # Gold was already dead before this change, so it is no worse, but it needs its own
-    # fix and that one is still open.
+    # from RollbackHelperV1 -> HoodieHadoopStorage.listDirectEntries, which asks for
+    # FileSystem.get(conf) with no URI and so gets the DEFAULT filesystem. Setting
+    # spark.hadoop.fs.defaultFS does NOT help: the driver picks it up and the executors
+    # still resolve file:///, so Hudi is not using Spark's Hadoop conf on that path.
+    # It only runs during a ROLLBACK, which is why silver (nothing pending) never hit
+    # it and gold (a commit left inflight when credentials died) hit it every attempt.
+    # Recovered by deleting the markers for the two genuinely incomplete instants,
+    # after which gold held attempt 1 and its deltacommits started climbing again.
+    # Note Hudi keeps .requested/.inflight next to COMPLETED instants too, so counting
+    # those files overstates how wedged a table is: 18 markers, only 2 incomplete.
+    # The credential fix is what stops this recurring, since a table only wedges when
+    # a commit dies mid-flight. The rollback bug itself is still latent.
     "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
@@ -329,13 +353,21 @@ spec:
     # in place, it held attempt 1 for over ten minutes with zero, and kept committing
     # (20260901213555915.deltacommit). hudi-bronze-trades likewise went to attempt 1.
     #
-    # IT DOES NOT FIX GOLD. With the credential failure gone, hudi-gold-open-positions
-    # still crash-loops on a different error that only appears once the cache is off:
+    # Gold needed one more thing. Once the credential failure was gone it surfaced
     #   IllegalArgumentException: Wrong FS: s3a://.../gold/open_positions/symbol=JPM,
     #   expected: file:///
-    # so some Hudi path there resolves the default filesystem rather than the table's.
-    # Gold was already dead before this change, so it is no worse, but it needs its own
-    # fix and that one is still open.
+    # from RollbackHelperV1 -> HoodieHadoopStorage.listDirectEntries, which asks for
+    # FileSystem.get(conf) with no URI and so gets the DEFAULT filesystem. Setting
+    # spark.hadoop.fs.defaultFS does NOT help: the driver picks it up and the executors
+    # still resolve file:///, so Hudi is not using Spark's Hadoop conf on that path.
+    # It only runs during a ROLLBACK, which is why silver (nothing pending) never hit
+    # it and gold (a commit left inflight when credentials died) hit it every attempt.
+    # Recovered by deleting the markers for the two genuinely incomplete instants,
+    # after which gold held attempt 1 and its deltacommits started climbing again.
+    # Note Hudi keeps .requested/.inflight next to COMPLETED instants too, so counting
+    # those files overstates how wedged a table is: 18 markers, only 2 incomplete.
+    # The credential fix is what stops this recurring, since a table only wedges when
+    # a commit dies mid-flight. The rollback bug itself is still latent.
     "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
