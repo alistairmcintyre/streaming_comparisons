@@ -1,7 +1,7 @@
 -- Kafka (Debezium trades) → Fluss hot table silver.trades.
 -- Fluss is the hot tier; the PK table dedupes re-deliveries on trade_id and
--- serves sub-second reads. It is named `silver`, not `bronze`, because it IS the
--- cleaned deduped view — Fluss has no separate landing table to re-read, and that
+-- serves sub-second reads. It is named `silver`, not `bronze`, because it is the
+-- cleaned deduped view. Fluss has no separate landing table to re-read, and that
 -- one-hop-fewer topology is exactly what the benchmark is measuring (hops are
 -- recorded per engine in results.json). Run in the Fluss Flink SQL client (see README).
 
@@ -35,16 +35,23 @@ CREATE TEMPORARY TABLE kafka_trades_src (
 
 -- ── Latency emit sink ───────────────────────────────────────────────────────
 -- Feeds the `pipeline_latency` topic that docker/latency-exporter consumes, which
--- drives the live Grafana dashboard. It is NOT the headline number any more: the
+-- drives the live Grafana dashboard. It is not the headline number any more: the
 -- authoritative processing delay is (commit_ts - last_updated_at) read out of
 -- gold.open_positions, which is uniform across engines. See snapshot-results.sh.
 --
 -- CAVEAT for the live dashboard: Flink SQL has no post-commit hook, so this samples
 -- at PROCESSING time, whereas the Spark engines emit after their write returns
 -- (post-commit). Flink numbers here EXCLUDE the sink commit while Spark numbers
--- include it — compare within a family freely, across families with care.
+-- include it, compare within a family freely, across families with care.
 -- MOD 997 keeps this to ~0.1% of rows: emitting every record would add measurement
--- traffic to the very Kafka the pipelines read from.
+-- traffic to the very Kafka the pipelines read from. The Spark engines now restrict
+-- their observe() aggregates to the same predicate (jobs/_shared/latency.py,
+-- SAMPLE_TRADES / SAMPLE_ACCOUNTS), so all five families sample one population at one
+-- rate; keep the moduli here and there in step or that stops being true.
+-- What remains asymmetric is the EMIT, not the sample: Flink sends one message per
+-- sampled record, Spark sends the oldest and newest sampled event of each committed
+-- batch, because observe() is aggregate-only and a per-row emit costs a second pass
+-- over the batch. Every message carries `sample_kind` so the two are separable.
 CREATE TEMPORARY TABLE latency_sink (
     `value` STRING
 ) WITH (
@@ -55,7 +62,7 @@ CREATE TEMPORARY TABLE latency_sink (
 );
 
 -- One STATEMENT SET, so both sinks share a single Kafka source operator. As two
--- standalone INSERTs the sql-client submits two jobs, each reading the whole topic —
+-- standalone INSERTs the sql-client submits two jobs, each reading the whole topic, 
 -- doubling load on the very pipeline being measured.
 EXECUTE STATEMENT SET
 BEGIN
@@ -80,10 +87,10 @@ WHERE `after`.trade_id IS NOT NULL;
 INSERT INTO latency_sink
 SELECT
     '{"pipeline":"fluss-silver","executed_at_ms":'
-    -- UNIX_TIMESTAMP(string, format) and TO_TIMESTAMP(string, format) do NOT agree on
+    -- UNIX_TIMESTAMP(string, format) and TO_TIMESTAMP(string, format) do not agree on
     -- this pattern. 'SSSSSS' is a MILLISECOND field padded to six digits, not a
     -- microsecond fraction, so UNIX_TIMESTAMP reads .999999 as 999999 ms and pushes the
-    -- event up to ~1000s into the FUTURE — which is why this pipeline reported NEGATIVE
+    -- event up to ~1000s into the FUTURE, which is why this pipeline reported NEGATIVE
     -- latency for most of its events (min -998000 ms, against a predicted floor of
     -- -999999). TO_TIMESTAMP handles it correctly: the stored executed_at was verified
     -- against the Spark-parsed engines and agrees to the millisecond.
@@ -91,7 +98,8 @@ SELECT
     || CAST(UNIX_TIMESTAMP(DATE_FORMAT(
            TO_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z'''),
            'yyyy-MM-dd HH:mm:ss')) * 1000 AS STRING)
-    || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING) || '}'
+    || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING)
+    || ',"sample_kind":"flink_record"}'
 FROM kafka_trades_src
 WHERE `after`.trade_id IS NOT NULL AND MOD(`after`.trade_id, 997) = 0;
 

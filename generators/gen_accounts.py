@@ -1,8 +1,8 @@
 """
-Accounts dimension generator (SCD1) — trading account holders.
+Accounts dimension generator (SCD1), trading account holders.
 
 Seeds a fixed base of accounts, then trickles slow-changing-dimension updates
-(country / tier changes, occasional new account). Low rate — it's a dimension.
+(country / tier changes, occasional new account). Low rate, it's a dimension.
 Drives Debezium CDC on the `accounts` table.
 """
 import os

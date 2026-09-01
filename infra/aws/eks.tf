@@ -2,7 +2,7 @@
 # controller / the Karpenter controller. Karpenter then provisions the workload
 # nodes (spot→on-demand) pinned to one AZ (NodePool in slice 3).
 #
-# NOTE: pinned to EKS module v20 / VPC v5 arg names — run `terraform plan` and
+# NOTE: pinned to EKS module v20 / VPC v5 arg names, run `terraform plan` and
 # reconcile any arg drift before the first apply.
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
@@ -33,7 +33,7 @@ module "eks" {
     eks-pod-identity-agent = {}
   }
 
-  # System node group — 2 on-demand for control/system pods + Karpenter controller.
+  # System node group, 2 on-demand for control/system pods + Karpenter controller.
   # Pinned to one AZ (single-AZ node placement).
   eks_managed_node_groups = {
     system = {
@@ -47,10 +47,10 @@ module "eks" {
     }
   }
 
-  # The GitHub deploy role IS the cluster creator, so
+  # The GitHub deploy role is the cluster creator, so
   # enable_cluster_creator_admin_permissions=true already grants it admin access
   # (and kubectl works in the workflow). An explicit access_entries block for the
-  # same principal caused a 409 ResourceInUseException — don't double-grant.
+  # same principal caused a 409 ResourceInUseException, don't double-grant.
 
   # Nodes must be discoverable + drainable by Karpenter.
   node_security_group_tags = { "karpenter.sh/discovery" = local.cluster_name }

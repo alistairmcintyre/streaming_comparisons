@@ -1,5 +1,5 @@
 # Table maintenance. COMPACTION runs IN-pipeline for Delta (Optimized Writes + Auto
-# Compaction via table props / session confs) and for Paimon (self-compacts) — no job.
+# Compaction via table props / session confs) and for Paimon (self-compacts), no job.
 # Only the pieces that can't run in-stream are scheduled here:
 #   Delta   → VACUUM (GC; no auto-vacuum in OSS)
 #   Iceberg → rewrite_data_files + expire_snapshots (no in-writer auto-compaction in
@@ -19,11 +19,23 @@ spec:
     sparkVersion: "3.5.1"
     restartPolicy: { type: Never }
     sparkConf:
+      # Keep the executor POD after it dies. Spark deletes it by default, so the one
+      # place that records Reason=OOMKilled / Exit Code 137 is gone before
+      # collect-diagnostics.sh runs -- which is exactly why ExecutorDeadException and
+      # MetadataFetchFailedException came back from the last run unexplained.
+      "spark.kubernetes.executor.deleteOnTermination": "false"
       "spark.sql.catalog.rest": "org.apache.iceberg.spark.SparkCatalog"
       "spark.sql.catalog.rest.catalog-impl": "org.apache.iceberg.aws.glue.GlueCatalog"
       "spark.sql.catalog.rest.warehouse": "s3://${WAREHOUSE_BUCKET}/iceberg"
       "spark.sql.catalog.rest.io-impl": "org.apache.iceberg.aws.s3.S3FileIO"
       "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+      # IRSA reaches S3 through the SDK v2 default chain, and s3a does not pick that up
+      # on its own, every streaming manifest sets this line, and this file was the only
+      # one that did not. That is the delta-vacuum failure verbatim:
+      #   NoAuthWithAWSException ... delta/gold/_delta_log
+      # The maintenance jobs run under the same `lake` service account as the pipelines,
+      # so it was never a permissions gap, just a provider the client never consulted.
+      "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
     volumes:
       - { name: jobs, configMap: { name: spark-iceberg-jobs } }
       - { name: shared, configMap: { name: spark-shared } }
@@ -58,8 +70,20 @@ spec:
     sparkVersion: "3.5.1"
     restartPolicy: { type: Never }
     sparkConf:
+      # Keep the executor POD after it dies. Spark deletes it by default, so the one
+      # place that records Reason=OOMKilled / Exit Code 137 is gone before
+      # collect-diagnostics.sh runs -- which is exactly why ExecutorDeadException and
+      # MetadataFetchFailedException came back from the last run unexplained.
+      "spark.kubernetes.executor.deleteOnTermination": "false"
       "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension"
       "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+      # IRSA reaches S3 through the SDK v2 default chain, and s3a does not pick that up
+      # on its own, every streaming manifest sets this line, and this file was the only
+      # one that did not. That is the delta-vacuum failure verbatim:
+      #   NoAuthWithAWSException ... delta/gold/_delta_log
+      # The maintenance jobs run under the same `lake` service account as the pipelines,
+      # so it was never a permissions gap, just a provider the client never consulted.
+      "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
       "spark.delta.logStore.s3a.impl": "io.delta.storage.S3DynamoDBLogStore"
       "spark.io.delta.storage.S3DynamoDBLogStore.ddb.tableName": "${DELTA_LOGSTORE_TABLE}"
       "spark.io.delta.storage.S3DynamoDBLogStore.ddb.region": "${AWS_REGION}"

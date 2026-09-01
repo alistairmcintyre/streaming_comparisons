@@ -27,7 +27,7 @@ PAYLOAD = StructType([
     StructField("price",       StringType(),  True),   # exact decimal as string
     StructField("executed_at", StringType(),  True),
 ])
-# lsn is Postgres's Log Sequence Number from the Debezium envelope — a STRICT TOTAL
+# lsn is Postgres's Log Sequence Number from the Debezium envelope, a STRICT TOTAL
 # ORDER across the whole replication stream. kafka_offset only orders within a
 # partition, so it is a valid tiebreaker solely because Debezium keys by the table's
 # primary key and every version of a trade therefore lands in the same partition; if

@@ -3,10 +3,11 @@ variable "aws_region" {
   default = "eu-west-1"
 }
 variable "aws_account_id" {
-  type    = string
-  default = "167217327348"
+  # No default: the account is supplied per deployment, from the
+  # AWS_ACCOUNT_ID repository variable in CI (TF_VAR_aws_account_id).
+  type = string
 }
-# REQUIRED — scopes the OIDC trust, e.g. "alistairmc/streaming_comparisons".
+# REQUIRED, scopes the OIDC trust, e.g. "alistairmc/streaming_comparisons".
 variable "github_repo" {
   type = string
 }

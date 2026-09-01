@@ -1,5 +1,5 @@
 # OSS Kafka via Strimzi (KRaft, no ZooKeeper). In-cluster PLAINTEXT :9092 →
-# KAFKA_AUTH=none, bootstrap trades-kafka-bootstrap.kafka.svc.cluster.local:9092. 5–10 MB/s at
+# KAFKA_AUTH=none, bootstrap trades-kafka-bootstrap.kafka.svc.cluster.local:9092. 5, 10 MB/s at
 # 10k msg/s is trivial; single-AZ so no cross-AZ replication cost. Prometheus
 # metrics exposed for the live dashboard.
 apiVersion: kafka.strimzi.io/v1
@@ -46,7 +46,7 @@ spec:
       transaction.state.log.replication.factor: 3
       transaction.state.log.min.isr: 2
       # OFF. With auto-create on, a consumer subscribing to a misspelled topic
-      # silently creates an empty one and then reports zero lag forever — the exact
+      # silently creates an empty one and then reports zero lag forever, the exact
       # class of silent failure this project keeps getting bitten by. Every topic is
       # declared in 31-kafka-topics.yaml; Connect still creates its own internal and
       # routed topics explicitly via AdminClient, which auto-create does not gate.
@@ -60,7 +60,7 @@ spec:
     topicOperator: {}
     userOperator: {}
   # Consumer-group lag as a Prometheus metric. Without this there is no lag signal at
-  # all outside `kafka-consumer-groups.sh` run by hand — so a pipeline falling
+  # all outside `kafka-consumer-groups.sh` run by hand, so a pipeline falling
   # permanently behind looks identical to a healthy one on every dashboard. Lag is the
   # single most important streaming health metric and it was not being collected.
   # Exposes kafka_consumergroup_lag + kafka_topic_partition_current_offset on :9404.

@@ -2,7 +2,7 @@
 Spark Structured Streaming: Hudi bronze.trades → Hudi silver.trades
 
 Deduplicates on trade_id (upsert). Reads the bronze table incrementally rather than
-rescanning it — see STREAMING_DESIGN_PRINCIPLES.md.
+rescanning it, see README.md (Design principles).
 """
 import os
 from pyspark.sql import SparkSession
@@ -20,13 +20,13 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
 
     # Hudi streaming source reads the commit timeline incrementally.
-    # NO per-batch admission control. Delta caps its stream with maxFilesPerTrigger
+    # No per-batch admission control. Delta caps its stream with maxFilesPerTrigger
     # and Iceberg with streaming-max-files-per-micro-batch; Hudi 1.2.0 exposes no
-    # equivalent — there is no ReadLimit machinery and no hoodie.* option for it
+    # equivalent, there is no ReadLimit machinery and no hoodie.* option for it
     # (checked against hudi-spark4.0-bundle_2.13-1.2.0.jar). So after a stall this
     # source pulls the whole backlog in one micro-batch.
     # This is a real capability difference, not an oversight, and it makes Hudi's
-    # batch sizes incomparable to the other engines' under recovery — recorded in
+    # batch sizes incomparable to the other engines' under recovery, recorded in
     # results.json rather than papered over. The KEEP_LATEST_BY_HOURS cleaner
     # retention in hudi_tables.py is what stops the worst case (losing the start
     # instant and silently falling back to a full-table scan).
@@ -34,8 +34,8 @@ def main():
            .load(BRONZE_TRADES)
            .withColumn("ingest_ts", current_timestamp())
            .filter(col("trade_id").isNotNull()))
-    # conform(), not a bare select. Hudi has NO DDL — the table's schema is whatever frame
-    # is written — so both the field ORDER and the TYPES have to be pinned here or they
+    # conform(), not a bare select. Hudi has NO DDL, the table's schema is whatever frame
+    # is written, so both the field ORDER and the TYPES have to be pinned here or they
     # drift silently, as gold's net_notional did (decimal(33,4) vs the declared (38,4)).
     # This projection previously emitted source_lsn and ingest_ts the other way round.
     # executed_date is Hudi's partition FIELD: Hudi partitions by a column, so it must be
@@ -43,7 +43,7 @@ def main():
     src = conform(src, SILVER_TRADES, extra=["executed_date"])
 
     # LATENCY EMIT for the bronze->silver hop. Until now only bronze and gold emitted, so
-    # the dashboard could show end-to-end and gold but NOT where time goes in the middle —
+    # the dashboard could show end-to-end and gold but not where time goes in the middle, 
     # on four of five engines. Silver is where the dedupe and the SCD2 work happen, so an
     # unmeasured silver hop is the least useful one to be missing.
     attach_latency_listener(spark, "hudi-silver")

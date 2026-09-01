@@ -1,8 +1,8 @@
 """SCD2 against a REAL Hudi table, across micro-batches.
 
-Same scenario as the Delta/Iceberg tests, but Hudi has no MERGE here — the close-out
+Same scenario as the Delta/Iceberg tests, but Hudi has no MERGE here, the close-out
 rides entirely on the composite record key (account_id, source_lsn) plus the precombine
-field. That is a genuinely different mechanism, and the close row carries the SAME key
+field. That is a genuinely different mechanism, and the close row carries the same key
 as the row it is closing, so whether it lands at all depends on Hudi's merge semantics.
 
 Glue meta-sync is forced off: silver_accounts_opts() enables AwsGlueCatalogSyncTool,
@@ -57,7 +57,7 @@ run_batch([(1, "acme", "GB", "B", D(5), D(5), D(5), 200, "u")])
 run_batch([(1, "acme", "GB", "B", D(5), D(5), D(5), 200, "u")])   # re-delivery
 
 
-# batch 4 — TWO versions of one account in a SINGLE micro-batch. The earlier one is
+# batch 4. Two versions of one account in a SINGLE micro-batch. The earlier one is
 # already historical on arrival: it must never be written as current, and the pair
 # must not stage the same key twice (a MERGE tolerates that; a Hudi upsert does not).
 run_batch([(3, "gamma", "IE", "P", D(2), D(2), D(2), 10, "c"),

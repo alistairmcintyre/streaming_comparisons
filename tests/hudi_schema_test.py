@@ -1,16 +1,16 @@
-"""Hudi's tables must MATCH the canon — measured on real tables, not asserted.
+"""Hudi's tables must MATCH the canon, measured on real tables, not asserted.
 
 Hudi is the one engine with no DDL: a Hudi table's schema is whatever DataFrame is written
 to it. Every other engine DECLARES its schema and tests/schema_parity_test.py can read the
 declaration; here the only truth is the table on disk.
 
-That distinction has already cost one real bug — gold's net_notional inferred to
+That distinction has already cost one real bug, gold's net_notional inferred to
 decimal(33,4) against the decimal(38,4) the other four declare, with every value-based
 check passing throughout. gold is now covered by tests/gold_fold_test.py, which measures
 the table it builds. This covers the other three: bronze.trades, silver.trades and
-silver.accounts, each written through the SAME conform() call the job uses.
+silver.accounts, each written through the same conform() call the job uses.
 
-Glue meta-sync is forced off — it needs a live catalog and has nothing to do with schema.
+Glue meta-sync is forced off, it needs a live catalog and has nothing to do with schema.
 """
 import os, sys, datetime as dt
 from decimal import Decimal
@@ -39,7 +39,7 @@ NO_SYNC = {"hoodie.datasource.meta.sync.enable": "false",
 T = dt.datetime(2026, 1, 5)
 P = Decimal("10.0000")
 
-# One row per table, in the WIDEST plausible source shape — conform() is what narrows and
+# One row per table, in the WIDEST plausible source shape, conform() is what narrows and
 # casts it, exactly as in the job.
 raw_trade = StructType([
     StructField("op", StringType()), StructField("trade_id", LongType()),

@@ -1,15 +1,15 @@
 -- Kafka accounts (Debezium) → paimon silver.accounts as SCD2, with an ATOMIC CLOSE-OUT.
 --
 -- Every version is retained and its validity is MATERIALISED: when version N+1 arrives
--- this job writes TWO rows — the new version (effective_to NULL, is_current TRUE) and
+-- this job writes two rows, the new version (effective_to NULL, is_current TRUE) and
 -- version N again with effective_to set and is_current FALSE. The PK is
 -- (account_id, source_lsn), so rewriting version N merges onto the existing row rather
 -- than duplicating it. Both INSERTs share one STATEMENT SET: one job, one source read.
 --
--- ORDER BY PROCTIME(), not event time, and that choice is load-bearing. A rowtime OVER
+-- ORDER BY PROCTIME(), not event time, and the choice matters. A rowtime OVER
 -- window cannot emit a row until the WATERMARK passes it, and the watermark only advances
 -- as further events arrive. On a low-volume dimension that means a status change on day 1
--- would not reach silver until the NEXT change arrived — days later. Processing time
+-- would not reach silver until the NEXT change arrived, days later. Processing time
 -- emits immediately and drops nothing.
 --
 -- The correctness condition therefore shifts from "arrives within the watermark" to
@@ -19,7 +19,7 @@
 -- instead of silently writing a validity range that runs backwards.
 --
 -- DELETES are FILTERED at the source, on all five engines. This table used to set
--- rowkind.field='row_kind' so an op='d' became a PHYSICAL DELETE — erasing that account's
+-- rowkind.field='row_kind' so an op='d' became a PHYSICAL DELETE, erasing that account's
 -- whole SCD2 history, the opposite of what the comment here claimed, and leaving trades
 -- that happened while the account was open with nothing to join to. Meanwhile Hudi and
 -- Fluss filtered deletes and Delta/Iceberg wrote a version with NULL attributes: four
@@ -82,7 +82,7 @@ SELECT
     LAG(`source`.lsn)    OVER w                                         AS prev_lsn
 FROM kafka_accounts_src
 -- Deletes are FILTERED, not written. This table used to set rowkind.field so an
--- op='d' became a physical delete, erasing that account's whole SCD2 history —
+-- op='d' became a physical delete, erasing that account's whole SCD2 history, 
 -- while Hudi and Fluss filtered deletes and Delta/Iceberg wrote a NULL-attribute
 -- version. All five now agree. (Closing the current version on a delete would be
 -- the richer model; the generator never deletes accounts, so it is not built.)
@@ -91,7 +91,7 @@ WINDOW w AS (PARTITION BY COALESCE(`after`.account_id, `before`.account_id) ORDE
 
 -- ONE INSERT, not a statement set of two.
 --
--- Both halves of the close-out target the SAME table, and a statement set makes that TWO
+-- Both halves of the close-out target the same table, and a statement set makes that two
 -- SINKS with TWO COMMITTERS. On Paimon each committer also fires IcebergCommitCallback to
 -- maintain the Iceberg-compat metadata, and they race for the same version file on S3,
 -- which has no atomic rename:
@@ -101,14 +101,14 @@ WINDOW w AS (PARTITION BY COALESCE(`after`.account_id, `before`.account_id) ORDE
 --
 -- The job then restarts forever (seen live: silver.accounts RESTARTING while the other
 -- three Paimon jobs ran clean). UNION ALL gives one sink, one committer, one commit per
--- checkpoint — and it matches what the Spark engines already do: jobs/_shared/scd2.py
--- stages the new row and the closed predecessor into ONE frame and writes it once.
+-- checkpoint, and it matches what the Spark engines already do: jobs/_shared/scd2.py
+-- stages the new row and the closed predecessor into one frame and writes it once.
 INSERT INTO paimon.silver.accounts
 SELECT account_id, name, country, tier, source_updated_at, event_ts,
        effective_from,
        -- An OUT-OF-ORDER arrival is not current: it is a late historical version, valid
        -- until the row that already superseded it. Without this it would be written with
-       -- is_current TRUE and the account would have TWO current rows.
+       -- is_current TRUE and the account would have two current rows.
        CASE WHEN prev_lsn IS NULL OR source_lsn > prev_lsn
             THEN CAST(NULL AS TIMESTAMP(6)) ELSE prev_effective_from END,
        (prev_lsn IS NULL OR source_lsn > prev_lsn),
@@ -119,10 +119,10 @@ FROM acct_changes
 -- A re-delivery (identical lsn to the record before it) must be a NO-OP. Without this
 -- guard it is emitted with is_current = FALSE and, because the target is a PK table on
 -- (account_id, source_lsn), that write MERGES onto the live row and leaves the account
--- with ZERO current versions.
+-- with zero current versions.
 WHERE prev_lsn IS NULL OR source_lsn <> prev_lsn
 UNION ALL
--- The predecessor, re-written with effective_to set. EVERY attribute comes from the
+-- The predecessor, re-written with effective_to set. Every attribute comes from the
 -- version being closed (prev_*): the merge engine is deduplicate, so this write replaces
 -- the whole row, and taking the successor's values here would corrupt the history the
 -- close exists to preserve.

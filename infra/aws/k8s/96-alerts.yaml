@@ -1,5 +1,5 @@
 # Alerting rules. kube-prometheus-stack ships Prometheus + Alertmanager and this
-# project had ZERO rules — the recurring lesson in DEPLOY_LOG is "RUNNING is not
+# project had zero rules, the recurring lesson has been "RUNNING is not
 # working", and nothing was watching for the difference.
 #
 # Every rule below is written against a metric that is actually collected:
@@ -11,7 +11,7 @@
 #   kube_*, kubelet_volume_stats_*  <- kube-state-metrics / kubelet, always present
 #
 # Writing a rule against a metric that does not exist produces a rule that never fires
-# and is indistinguishable from a healthy system — the exact failure mode these are
+# and is indistinguishable from a healthy system, the exact failure mode these are
 # meant to catch, so the reporter and exporter gaps were fixed first.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -24,7 +24,7 @@ spec:
     - name: streaming.flow
       interval: 30s
       rules:
-        # THE headline health signal. Growing lag means a pipeline is permanently
+        # The headline health signal. Growing lag means a pipeline is permanently
         # behind, which no other dashboard panel distinguishes from healthy.
         - alert: ConsumerGroupLagGrowing
           expr: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 100000
@@ -41,7 +41,7 @@ spec:
           labels: { severity: critical }
           annotations:
             summary: "{{ $labels.consumergroup }} has lag but is not consuming"
-            description: "Offsets have not advanced in 10m while lag is non-zero — the consumer is stuck, not merely slow."
+            description: "Offsets have not advanced in 10m while lag is non-zero, the consumer is stuck, not merely slow."
 
         # A pipeline that stops emitting looks exactly like a pipeline with no delay.
         # PipelineStoppedEmitting below CANNOT see a pipeline that never emitted at all.
@@ -61,7 +61,7 @@ spec:
           labels: { severity: critical }
           annotations:
             summary: "only {{ $value }} of 14 pipelines are reporting latency"
-            description: "A pipeline that never emitted has no series at all, so PipelineStoppedEmitting cannot see it. Expected 14 = every engine x every hop it has: delta/iceberg/hudi/paimon bronze+silver+gold (12), fluss silver+gold (2 — Fluss has no bronze hop by design, its PK table IS the landing table). The Flink golds emit through upsert-kafka, the only Kafka sink that accepts the updating stream a GROUP BY produces. The authoritative gold-hop number is still (commit_ts - last_updated_at) from the table via snapshot-results.sh; this dashboard is the live view."
+            description: "A pipeline that never emitted has no series at all, so PipelineStoppedEmitting cannot see it. Expected 14 = every engine x every hop it has: delta/iceberg/hudi/paimon bronze+silver+gold (12), fluss silver+gold (2. Fluss has no bronze hop by design, its PK table is the landing table). The Flink golds emit through upsert-kafka, the only Kafka sink that accepts the updating stream a GROUP BY produces. The authoritative gold-hop number is still (commit_ts - last_updated_at) from the table via snapshot-results.sh; this dashboard is the live view."
 
         - alert: PipelineStoppedEmitting
           expr: sum by (pipeline) (rate(pipeline_latency_events_total[5m])) == 0
@@ -86,7 +86,7 @@ spec:
           labels: { severity: critical }
           annotations:
             summary: "debezium-dlq has {{ $value }} records"
-            description: "Records are being rejected. See infra/aws/ERROR_HANDLING.md; the run's counts are not trustworthy until this is explained."
+            description: "Records are being rejected. See README.md; the run's counts are not trustworthy until this is explained."
 
     - name: streaming.jobs
       interval: 30s
@@ -115,7 +115,7 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: "Flink {{ $labels.job_name }} checkpoint took {{ $value }}ms"
-            description: "Approaching the 60s timeout. Usually the first symptom of unbounded operator state — see the MIN/MAX note in the gold SQL."
+            description: "Approaching the 60s timeout. Usually the first symptom of unbounded operator state, see the MIN/MAX note in the gold SQL."
 
         - alert: FlinkJobRestarting
           expr: increase(flink_jobmanager_job_numRestarts[30m]) > 3

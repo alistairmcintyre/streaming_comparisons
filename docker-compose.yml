@@ -539,25 +539,3 @@ services:
       - streaming-net
 
   # ─── Streamlit UI ─────────────────────────────────────────────────────────
-
-  streamlit-ui:
-    build:
-      context: ./docker/streamlit
-      dockerfile: Dockerfile
-    container_name: streamlit-ui
-    depends_on:
-      iceberg-rest:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    environment:
-      <<: *iceberg-catalog-env
-      KAFKA_BROKERS: kafka:9092
-    ports:
-      - "${STREAMLIT_PORT:-8501}:8501"
-    volumes:
-      - ./ui:/app/ui
-    entrypoint: ["streamlit", "run", "/app/ui/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
-    networks:
-      - streaming-net
-    restart: unless-stopped

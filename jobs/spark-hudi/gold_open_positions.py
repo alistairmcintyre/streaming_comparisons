@@ -2,15 +2,15 @@
 Spark Structured Streaming: Hudi silver.trades → Hudi gold.open_positions
 
 Folds signed fills into a net book per (account_id, symbol). Work is proportional to
-the CHANGES in each micro-batch, never a rescan of silver — the project's first rule
-(STREAMING_DESIGN_PRINCIPLES.md).
+the CHANGES in each micro-batch, never a rescan of silver, the project's first rule
+(README.md (Design principles)).
 
 Hudi has no arithmetic MERGE like Delta/Iceberg (`SET x = x + s.dx`), so the fold is
-done explicitly: aggregate the batch, read back ONLY the affected keys, add, upsert.
+done explicitly: aggregate the batch, read back only the affected keys, add, upsert.
 Partitioning gold by `symbol` keeps that read-back a partition prune rather than a
 full scan.
 
-Enrichment is NOT denormalised into gold. country/tier are account attributes with no
+Enrichment is not denormalised into gold. country/tier are account attributes with no
 defensible temporal semantic on a current-state position row, so they come from a read-
 time LEFT JOIN to silver.accounts instead:
 
@@ -22,16 +22,17 @@ LEFT, always: trades and accounts are independent CDC streams, so a fill can lan
 its account row. An inner join would silently drop that position from the book.
 
 At-least-once, like the Iceberg gold: Hudi has no idempotent-write primitive, so a
-replayed micro-batch double-counts and the drift is permanent. (Delta's gold IS
-exactly-once — it stamps each MERGE with txnAppId/txnVersion.) The drift is DETECTED,
+replayed micro-batch double-counts and the drift is permanent. (Delta's gold is
+exactly-once, it stamps each MERGE with txnAppId/txnVersion.) The drift is DETECTED,
 not repaired: after the load is drained the snapshot checks
 sum(gold.trade_count) == count(silver.trades) per engine and publishes the difference
 in invariants.csv. Repairing it would add write amplification to the engine that
-drifted and contaminate the comparison — see that script's header.
+drifted and contaminate the comparison, see that script's header.
 """
 import os
 from pyspark.sql import SparkSession
-from latency import observe_event_time, attach_latency_listener
+from latency import (SAMPLE_ACCOUNTS, observe_event_time,
+                     attach_latency_listener)
 from pyspark.sql.functions import (
     col, when, lit, sum as _sum, count as _count, coalesce, current_timestamp,
     min as _min, max as _max, least, greatest,
@@ -62,13 +63,13 @@ def fold_to_book(batch_df, batch_id):
     # Cached: this job takes three actions on `deltas` (the emptiness probe, the
     # affected-symbol collect, and the write). Uncached, each one re-scans the batch,
     # so Hudi would read its silver three times per micro-batch where Delta/Iceberg
-    # read once — a measurement artefact, not a Hudi property.
+    # read once, a measurement artefact, not a Hudi property.
     deltas = deltas.cache()
     try:
         if not deltas.take(1):
             return
 
-        # Read back ONLY the symbols this batch touched (partition prune, not a scan).
+        # Read back only the symbols this batch touched (partition prune, not a scan).
         syms = [r["symbol"] for r in deltas.select("symbol").distinct().collect()]
         try:
             cur = (spark.read.format("hudi").load(GOLD_POSITIONS)
@@ -95,7 +96,7 @@ def fold_to_book(batch_df, batch_id):
                   .withColumn("last_updated_at", greatest(col("last_updated_at"), col("dmax"))))
 
         # No dimension read here, deliberately. This previously did a FULL batch read
-        # of silver.accounts on EVERY micro-batch and broadcast it — a rescan of a
+        # of silver.accounts on every micro-batch and broadcast it, a rescan of a
         # silver table, O(dimension) not O(batch), to stamp a value with no defensible
         # temporal meaning. country/tier now come from a LEFT JOIN to silver.accounts
         # at query time. See the module docstring.
@@ -104,13 +105,13 @@ def fold_to_book(batch_df, batch_id):
         # LONG/SHORT/FLAT, which made `status` incomparable across engines.
         # conform(), not a bare select: Hudi has NO DDL, so the table's schema is whatever
         # DataFrame is written to it. Left to infer, net_notional came out decimal(33,4)
-        # — what SUM(int * decimal(12,4)) widens to — against the decimal(38,4) the other
+    # (what SUM(int * decimal(12,4)) widens to) against the decimal(38,4) the other
         # four engines DECLARE. Nothing failed; one engine of five just had a different
         # type for the column, invisible to any check that only compares values.
         out = (j.withColumn("status", when(col("net_quantity") != 0, lit("OPEN")).otherwise(lit("CLOSED")))
                 .withColumn("commit_ts", current_timestamp()))
         # PARTITION COLUMN LAST. Hudi partitions gold by `symbol`, Glue then registers it
-        # as a partition KEY and drops it from the column list — but Hudi still writes it
+        # as a partition KEY and drops it from the column list, but Hudi still writes it
         # into the parquet. With `symbol` in its canonical 2nd position every later column
         # is read one place out and Athena dies with
         #   HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
@@ -128,13 +129,13 @@ def main():
     spark = SparkSession.builder.appName("gold-open-positions-hudi").getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
 
-    # NO per-batch admission control. Delta caps its stream with maxFilesPerTrigger
+    # No per-batch admission control. Delta caps its stream with maxFilesPerTrigger
     # and Iceberg with streaming-max-files-per-micro-batch; Hudi 1.2.0 exposes no
-    # equivalent — there is no ReadLimit machinery and no hoodie.* option for it
+    # equivalent, there is no ReadLimit machinery and no hoodie.* option for it
     # (checked against hudi-spark4.0-bundle_2.13-1.2.0.jar). So after a stall this
     # source pulls the whole backlog in one micro-batch.
     # This is a real capability difference, not an oversight, and it makes Hudi's
-    # batch sizes incomparable to the other engines' under recovery — recorded in
+    # batch sizes incomparable to the other engines' under recovery, recorded in
     # results.json rather than papered over. The KEEP_LATEST_BY_HOURS cleaner
     # retention in hudi_tables.py is what stops the worst case (losing the start
     # instant and silently falling back to a full-table scan).
@@ -142,7 +143,7 @@ def main():
               .select("account_id", "symbol", "side", "quantity", "price", "executed_at"))
 
     attach_latency_listener(spark, "hudi-gold")
-    trades = observe_event_time(trades)
+    trades = observe_event_time(trades, sample=SAMPLE_ACCOUNTS)
 
     (trades.writeStream.foreachBatch(fold_to_book)
         .option("checkpointLocation", CHECKPOINT_PATH)

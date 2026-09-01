@@ -1,4 +1,4 @@
-# DynamoDB table for the Delta S3DynamoDBLogStore — serializes concurrent Delta
+# DynamoDB table for the Delta S3DynamoDBLogStore, serializes concurrent Delta
 # commits on S3 (streaming writer + OPTIMIZE/VACUUM maintenance). Per-run, on-demand
 # billing, deleted at teardown.
 resource "aws_dynamodb_table" "delta_logstore" {

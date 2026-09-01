@@ -1,7 +1,7 @@
 # EFS for Fluss remote.data.dir (ReadWriteMany, shared across coordinator/tablet/flink).
 #
-# WHY not S3: Fluss vends remote-log access via STS GetSessionToken, which AWS does
-# NOT allow with the ASSUMED-ROLE (temporary) credentials that IRSA hands pods — so
+# Why not S3: Fluss vends remote-log access via STS GetSessionToken, which AWS does
+# Not allow with the ASSUMED-ROLE (temporary) credentials that IRSA hands pods, so
 # S3 remote.data.dir fails under IRSA the same way it failed on MinIO. A shared
 # filesystem needs no token. The Paimon DATALAKE tier still lives on S3 (its FileIO
 # uses the IRSA creds directly; no GetSessionToken).
@@ -27,7 +27,7 @@ resource "aws_efs_file_system" "fluss" {
   encrypted      = true
 }
 
-# One mount target in the (single) node AZ subnet is enough — nodes are pinned there.
+# One mount target in the (single) node AZ subnet is enough, nodes are pinned there.
 resource "aws_efs_mount_target" "fluss" {
   file_system_id  = aws_efs_file_system.fluss.id
   subnet_id       = local.node_subnet_id

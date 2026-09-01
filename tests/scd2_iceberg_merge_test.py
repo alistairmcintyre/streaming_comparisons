@@ -1,8 +1,8 @@
 """SCD2 against a REAL Iceberg table, across micro-batches.
 
-Same scenario as the Delta test. Iceberg's MERGE is a different code path — different
+Same scenario as the Delta test. Iceberg's MERGE is a different code path, different
 planner, different row-level-operation machinery (this table is MOR), and it needs a
-catalog rather than a path — so "it works on Delta" proves nothing here.
+catalog rather than a path, so "it works on Delta" proves nothing here.
 """
 import sys, datetime as dt
 sys.path.insert(0, "jobs/_shared")
@@ -63,7 +63,7 @@ run_batch([(1, "acme", "GB", "B", D(5), D(5), D(5), 200, "u", D(5))])
 run_batch([(1, "acme", "GB", "B", D(5), D(5), D(5), 200, "u", D(5))])   # re-delivery
 
 
-# batch 4 — TWO versions of one account in a SINGLE micro-batch. The earlier one is
+# batch 4. Two versions of one account in a SINGLE micro-batch. The earlier one is
 # already historical on arrival: it must never be written as current, and the pair
 # must not stage the same key twice (a MERGE tolerates that; a Hudi upsert does not).
 run_batch([(3, "gamma", "IE", "P", D(2), D(2), D(2), 10, "c", D(2)),

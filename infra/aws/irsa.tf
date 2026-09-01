@@ -1,5 +1,5 @@
 # Workload IRSA role: pods (Fluss, Flink, Spark, generator) that touch S3/Glue/Athena
-# assume this via a service-account annotation — no static keys. The Fluss server
+# assume this via a service-account annotation, no static keys. The Fluss server
 # entrypoint already drops blank S3 keys → default (IAM) credential chain, so IRSA
 # "just works" once the SA is annotated with this role ARN.
 data "aws_iam_policy_document" "workload_trust" {

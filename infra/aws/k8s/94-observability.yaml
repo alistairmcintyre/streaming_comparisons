@@ -1,6 +1,6 @@
 # Observability: the latency-exporter (Kafka pipeline_latency → Prometheus histogram
 # + S3 Parquet) + scrape configs. kube-prometheus-stack (Prometheus operator + Grafana)
-# is installed by Helm (see README). Grafana reads Prometheus — never Kafka directly.
+# is installed by Helm (see README). Grafana reads Prometheus, never Kafka directly.
 # NOTE: the pipeline_latency topic is declared in 31-kafka-topics.yaml, with
 # retention, alongside every other topic. Declaring it twice makes the Strimzi
 # topic operator reconcile two resources onto one topic and flap between them.
@@ -13,7 +13,7 @@ spec:
   template:
     metadata: { labels: { app: latency-exporter } }
     spec:
-      serviceAccountName: lake        # IRSA — S3 Parquet flush
+      serviceAccountName: lake        # IRSA. S3 Parquet flush
       containers:
         - name: exporter
           image: "${ECR_REGISTRY}/streaming-comparison/latency-exporter:latest"
@@ -55,8 +55,8 @@ metadata:
   labels: { release: kube-prometheus-stack }
 spec:
   selector: { matchLabels: { type: flink-native-kubernetes } }
-  # `port: metrics` — the name declared by the podTemplate in 70-/92-flink-*.yaml.
-  # This previously used `targetPort: 9249`, which produced NO targets at all because
+  # `port: metrics`, the name declared by the podTemplate in 70-/92-flink-*.yaml.
+  # This previously used `targetPort: 9249`, which produced no targets at all because
   # nothing declared that port on the pod. Prometheus showed 78 healthy targets and
   # not one of them was Flink, so every flink_* alert was inert while looking fine.
   podMetricsEndpoints: [{ port: metrics, interval: 5s }]
@@ -72,8 +72,8 @@ metadata:
 spec:
   selector:
     matchLabels:
-      # The exporter pod carries strimzi.io/kind=Kafka (the CR kind that OWNS it), NOT
-      # KafkaExporter — verified live: strimzi.io/component-type=kafka-exporter is the
+      # The exporter pod carries strimzi.io/kind=Kafka (the CR kind that OWNS it), not
+      # KafkaExporter, verified live: strimzi.io/component-type=kafka-exporter is the
       # label that identifies it. The wrong selector matched nothing, so
       # kafka_consumergroup_lag had zero series and every lag alert was inert while
       # looking perfectly healthy.

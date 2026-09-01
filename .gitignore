@@ -152,7 +152,11 @@ activemq-data/
 .envrc
 .venv
 env/
+!env/local.env
+!env/aws.example.env
 venv/
+!env/local.env
+!env/aws.example.env
 ENV/
 env.bak/
 venv.bak/
@@ -224,10 +228,14 @@ __marimo__/
 docker/fluss/dist/
 docker/fluss-flink/jars/
 
-# Terraform (infra/aws) — commit .terraform.lock.hcl, ignore state + working dir
+# Terraform (infra/aws), commit .terraform.lock.hcl, ignore state + working dir
 **/.terraform/
 *.tfstate
 *.tfstate.*
 .terraform.tfstate.lock.info
 crash.log
 .fluss-m2-cache/
+
+# local run artefacts
+spark-warehouse/
+.claude/

@@ -1,7 +1,7 @@
 """Every S3 prefix the manifests write to must be WIPED or deliberately PRESERVED.
 
 clean_lake is what makes a run a fresh benchmark. It was written as a hand-maintained
-list of prefixes, so a manifest that starts writing somewhere new is simply not covered —
+list of prefixes, so a manifest that starts writing somewhere new is simply not covered, 
 silently. That happened with _flink_ha and _flink_savepoints: both were added with the
 Flink HA config and neither was ever wiped, so their objects accrued across every run.
 
@@ -12,7 +12,7 @@ import pathlib, re, sys
 
 # Prefixes that must SURVIVE a clean. Each needs a reason.
 PRESERVE = {
-    "tfstate":    "terraform state — destroying it orphans the whole run",
+    "tfstate":    "terraform state, destroying it orphans the whole run",
     "teardown":   "the kill-switch bundle CodeBuild destroys from",
     "benchmarks": "results archive; the point is that it outlives the cluster",
 }
@@ -36,7 +36,7 @@ for prefix in sorted(used):
     if prefix in wiped:
         print(f"  PASS  {prefix:20} wiped by clean_lake")
     elif prefix in PRESERVE:
-        print(f"  PASS  {prefix:20} preserved — {PRESERVE[prefix]}")
+        print(f"  PASS  {prefix:20} preserved, {PRESERVE[prefix]}")
     else:
         print(f"  FAIL  {prefix:20} written by a manifest but neither wiped nor preserved")
         fails.append(prefix)

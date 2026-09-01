@@ -2,8 +2,8 @@
 Shared Hudi write options for the trades pipelines.
 
 TABLE TYPE: MERGE_ON_READ everywhere, to match how the other engines are configured
-— Iceberg gold uses write.merge.mode=merge-on-read, Delta uses deletion vectors, and
-Paimon is LSM (merge-on-read by nature). Hudi's own default is COPY_ON_WRITE, which
+(Iceberg gold uses write.merge.mode=merge-on-read, Delta uses deletion vectors, and
+Paimon is LSM, merge-on-read by nature). Hudi's own default is COPY_ON_WRITE, which
 would make it look slower on writes and faster on reads for configuration reasons
 rather than engine ones. MOR is also the standard recommendation for streaming CDC
 ingest specifically, which is this workload.
@@ -11,19 +11,19 @@ ingest specifically, which is this workload.
 COMPACTION: inline, so the cost lands INSIDE the write path. Delta compacts inline
 (autoCompact) and Paimon self-compacts in the writer; if Hudi deferred compaction to
 an async job its write latency would look artificially good. Iceberg is the odd one
-out — it has no in-writer compaction and needs a separate rewrite job — which is
-recorded in SIZING.md as a known asymmetry.
+out (it has no in-writer compaction and needs a separate rewrite job) which is
+recorded in README.md (Sizing) as a known asymmetry.
 
-READ SEMANTICS: a MOR table exposes _ro (read-optimised, base files only — STALE) and
-_rt (real-time, merges the log files — CURRENT). Correctness checks must use _rt or
+READ SEMANTICS: a MOR table exposes _ro (read-optimised, base files only. STALE) and
+_rt (real-time, merges the log files. CURRENT). Correctness checks must use _rt or
 the snapshot query type; _ro looks fast and returns old data.
 
-GLUE SYNC ALSO REGISTERS AN UN-SUFFIXED TABLE, and it is the REAL-TIME one — verified from
+GLUE SYNC ALSO REGISTERS AN UN-SUFFIXED TABLE, and it is the REAL-TIME one, verified from
 Glue: gold.open_positions_hudi uses HoodieParquetRealtimeInputFormat, identical to _rt,
 while _ro uses HoodieParquetInputFormat. So `open_positions_hudi` is the one to query;
 _ro and _rt are the extra pair, not the only two.
 
-ATHENA AND THE PARTITION COLUMN'S POSITION — the whole story, proven by experiment.
+Athena and the partition column's position: the whole story, proven by experiment.
 
 Glue registers a partition field as a partition KEY and omits it from the table's column
 list, but Hudi still writes it INTO the parquet. Athena maps positionally, so if that
@@ -33,7 +33,7 @@ out:
     file: ... account_id bigint | symbol       string | net_quantity  bigint  ...
     -> HIVE_CURSOR_ERROR: LongWritable cannot be cast to HiveDecimalWritable
 
-Isolated to ONE variable: the same row written twice with identical options, differing
+Isolated to one variable: the same row written twice with identical options, differing
 only in where `symbol` sits.
     symbol mid-frame -> SELECT * fails with the cast error
     symbol last      -> SELECT * succeeds
@@ -41,7 +41,7 @@ gold now writes partition columns LAST (hive_order() in schemas.py). bronze and 
 trades were always correct by accident: executed_date is appended last as an `extra`.
 
 TWO THINGS THAT MISLED ME, recorded so they do not mislead again:
-  * `SELECT count(*)` and NARROW projections SUCCEED on a shifted table — they read no
+  * `SELECT count(*)` AND NARROW projections SUCCEED on a shifted table, they read no
     columns, or only ones whose types happen to line up. Only a wide projection fails.
     Test with SELECT *, never with count(*).
   * hoodie.datasource.write.drop.partition.columns=true looks like the fix and is not:
@@ -49,8 +49,8 @@ TWO THINGS THAT MISLED ME, recorded so they do not mislead again:
     write dies with `Config conflict ... true false`, breaking the pipeline.
 
 Also required: hoodie.write.table.version=6 in _COMMON. Without it every query fails with
-a bare HIVE_UNKNOWN_ERROR — Hudi 1.2.0 otherwise writes table version 9 with the LSM
-timeline, which Athena cannot parse. That setting is load-bearing, not vestigial.
+a bare HIVE_UNKNOWN_ERROR. Hudi 1.2.0 otherwise writes table version 9 with the LSM
+timeline, which Athena cannot parse. Do not drop that setting.
 
 GLUE SYNC ALSO REGISTERS AN UN-SUFFIXED TABLE and it is the REAL-TIME one:
 gold.open_positions_hudi uses HoodieParquetRealtimeInputFormat, identical to _rt, while
@@ -75,24 +75,24 @@ _COMMON = {
     # without limit and commit listing slowly dominates write latency.
     "hoodie.clean.automatic": "true",
     # TIME-based retention, not commit-count. commits.retained=10 at a 15s trigger is
-    # ~2.5 MINUTES of history — and both Hudi streaming consumers (silver reading
+    # ~2.5 MINUTES of history, and both Hudi streaming consumers (silver reading
     # bronze, gold reading silver) read INCREMENTALLY from a start instant. Fall further
     # behind than the cleaner's window (a restart, a slow batch, a node replacement) and
     # that instant is gone: the read either fails or takes the
-    # hoodie.datasource.read.incr.fallback.fulltablescan path — which re-reads the whole
+    # hoodie.datasource.read.incr.fallback.fulltablescan path, which re-reads the whole
     # table and DOUBLE-COUNTS it into the `+=` gold fold, silently. 24h of history means
     # a consumer can be down a full day and still resume incrementally.
     "hoodie.cleaner.policy": "KEEP_LATEST_BY_HOURS",
     "hoodie.cleaner.hours.retained": "24",
     "hoodie.datasource.write.hive_style_partitioning": "true",
-    # ATTEMPTED Athena compatibility — CURRENTLY INEFFECTIVE, kept as intent.
+    # ATTEMPTED Athena compatibility. CURRENTLY INEFFECTIVE, kept as intent.
     # Hudi 1.2.0 writes table version 9 with timeline layout 2 (the LSM timeline under
     # .hoodie/timeline/), which Athena's Hudi reader cannot parse: every query fails
     # with a bare HIVE_UNKNOWN_ERROR, _ro and _rt alike. This setting asks for the
-    # legacy version 6 / flat timeline, and it IS reaching the driver (verified in the
+    # legacy version 6 / flat timeline, and it is reaching the driver (verified in the
     # mounted file) but Hudi ignores it and still writes v9. Left in place because it
-    # documents the intent and may be honoured by a later Hudi; do NOT assume Athena
-    # can read these tables — query Hudi via Spark. See DEPLOY_LOG #55.
+    # documents the intent and may be honoured by a later Hudi; do not assume Athena
+    # can read these tables, query Hudi via Spark.
     "hoodie.write.table.version": "6",
 }
 
@@ -100,9 +100,9 @@ _COMMON = {
 # Hudi registers ITSELF in Glue on every commit via AwsGlueCatalogSyncTool
 # (hudi-aws-bundle). That is better than pointing Glue at a metadata file after the
 # fact: there is no pointer to go stale, which is exactly what broke Paimon's Athena
-# visibility. For a MERGE_ON_READ table the sync creates TWO Glue tables:
-#   <table>_ro  read-optimised — base files only, STALE
-#   <table>_rt  real-time      — merges log files, CURRENT   <- use this one
+# visibility. For a MERGE_ON_READ table the sync creates two Glue tables:
+#   <table>_ro  read-optimised, base files only, STALE
+#   <table>_rt  real-time     , merges log files, CURRENT   <- use this one
 _SYNC_TOOL = "org.apache.hudi.aws.sync.AwsGlueCatalogSyncTool"
 
 
@@ -144,35 +144,35 @@ def _opts(table_name, recordkey, precombine, partitionpath="", operation="upsert
 
 
 # bronze: append-only fills. `insert` skips the dedup/index lookup an upsert would do
-# — the correct choice for immutable executions and much cheaper at 1k+/s.
+# which is right for immutable executions and much cheaper at 1k+/s.
 def bronze_trades_opts():
     return _opts("hudi_bronze_trades", "trade_id", "executed_at",
                  partitionpath="executed_date", operation="insert",
                  extra=_sync("bronze", "trades_hudi", "executed_date"))
 
 
-# silver trades: same grain, deduplicated on trade_id — LAST-WINS.
+# silver trades: same grain, deduplicated on trade_id. LAST-WINS.
 # precombine is the ordering key: on a duplicate trade_id Hudi keeps the row with the
 # GREATEST precombine value. It moves from executed_at to source_lsn because executed_at
 # ties at millisecond granularity at 1k/s, and a tie means an arbitrary winner. LSN is a
 # strict total order across the CDC stream and never ties.
 # This engine was ALREADY last-wins while paimon/fluss were first-wins and delta/iceberg
-# were first-wins within a bounded watermark window (now 2h) — three different answers to "which row survives".
+# were first-wins within a bounded watermark window (now 2h), three different answers to "which row survives".
 def silver_trades_opts():
     return _opts("hudi_silver_trades", "trade_id", "source_lsn",
                  partitionpath="executed_date", operation="upsert",
                  extra=_sync("silver", "trades_hudi", "executed_date"))
 
 
-# silver accounts: SCD2 — EVERY version retained, not just the latest.
+# silver accounts: SCD2. EVERY version retained, not just the latest.
 # The record key is composite (account_id, source_lsn), so a genuine change writes a NEW
-# row while an at-least-once CDC re-delivery — identical account_id AND source_lsn —
+# row while an at-least-once CDC re-delivery, identical account_id and source_lsn, 
 # collapses onto the existing one. That is the whole trick: upsert still deduplicates
 # re-deliveries, but it no longer destroys history, because the version is part of the key.
 # Contrast silver.trades, where the key is trade_id alone: a trade is an immutable event
 # and has no versions.
 # effective_to / is_current are MATERIALISED, closed by a staged row that carries the
-# superseded version's full attributes — Hudi's upsert replaces the whole record, so a
+# superseded version's full attributes. Hudi's upsert replaces the whole record, so a
 # close row with nulled attributes would erase the history it exists to preserve
 # (tests/scd2_hudi_upsert_test.py).
 def silver_accounts_opts():

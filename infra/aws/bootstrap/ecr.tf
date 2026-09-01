@@ -1,4 +1,4 @@
-# ECR repos — standing so images persist across runs (rebuilt only when code changes).
+# ECR repos, standing so images persist across runs (rebuilt only when code changes).
 resource "aws_ecr_repository" "repo" {
   for_each             = toset(var.ecr_repos)
   name                 = "${var.project_tag}/${each.value}"

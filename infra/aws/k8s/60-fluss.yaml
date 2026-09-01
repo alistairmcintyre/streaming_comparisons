@@ -1,5 +1,5 @@
-# Fluss hot tier. remote.data.dir on EFS (shared RWX — see efs.tf for the IRSA/STS
-# reason); Paimon datalake on S3 via IRSA (no keys — the server entrypoint drops
+# Fluss hot tier. remote.data.dir on EFS (shared RWX, see efs.tf for the IRSA/STS
+# reason); Paimon datalake on S3 via IRSA (no keys, the server entrypoint drops
 # blank S3 credential lines → default credential chain).
 apiVersion: apps/v1
 kind: StatefulSet
@@ -52,7 +52,7 @@ spec:
                 # INTERNAL must be BOUND to a fixed port and ADVERTISED with a
                 # resolvable address. With `INTERNAL://0.0.0.0:0` and no advertised
                 # entry it registered in ZooKeeper as
-                # INTERNAL://0:0:0:0:0:0:0:0%0:<ephemeral> — the IPv6 any-address,
+                # INTERNAL://0:0:0:0:0:0:0:0%0:<ephemeral>, the IPv6 any-address,
                 # which nothing can dial. External clients were unaffected (they use
                 # CLIENT), which is why writes worked while the tiering client
                 # reported "Alive tablet server is empty".

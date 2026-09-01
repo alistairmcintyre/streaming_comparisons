@@ -14,8 +14,8 @@ parameters:
   encrypted: "true"
 ---
 # Fluss remote.data.dir on EFS, SHARED across namespaces (fluss coordinator/tablet
-# AND the flink cluster that reads the remote-log tier). Dynamic efs-ap provisioning
-# gives each PVC an isolated access point → NOT shared, so we use STATIC PVs that all
+# And the flink cluster that reads the remote-log tier). Dynamic efs-ap provisioning
+# gives each PVC an isolated access point → not shared, so we use STATIC PVs that all
 # point at the same EFS filesystem root (volumeHandle=${EFS_ID}); one PV+PVC per
 # namespace, same underlying filesystem → shared data.
 apiVersion: v1

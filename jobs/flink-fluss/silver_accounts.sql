@@ -1,13 +1,13 @@
 -- Kafka accounts (Debezium) → Fluss silver.accounts as SCD2, with an ATOMIC CLOSE-OUT.
 --
 -- Every version is retained and its validity is MATERIALISED: when version N+1 arrives
--- this job writes TWO rows — the new version (effective_to NULL, is_current TRUE) and
+-- this job writes two rows, the new version (effective_to NULL, is_current TRUE) and
 -- version N again with effective_to set and is_current FALSE. The PK is
 -- (account_id, source_lsn), so rewriting version N merges onto the existing row.
 -- Both INSERTs share one STATEMENT SET: one job, one source read.
 --
 -- ORDER BY PROCTIME(), not event time. A rowtime OVER window cannot emit until the
--- WATERMARK passes the row, and the watermark only advances as further events arrive — so
+-- WATERMARK passes the row, and the watermark only advances as further events arrive, so
 -- on a low-volume dimension a change on day 1 would not reach silver until the NEXT change
 -- arrived, days later. Processing time emits immediately and drops nothing. The condition
 -- becomes "arrival order matches LSN order", true for one Debezium connector on one
@@ -15,7 +15,7 @@
 --
 -- DELETES: Fluss has no rowkind.field, so a delete is filtered at the source (see the
 -- WHERE below) rather than written as a tombstone version. That is a real divergence from
--- the Paimon pipeline and is recorded as such — the generator never deletes accounts, so
+-- the Paimon pipeline and is recorded as such, the generator never deletes accounts, so
 -- it does not affect the benchmark, but it would matter for a source that does.
 --
 -- Run in the Fluss Flink SQL client. TEMPLATE: submit.sh runs envsubst.
@@ -46,7 +46,7 @@ CREATE TEMPORARY TABLE kafka_accounts_src (
 );
 
 -- Each change carried with its PREDECESSOR. Every attribute is LAGged because the
--- close-out rewrites the whole previous row — Fluss has no partial-update merge engine.
+-- close-out rewrites the whole previous row. Fluss has no partial-update merge engine.
 CREATE TEMPORARY VIEW acct_changes AS
 SELECT
     `after`.account_id                                                  AS account_id,
@@ -72,19 +72,19 @@ WINDOW w AS (PARTITION BY `after`.account_id ORDER BY proc);
 
 -- ONE INSERT, not a statement set of two.
 --
--- Both halves of the close-out target the SAME table, and a statement set makes that TWO
+-- Both halves of the close-out target the same table, and a statement set makes that two
 -- SINKS with TWO COMMITTERS. On Paimon that raced two IcebergCommitCallbacks for the same
 -- metadata version file on S3 and restarted the job forever; the same two-sink shape is
 -- latent here, and one sink is simpler regardless:
 --
--- UNION ALL gives one sink, one committer, one commit per checkpoint — and it matches what the Spark engines already do: jobs/_shared/scd2.py
--- stages the new row and the closed predecessor into ONE frame and writes it once.
+-- UNION ALL gives one sink, one committer, one commit per checkpoint, and it matches what the Spark engines already do: jobs/_shared/scd2.py
+-- stages the new row and the closed predecessor into one frame and writes it once.
 INSERT INTO fluss_catalog.silver.accounts
 SELECT account_id, name, country, tier, source_updated_at, event_ts,
        effective_from,
        -- An OUT-OF-ORDER arrival is not current: it is a late historical version, valid
        -- until the row that already superseded it. Without this it would be written with
-       -- is_current TRUE and the account would have TWO current rows.
+       -- is_current TRUE and the account would have two current rows.
        CASE WHEN prev_lsn IS NULL OR source_lsn > prev_lsn
             THEN CAST(NULL AS TIMESTAMP(6)) ELSE prev_effective_from END,
        (prev_lsn IS NULL OR source_lsn > prev_lsn),
@@ -95,10 +95,10 @@ FROM acct_changes
 -- A re-delivery (identical lsn to the record before it) must be a NO-OP. Without this
 -- guard it is emitted with is_current = FALSE and, because the target is a PK table on
 -- (account_id, source_lsn), that write MERGES onto the live row and leaves the account
--- with ZERO current versions.
+-- with zero current versions.
 WHERE prev_lsn IS NULL OR source_lsn <> prev_lsn
 UNION ALL
--- The predecessor, re-written with effective_to set. EVERY attribute comes from the
+-- The predecessor, re-written with effective_to set. Every attribute comes from the
 -- version being closed (prev_*): the merge engine is deduplicate, so this write replaces
 -- the whole row, and taking the successor's values here would corrupt the history the
 -- close exists to preserve.

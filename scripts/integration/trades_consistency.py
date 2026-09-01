@@ -8,7 +8,7 @@ Run AFTER quiesce-run.sh, against a live run's tables. Mid-flight, gold legitima
 trails silver by whatever is in the current micro-batch, so a drift figure would just be
 measuring the race.
 
-There is no fixed oracle — fills are random — so this checks INTERNAL consistency:
+There is no fixed oracle (fills are random) so this checks INTERNAL consistency:
 
   1. one row per trade_id in silver             (dedupe actually happened)
   2. one current row per account_id             (the SCD2 invariant)
@@ -18,7 +18,7 @@ There is no fixed oracle — fills are random — so this checks INTERNAL consis
   6. the read-time LEFT JOIN to silver.accounts enriches WITHOUT fanning out
 
 (6) replaces what these tests used to do: assert a `country` column on gold. country and
-tier were removed from gold when enrichment moved to query time — a position row has no
+tier were removed from gold when enrichment moved to query time, a position row has no
 defensible temporal semantic for an account attribute. The join is now the thing under
 test, and the assertion that matters is that it does not multiply rows: silver.accounts is
 SCD2, so joining WITHOUT the is_current filter fans every position out by its account's
@@ -33,7 +33,7 @@ import sys
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, when, sum as _sum, count as _count
 
-# argv OR the ENGINE env var: the Spark images' entrypoint ends with "${JOB_FILE}" and
+# argv or the ENGINE env var: the Spark images' entrypoint ends with "${JOB_FILE}" and
 # passes no arguments through, so compose/k8s can only reach this via the environment.
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("ENGINE", "")
 spark = SparkSession.builder.appName(f"it-{ENGINE}-trades").getOrCreate()
@@ -78,7 +78,7 @@ multi = cur.groupBy("account_id").agg(_count("*").alias("n")).filter(col("n") > 
 chk("silver.accounts has exactly one current row per account",
     accounts.count() > 0 and multi == 0, f"accounts_with_multiple_current={multi}")
 
-# 3. the fold, against SILVER (what gold actually reads) — not bronze
+# 3. the fold, against SILVER (what gold actually reads), not bronze
 signed = trades.withColumn("sq", when(col("side") == "BUY", col("quantity")).otherwise(-col("quantity")))
 s_qty = signed.agg(_sum("sq")).collect()[0][0] or 0
 g_qty = gold.agg(_sum("net_quantity")).collect()[0][0] or 0
@@ -105,5 +105,5 @@ chk("read-time LEFT JOIN actually enriches",
 
 print(f"\n{ENGINE.upper()} trades pipeline is internally consistent" if not fails
       else f"\n{ENGINE.upper()} INCONSISTENT: " + "; ".join(fails)
-           + "\n(if only the fold totals mismatch, gold may still be draining silver — quiesce first)")
+           + "\n(if only the fold totals mismatch, gold may still be draining silver, quiesce first)")
 sys.exit(1 if fails else 0)

@@ -1,7 +1,7 @@
 # Trades generator → Postgres (the CDC source). Rate is the load-test knob
 # (TRADES_PER_SEC): start 1k, then 10k. The generator image is lean (python +
 # psycopg2 only); the source is delivered via the `generator-src` ConfigMap
-# (created by the workflow from generators/*.py) and mounted at /app — same
+# (created by the workflow from generators/*.py) and mounted at /app, same
 # pattern as the Spark job ConfigMaps.
 apiVersion: apps/v1
 kind: Deployment
@@ -42,7 +42,7 @@ spec:
 # Accounts dimension generator (SCD1): seeds 1000 accounts, then trickles slow
 # changes. Without it the `accounts` table stays empty, Debezium never creates
 # app.public.accounts, and every silver-accounts pipeline (Paimon/Iceberg/Delta)
-# fails on a missing Kafka topic — while trades reference account_id 1..1000.
+# fails on a missing Kafka topic, while trades reference account_id 1..1000.
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: generator-accounts, namespace: streaming }

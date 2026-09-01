@@ -1,7 +1,7 @@
 """Every custom resource in the manifests must be VALIDATED by the kind pre-flight.
 
 validate-against-kind.sh server-dry-runs each manifest against real admission webhooks.
-It can only validate a kind whose CRD is installed on that throwaway cluster — and it used
+It can only validate a kind whose CRD is installed on that throwaway cluster, and it used
 to report `ok` for any manifest that failed with "no matches for kind", which meant a
 missing CRD looked exactly like a passing manifest.
 
@@ -48,9 +48,9 @@ for f in sorted(pathlib.Path("infra/aws/k8s").glob("*.yaml")):
     if not missing:
         print(f"  PASS  {f.name:24} {', '.join(sorted(custom))}")
     elif f.name in allowlist:
-        print(f"  PASS  {f.name:24} {', '.join(missing)} — allowlisted as unvalidatable")
+        print(f"  PASS  {f.name:24} {', '.join(missing)}, allowlisted as unvalidatable")
     else:
-        print(f"  FAIL  {f.name:24} {', '.join(missing)} — no CRD installed and not allowlisted")
+        print(f"  FAIL  {f.name:24} {', '.join(missing)}, no CRD installed and not allowlisted")
         fails.append(f"{f.name}: {', '.join(missing)}")
 
 print(("\nevery custom resource is validated by the kind pre-flight" if not fails

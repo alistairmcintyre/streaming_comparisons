@@ -1,5 +1,5 @@
 """
-Iceberg table DDL as importable, idempotent statements — run IN the pipeline.
+Iceberg table DDL as importable, idempotent statements, run IN the pipeline.
 
 Each streaming job calls ensure_all(spark) at startup. CREATE ... IF NOT EXISTS is
 create-once + idempotent, so every stage self-provisions with no separate ddl-init
@@ -31,7 +31,7 @@ _STATEMENTS = [
           -- Postgres LSN: a strict TOTAL order across the replication stream.
           -- kafka_offset only orders within a partition, so it is a valid
           -- tiebreaker only because Debezium keys by primary key. lsn has no
-          -- such precondition — the definitive key for a backfill ranking.
+          -- such precondition, the definitive key for a backfill ranking.
           source_lsn BIGINT)
       USING iceberg PARTITIONED BY (days(executed_at)) TBLPROPERTIES ({_APPEND_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.trades_spark (
@@ -55,7 +55,7 @@ _STATEMENTS = [
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.gold.open_positions_spark (
         account_id BIGINT NOT NULL, symbol STRING NOT NULL, net_quantity BIGINT,
         net_notional DECIMAL(38,4), trade_count BIGINT, status STRING,
-        -- country/tier are NOT denormalised here — they are account attributes with no
+        -- country/tier are not denormalised here, they are account attributes with no
         -- defensible temporal semantic on a current-state row. Enrich at query time:
         --   SELECT p.*, a.country, a.tier FROM gold.open_positions_spark p
         --   LEFT JOIN silver.accounts_spark a USING (account_id)

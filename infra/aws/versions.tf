@@ -17,7 +17,7 @@ terraform {
   # Durable state so the kill-switch / orphan sweep can always find + destroy a
   # run's resources.
   # LOCKING: `use_lockfile` (S3 conditional writes) rather than `dynamodb_table`, which
-  # Terraform deprecated — it warned on every plan, apply and destroy. The lock is now a
+  # Terraform deprecated, it warned on every plan, apply and destroy. The lock is now a
   # .tflock object beside the state in the same bucket, so the separate DynamoDB lock
   # table is no longer part of the critical path. Requires Terraform >= 1.10, which is why
   # required_version moved and why killswitch.tf no longer pins 1.9.8.

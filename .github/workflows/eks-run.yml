@@ -8,9 +8,15 @@ on:
   workflow_dispatch:
     inputs:
       trades_per_sec:
-        description: "Generator rate"
+        description: "Generator rate (100 = cheap probe: see run_minutes)"
         type: choice
-        options: ["1000", "10000"]
+        # 100 is not a benchmark rate, it is for probing INFRASTRUCTURE behaviour that
+        # does not depend on load, where paying for 1000/s buys nothing. Node disruption
+        # is the case that prompted it: Karpenter's old WhenEmptyOrUnderutilized policy
+        # targets UNDERUTILIZED nodes, so a low rate makes voluntary consolidation more
+        # likely to fire, not less, a cheaper run that is also a sharper test.
+        # Do not compare results across rates: the latency figures are rate-dependent.
+        options: ["1000", "10000", "100"]
         default: "1000"
       run_minutes:
         description: "Minutes to run before snapshot+destroy"
@@ -19,8 +25,8 @@ on:
         description: "When to terraform destroy (EventBridge 2.5h kill-switch always backstops)"
         type: choice
         options: ["always", "on-success", "never"]
-        # ALWAYS. `on-success` kept a failed run's cluster alive for debugging, which
-        # cost two idle clusters in one day — a run that fails at minute 10 then bills
+        # Always. `on-success` kept a failed run's cluster alive for debugging, which
+        # cost two idle clusters in one day, a run that fails at minute 10 then bills
         # until the 2.5h kill switch. Safe to destroy now only because the diagnostics
         # bundle below is collected FIRST: the evidence that made the failures
         # debuggable (submitter logs, JM logs, operator events, prometheus targets)
@@ -34,7 +40,7 @@ on:
         type: boolean
         default: true
       wire_format:
-        description: "CDC serialization under test — labels the results so JSON and Avro sets stay comparable (Objective 5)"
+        description: "CDC serialization under test, labels the results so JSON and Avro sets stay comparable (Objective 5)"
         type: choice
         options: ["json", "avro"]
         default: "json"
@@ -45,11 +51,21 @@ permissions:
 
 env:
   AWS_REGION: eu-west-1
-  ACCOUNT: "167217327348"
+  # The ONE place CI learns the account: repository SECRET AWS_ACCOUNT_ID
+  # (Settings > Secrets and variables > Actions > Secrets).
+  # A secret rather than a variable because this repo is public, which makes its
+  # Actions logs public, and the account id is echoed on every `docker push` as
+  # part of the ECR registry host. GitHub masks a secret's value wherever it
+  # appears in a log, including inside that hostname; a variable is printed
+  # verbatim. Locally the same value comes from env/aws.env (scripts/ecr-env.sh).
+  ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID }}
   PROJECT: streaming-comparison
   PAIMON_BUCKET: streaming-comparison-amc-paimon
   WAREHOUSE_BUCKET: streaming-comparison-amc-warehouse
   NODE_AZ: eu-west-1a
+  # terraform reads TF_VAR_* from the environment, so this covers every
+  # init/plan/apply/destroy below without repeating -var on each one.
+  TF_VAR_aws_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
   TF_DIR: infra/aws
   FLUSS_SRC: ${{ github.workspace }}/.fluss-src
 
@@ -67,12 +83,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Manifests — offline (YAML, RFC1123 names, duplicate keys, envsubst traps)
+      # Fail here, for free, rather than 20 minutes later at assume-role. An unset
+      # repository variable expands to the empty string, so the role ARN would become
+      # arn:aws:iam:::role/... and the failure would name OIDC rather than the cause.
+      - name: Account variable is set
+        run: |
+          if [ -z "${{ secrets.AWS_ACCOUNT_ID }}" ]; then
+            echo "AWS_ACCOUNT_ID repository secret is not set."
+            echo "Settings > Secrets and variables > Actions > Secrets > New secret."
+            echo "It is the only account configuration this workflow needs; locally the"
+            echo "same value lives in env/aws.env (see README, Configuration)."
+            exit 1
+          fi
+          echo "account ends ...${ACCOUNT: -4}"
+
+      - name: Manifests, offline (YAML, RFC1123 names, duplicate keys, envsubst traps)
         id: manifests
         continue-on-error: true
         run: ./infra/aws/scripts/preflight-manifests.sh
 
-      - name: Shell — syntax
+      - name: Shell, syntax
         id: shell
         continue-on-error: true
         run: |
@@ -80,7 +110,7 @@ jobs:
           for f in $(git ls-files '*.sh'); do bash -n "$f" || { echo "  FAIL $f"; rc=1; }; done
           exit $rc
 
-      - name: Python — syntax
+      - name: Python, syntax
         id: python
         continue-on-error: true
         run: |
@@ -91,51 +121,51 @@ jobs:
           exit $rc
 
       # The run job installs terraform via this action; validate needs it too, or the
-      # step dies with `terraform: command not found` — which is exactly what happened
+      # step dies with `terraform: command not found`, which is exactly what happened
       # on the gate's first live use, and it MASKED the kind webhook check behind it.
       - uses: hashicorp/setup-terraform@v3
         with: { terraform_wrapper: false }
 
-      - name: Terraform — fmt + validate
+      - name: Terraform, fmt + validate
         id: terraform
         continue-on-error: true
         working-directory: infra/aws
         run: |
-          terraform fmt -check -recursive || echo "  (fmt drift — not fatal)"
+          terraform fmt -check -recursive || echo "  (fmt drift, not fatal)"
           terraform init -backend=false -input=false
           terraform validate
 
       # The one that needed a live apiserver. kind gives us real admission webhooks
-      # for free — this is what would have caught `kubernetes.cluster-id`.
-      # continue-on-error on the cheap steps so ONE failure does not hide the others —
+      # for free, this is what would have caught `kubernetes.cluster-id`.
+      # continue-on-error on the cheap steps so one failure does not hide the others, 
       # the whole point of this job is to surface everything in a single free pass. The
       # gate step at the end is what actually fails the job.
       # Compiles the Flink SQL against a throwaway local Flink with a filesystem Paimon
       # warehouse. Two of 2026-08-27's failures were planning errors that only showed up
       # ~25 minutes into a run and presented as a silently MISSING JOB. Needs no Kafka,
-      # no S3, no AWS — planning happens before submission. Asserts every job file
+      # no S3, no AWS, planning happens before submission. Asserts every job file
       # produces a job, because "some jobs submitted" is exactly what the bad run looked
       # like. Uses ECR images, so it runs after the AWS creds step.
-      - name: Flink SQL — compile locally
+      - name: Flink SQL, compile locally
         id: flinksql
         continue-on-error: true
         run: ./infra/aws/scripts/validate-flink-sql.sh
 
-      - name: Manifests — real admission webhooks (kind)
+      - name: Manifests, real admission webhooks (kind)
         uses: helm/kind-action@v1
         with:
           cluster_name: manifest-validate
           wait: 120s
-      - name: Manifests — server dry-run against webhooks
+      - name: Manifests, server dry-run against webhooks
         id: webhooks
         continue-on-error: true
         run: KIND_CLUSTER=manifest-validate KEEP_KIND=1 ./infra/aws/scripts/validate-against-kind.sh
 
       # THE GATE. Every check above runs to completion so one failure cannot hide the
-      # rest — same discipline as validate-run.sh: report everything in one pass. This
+      # rest, same discipline as validate-run.sh: report everything in one pass. This
       # step is what fails the job, and `run` needs: validate, so a red result here
       # means terraform apply never starts and the run costs nothing.
-      - name: Gate — fail if any check failed
+      - name: Gate, fail if any check failed
         run: |
           fail=0
           for c in "manifests:${{ steps.manifests.outcome }}" \
@@ -147,7 +177,7 @@ jobs:
             n="${c%%:*}"; o="${c##*:}"
             if [ "$o" = "success" ]; then echo "  PASS  $n"; else echo "  FAIL  $n ($o)"; fail=1; fi
           done
-          [ "$fail" = 0 ] || { echo; echo "validation failed — no AWS resource was created"; exit 1; }
+          [ "$fail" = 0 ] || { echo; echo "validation failed, no AWS resource was created"; exit 1; }
           echo; echo "all pre-deploy checks passed"
 
   run:
@@ -158,17 +188,17 @@ jobs:
       - uses: actions/checkout@v4
 
       # FIRST, before anything is provisioned. An invalid manifest was previously only
-      # discovered by applying it to a live cluster — ~25 minutes and a cluster's worth
+      # discovered by applying it to a live cluster, ~25 minutes and a cluster's worth
       # of money in. `metadata.name: pipeline_latency` (illegal '_') burned a deploy
       # exactly that way, and it is catchable here in under a second, for free.
       # Runs before OIDC on purpose: it needs no credentials and no AWS at all.
-      - name: Pre-flight — validate manifests
+      - name: Pre-flight, validate manifests
         run: ./infra/aws/scripts/preflight-manifests.sh
 
       - name: Assume deploy role (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::167217327348:role/streaming-comparison-gha-deploy
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/streaming-comparison-gha-deploy
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Set run id
@@ -190,7 +220,7 @@ jobs:
           # -reconfigure: the backend changed from dynamodb_table to use_lockfile, and
           # without it init stops with "Backend configuration changed" and, under
           # -input=false, simply fails. Bucket and key are unchanged, so there is no state
-          # to migrate — only the lock mechanism differs.
+          # to migrate, only the lock mechanism differs.
           terraform init -input=false -reconfigure
           terraform apply -auto-approve -input=false \
             -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150"
@@ -209,10 +239,10 @@ jobs:
       # what is not. This is Docker's layer cache one level up, at the whole image.
       #
       # skip_build used to be a manual flag, and on 2026-08-27 it silently reused images
-      # pushed 29 SECONDS before the commit that added kafka-python — three runs
+      # pushed 29 SECONDS before the commit that added kafka-python, three runs
       # inherited them and the Spark latency emit failed all day with "No module named
       # 'kafka'". A flag that means "trust me" was the wrong shape for this.
-      - name: Images — build only what changed
+      - name: Images, build only what changed
         run: |
           aws ecr get-login-password --region "$AWS_REGION" \
             | docker login --username AWS --password-stdin "$ECR_REGISTRY"
@@ -223,7 +253,7 @@ jobs:
             MAN=$(aws ecr batch-get-image --region "$AWS_REGION" --repository-name "$PROJECT/$img" \
                     --image-ids imageTag="$h" --query 'images[0].imageManifest' --output text 2>/dev/null || true)
             if [ -n "$MAN" ] && [ "$MAN" != "None" ]; then
-              # Reused — but :latest must POINT AT this image. Otherwise a revert to an
+              # Reused, but :latest must POINT AT this image. Otherwise a revert to an
               # older hash leaves :latest on the newer build and the manifests, which
               # reference :latest, silently run the wrong thing. Re-tagging is a
               # metadata-only call: no rebuild, no layer upload.
@@ -236,7 +266,7 @@ jobs:
             fi
           done < <(./infra/aws/scripts/image-hashes.sh)
 
-          if [ -z "$NEED" ]; then echo "all images current — nothing to build"; exit 0; fi
+          if [ -z "$NEED" ]; then echo "all images current, nothing to build"; exit 0; fi
 
           # Fluss images are built from source; only pay for the clone if one is stale.
           case "$NEED" in
@@ -265,7 +295,7 @@ jobs:
           helm repo update
           helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set crds.enabled=true --wait
           # Strimzi: use the official install bundle (CRDs + RBAC + operator). The
-          # strimzi.io/charts helm chart ships NO CRDs, so Kafka/KafkaNodePool kinds
+          # strimzi.io/charts helm chart ships no CRDs, so Kafka/KafkaNodePool kinds
           # were missing. Server-side apply handles the large CRD annotations.
           kubectl create namespace kafka --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply --server-side --force-conflicts -f 'https://strimzi.io/install/latest?namespace=kafka'
@@ -273,7 +303,7 @@ jobs:
           # The operator's REST client timeout defaults to 10s (verified in the chart's
           # conf/flink-conf.yaml). Under load a JobManager takes longer than that to
           # answer, the SessionObserver logs "REST service in session cluster timed out",
-          # and the operator RECREATES a JM that was perfectly healthy — killing every
+          # and the operator RECREATES a JM that was perfectly healthy, killing every
           # job on it. Raising these stops the operator mistaking slow for dead; HA in
           # 70-/92-flink-*.yaml is what makes a restart survivable if it happens anyway.
           cat > /tmp/flink-operator-values.yaml <<'YAML'
@@ -288,7 +318,7 @@ jobs:
           YAML
           helm upgrade --install flink-operator flink-operator/flink-kubernetes-operator -n flink --create-namespace --wait \
             -f /tmp/flink-operator-values.yaml
-          # jobNamespaces MUST include spark: the chart default watches `default`
+          # jobNamespaces must include spark: the chart default watches `default`
           # only, so SparkApplications in the spark ns are silently ignored
           # (status <none>, no driver pods, no events).
           helm upgrade --install spark-operator spark-operator/spark-operator -n spark --create-namespace --wait \
@@ -298,7 +328,7 @@ jobs:
       # A run must start from an empty lake or it is not a clean benchmark: stale
       # tables carry the PREVIOUS build's schema and table properties, and Delta /
       # Paimon both refuse (or silently ignore) a changed definition on an existing
-      # table — that cost two separate debugging sessions. Stale Spark/Flink
+      # table, that cost two separate debugging sessions. Stale Spark/Flink
       # checkpoints are worse: they resume at offsets from an older Kafka whose
       # topic has been recreated, so the pipelines consume nothing and commit empty
       # batches forever while looking perfectly healthy.
@@ -313,7 +343,7 @@ jobs:
           done
           # _flink_ha and _flink_savepoints belong here too. Kubernetes HA keeps its
           # job-graph POINTERS in ConfigMaps, which die with the cluster, so a surviving
-          # storageDir cannot make a fresh cluster recover last run's jobs — but the blobs
+          # storageDir cannot make a fresh cluster recover last run's jobs, but the blobs
           # it references are then orphaned and accrue across every run. Savepoints are
           # equally dead once their lake is wiped. tests/check_clean_lake.py now fails the
           # build if a manifest writes to a prefix this step neither wipes nor preserves.
@@ -322,13 +352,13 @@ jobs:
             aws s3 rm "s3://$PAIMON_BUCKET/$p/" --recursive --only-show-errors || true
           done
           # Guard: these must still be here afterwards. `benchmarks/` is also PRESERVED
-          # (it is the results archive — the whole point is that it outlives the cluster)
+          # (it is the results archive, the whole point is that it outlives the cluster)
           # but is not asserted, because it legitimately does not exist before the first
           # run that snapshots anything.
           for keep in tfstate teardown; do
             aws s3 ls "s3://$WAREHOUSE_BUCKET/$keep/" >/dev/null 2>&1 \
               && echo "  OK preserved: $keep/" \
-              || { echo "FATAL: $keep/ missing after clean — aborting"; exit 1; }
+              || { echo "FATAL: $keep/ missing after clean, aborting"; exit 1; }
           done
           # Glue holds the Iceberg table definitions; drop them so the new schema applies.
           for db in bronze silver gold; do
@@ -337,12 +367,12 @@ jobs:
             done
           done
 
-      - name: Guard — wire_format must be implemented
+      - name: Guard, wire_format must be implemented
         run: |
           if [ "${{ inputs.wire_format }}" = "avro" ]; then
             echo "avro is not implemented yet: it needs a Schema Registry (Apicurio), a"
             echo "Debezium converter swap, and Avro-capable consumers (Spark needs ABRiS)."
-            echo "See AWS_OBJECTIVES.md Objective 5 and the deploy to-do list."
+            echo "See README.md and the deploy to-do list."
             exit 1
           fi
 
@@ -360,7 +390,7 @@ jobs:
           # source configmaps from the repo files
           kubectl create ns streaming --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n streaming create configmap pg-init --from-file=infra/postgres/init-appdb.sql --dry-run=client -o yaml | kubectl apply -f -
-          # generator source (lean image, source mounted at /app) — same ConfigMap pattern as Spark jobs
+          # generator source (lean image, source mounted at /app), same ConfigMap pattern as Spark jobs
           kubectl -n streaming create configmap generator-src \
             --from-file=generators/common.py \
             --from-file=generators/gen_trades.py \
@@ -368,14 +398,14 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f -
           # ECR push secret for the Strimzi KafkaConnect (Debezium) in-cluster build:
           # the node role only has ECR pull, so the build pod needs push creds. ECR
-          # token is valid ~12h — ample for an ephemeral run.
+          # token is valid ~12h, ample for an ephemeral run.
           kubectl create ns kafka --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n kafka create secret docker-registry ecr-push \
             --docker-server="${ECR_REGISTRY}" --docker-username=AWS \
             --docker-password="$(aws ecr get-login-password --region "$AWS_REGION")" \
             --dry-run=client -o yaml | kubectl apply -f -
-          # `kubectl -n flink create ns flink ... 2>/dev/null || true` — three bugs in one
-          # line: -n is meaningless for a namespace, the generator was NOT piped to
+          # `kubectl -n flink create ns flink ... 2>/dev/null || true`, three bugs in one
+          # line: -n is meaningless for a namespace, the generator was not piped to
           # `kubectl apply` so it only printed YAML to the log, and `|| true` hid that
           # nothing was created. On a fresh cluster the flink namespace did not exist
           # until 00-namespaces.yaml in PHASE 2, long after these ConfigMaps.
@@ -391,7 +421,7 @@ jobs:
           kubectl -n spark create configmap spark-hudi-jobs    --from-file=jobs/spark-hudi/    --dry-run=client -o yaml | kubectl apply -f -
           # WHOLE DIRECTORY, not a hand-maintained file list. The list form silently
           # omitted jobs/_shared/scd2.py when the SCD2 work landed, and every Spark
-          # silver_accounts job imports it — all three would have died on AWS with
+          # silver_accounts job imports it, all three would have died on AWS with
           # ModuleNotFoundError while the manifests applied cleanly. kubectl skips
           # subdirectories, so __pycache__ is not picked up.
           # tests/check_configmaps.py now fails the build if a job imports a shared
@@ -399,11 +429,11 @@ jobs:
           kubectl -n spark create configmap spark-shared \
             --from-file=jobs/_shared/ \
             --dry-run=client -o yaml | kubectl apply -f -
-          # PHASE 0 — every ${VAR} the manifests reference must be SET and non-empty.
-          # envsubst does not fail on an unset variable, it substitutes EMPTY — which
+          # Phase 0: every ${VAR} the manifests reference must be set and non-empty.
+          # envsubst does not fail on an unset variable, it substitutes EMPTY, which
           # yields a manifest that is syntactically fine and semantically wrong.
           # COMMENT LINES ARE SKIPPED: 92-flink-paimon.yaml has a comment mentioning
-          # ${FLINK_CHECKPOINT_BASE} (explaining DEPLOY_LOG #27), which is not a real
+          # ${FLINK_CHECKPOINT_BASE} , which is not a real
           # substitution and blocked a perfectly good deploy the first time this ran. In
           # validation this produced `volumeHandle: ""` and a rejected PersistentVolume;
           # in a real apply it would create something subtly broken instead.
@@ -411,13 +441,13 @@ jobs:
           for v in $(grep -rhv '^[[:space:]]*#' infra/aws/k8s/*.yaml | grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' | tr -d '${}' | sort -u); do
             [ -n "${!v:-}" ] || MISSING="$MISSING $v"
           done
-          [ -z "$MISSING" ] || { echo "UNSET manifest variables:$MISSING"; echo "envsubst would blank these — refusing to apply"; exit 1; }
+          [ -z "$MISSING" ] || { echo "UNSET manifest variables:$MISSING"; echo "envsubst would blank these, refusing to apply"; exit 1; }
           echo "== all manifest variables are set =="
 
-          # PHASE 1 — server dry-run EVERYTHING first, applying nothing. Admission
+          # PHASE 1, server dry-run EVERYTHING first, applying nothing. Admission
           # webhooks (the Flink operator's, Strimzi's) reject config the offline
           # pre-flight cannot see: `Forbidden Flink config key: kubernetes.cluster-id`
-          # got through pre-flight and was only caught at apply time — after 70-*.yaml
+          # got through pre-flight and was only caught at apply time, after 70-*.yaml
           # had already half-applied, leaving a submitter Job with no cluster and every
           # manifest from 80-* onward never applied at all.
           # Dry-running first means a rejection costs seconds and leaves NOTHING
@@ -440,7 +470,7 @@ jobs:
           for f in $(ls infra/aws/k8s/*.yaml | sort); do
             # `&& RC=0 || RC=$?`, NOT a bare assignment followed by `[ $? -ne 0 ]`.
             # GitHub runs these blocks under `bash -eo pipefail`, so a bare `R=$(cmd)`
-            # whose cmd fails IS a failing command: the shell exits THERE, before the if
+            # whose cmd fails is a failing command: the shell exits THERE, before the if
             # that would print the rejection. The step logged the header and then
             # `exit 1` with no diagnostic at all, which is how a rejected manifest became
             # undebuggable. Reproduced locally before changing it.
@@ -453,12 +483,12 @@ jobs:
               echo "  REJECTED $(basename "$f") (rc=$RC):"; echo "$R" | sed 's/^/      /'; DRYFAIL=1
             fi
           done
-          [ "$DRYFAIL" = 0 ] || { echo "manifests rejected by admission — nothing applied"; exit 1; }
+          [ "$DRYFAIL" = 0 ] || { echo "manifests rejected by admission, nothing applied"; exit 1; }
           echo "== phase 2: apply =="
           for f in $(ls infra/aws/k8s/*.yaml | sort); do
             # 96-alerts.yaml is applied WITHOUT envsubst. Prometheus annotations use Go
             # templating ({{ $labels.pod }}, {{ $value }}), and envsubst treats
-            # $labels/$value as unset shell variables and substitutes EMPTY — so every
+            # $labels/$value as unset shell variables and substitutes EMPTY, so every
             # alert would load with a meaningless message, or fail to load at all,
             # silently. It has no ${...} placeholders, so it needs no substitution.
             case "$(basename "$f")" in
@@ -466,7 +496,7 @@ jobs:
               *)              envsubst < "$f" | kubectl apply -f - ;;
             esac
           done
-          # Apply ONLY the ConfigMap wrapper — the raw dashboard .json has no
+          # Apply only the ConfigMap wrapper, the raw dashboard .json has no
           # apiVersion/kind and kubectl cannot apply it. This used to be
           # `apply -f <dir> || true`, which failed silently every run and is why no
           # dashboard was ever loaded. No `|| true`: a broken dashboard should be loud.
@@ -480,8 +510,8 @@ jobs:
           # REGISTER THE CATALOG DURING THE RUN, not only after it.
           # Only the self-registering formats appear on their own: spark-iceberg (via the
           # Iceberg Glue catalog) and Hudi (Glue sync on every commit). Delta, Paimon and
-          # Fluss are registered by register-glue-tables.sh, which used to run ONLY after
-          # the load window — so for a 120-minute run three of five engines were
+          # Fluss are registered by register-glue-tables.sh, which used to run only after
+          # the load window, so for a 120-minute run three of five engines were
           # unqueryable for two hours while the data was sitting there.
           # It is idempotent and UPDATES metadata_location, which is why it can run
           # repeatedly: Paimon's Iceberg pointer advances with every commit, so a mid-run
@@ -513,7 +543,7 @@ jobs:
         if: always()
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::167217327348:role/streaming-comparison-gha-deploy
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/streaming-comparison-gha-deploy
           aws-region: ${{ env.AWS_REGION }}
 
       # Drain before measuring. With the generator still running, gold trails silver by
@@ -523,7 +553,7 @@ jobs:
       # numbers always say whether they were taken caught-up or mid-flight.
       - name: Quiesce (stop load, drain to zero lag)
         # Gated on the APPLY, not on always(). If the manifests never applied there is
-        # no load to drain, no table to register and nothing to snapshot — and quiesce
+        # no load to drain, no table to register and nothing to snapshot, and quiesce
         # polls consumer lag until QUIESCE_TIMEOUT (600s) plus a 90s settle, so on a
         # failed apply it burned ~11 minutes of a live, billing cluster before teardown
         # could even start. always() still covers what matters: apply succeeded and the
@@ -538,7 +568,7 @@ jobs:
       # Runs AFTER the load window so the tables and their metadata actually exist.
       - name: Register Delta + Paimon tables in Glue (Athena visibility)
         # Gated on the APPLY, not on always(). If the manifests never applied there is
-        # no load to drain, no table to register and nothing to snapshot — and quiesce
+        # no load to drain, no table to register and nothing to snapshot, and quiesce
         # polls consumer lag until QUIESCE_TIMEOUT (600s) plus a 90s settle, so on a
         # failed apply it burned ~11 minutes of a live, billing cluster before teardown
         # could even start. always() still covers what matters: apply succeeded and the
@@ -548,7 +578,7 @@ jobs:
 
       - name: Snapshot correctness + latency to S3
         # Gated on the APPLY, not on always(). If the manifests never applied there is
-        # no load to drain, no table to register and nothing to snapshot — and quiesce
+        # no load to drain, no table to register and nothing to snapshot, and quiesce
         # polls consumer lag until QUIESCE_TIMEOUT (600s) plus a 90s settle, so on a
         # failed apply it burned ~11 minutes of a live, billing cluster before teardown
         # could even start. always() still covers what matters: apply succeeded and the
@@ -556,10 +586,10 @@ jobs:
         if: ${{ always() && steps.apply.outcome == 'success' }}
         run: |
           # latency Parquet is already flushed by the exporter; run the count-reconciliation
-          # (Athena) and write results next to it. See infra/aws/README.md.
+          # (Athena) and write results next to it. See README.md.
           # Partitioned by wire_format so the JSON and Avro result sets (Objective 5)
           # stay distinguishable and directly comparable. Only ever compare runs that
-          # differ in wire_format alone — same rate, duration, cluster size.
+          # differ in wire_format alone, same rate, duration, cluster size.
           export RUN_ID WIRE_FORMAT="${{ inputs.wire_format }}"
           export TRADES_PER_SEC="${{ inputs.trades_per_sec }}" RUN_MINUTES="${{ inputs.run_minutes }}"
           # invariants.csv / correctness.csv are only readable as correctness if the
@@ -568,7 +598,7 @@ jobs:
           infra/aws/scripts/snapshot-results.sh
 
       # Collect BEFORE destroy. destroy_mode is `always` now, so this is the only
-      # chance to keep what makes a failed run debuggable — every bug found on the
+      # chance to keep what makes a failed run debuggable, every bug found on the
       # first live run came from a log or an API listing that dies with the cluster.
       - name: Collect diagnostics (pre-destroy)
         if: always()
@@ -585,18 +615,18 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # Teardown policy (the 2.5h EventBridge kill-switch ALWAYS backstops):
+      # Teardown policy (the 2.5h EventBridge kill-switch always backstops):
       #   on-success → destroy only if the whole run succeeded (keeps a failed
       #                cluster up for debugging + incremental re-apply).
       #   never      → never destroy here; rely on the 2.5h kill-switch.
-      #   always     → destroy on success, failure AND cancellation. DEFAULT, because
+      #   always     → destroy on success, failure and cancellation. DEFAULT, because
       #                keeping a failed cluster for debugging cost two idle clusters in
       #                one day. The diagnostics bundle uploaded just above is what makes
       #                that safe: the logs and API listings that made those failures
       #                debuggable now outlive the cluster.
       - name: Terraform destroy
         # always() matters as much as destroy_mode here. Without it a CANCELLED run
-        # skips this step entirely and the cluster bills until the 2.5h kill switch —
+        # skips this step entirely and the cluster bills until the 2.5h kill switch, 
         # which is what happened on 2026-08-27 and needed a manual teardown workflow.
         # With always() wrapping it, `destroy_mode: always` means always: success,
         # failure, and cancellation alike.
@@ -606,7 +636,7 @@ jobs:
           CN="sc-${RUN_ID}"
           # Destroy FIRST: deleting the EKS cluster kills Karpenter. Terminating EC2
           # while the control plane is alive makes Karpenter launch replacements
-          # (seen live 2026-08-25). Karpenter nodes are NOT in tf state, so leftovers
+          # (seen live 2026-08-25). Karpenter nodes are not in tf state, so leftovers
           # are cleaned up AFTER the destroy.
           # An interrupted destroy (timeout, expired creds, killed shell) leaves the
           # DynamoDB state lock HELD, and every later attempt dies with "Error
@@ -620,21 +650,21 @@ jobs:
           # existed, on the theory that nothing would relaunch. That was wrong: eks.tf
           # declares an eks_managed_node_group with min_size = 2, and its ASG replaces
           # terminated instances exactly like Karpenter does. The phases are not about
-          # Karpenter — they are about ANY autoscaled node whose ENIs hold the node
+          # Karpenter, they are about any autoscaled node whose ENIs hold the node
           # security group, which is every run.
-          # PHASE 1 — destroy ONLY the EKS cluster. That kills Karpenter, so the nodes
+          # PHASE 1, destroy only the EKS cluster. That kills Karpenter, so the nodes
           # it launched stop being replaced. Running the FULL destroy here instead is
           # what cost ~13 minutes on every teardown: Terraform reaches the node
           # security group, finds ENIs still attached to Karpenter instances that are
-          # NOT in its state, and retries ~15 minutes for a detach that cannot happen —
+          # Not in its state, and retries ~15 minutes for a detach that cannot happen, 
           # because the step that terminates those instances is queued BEHIND the
           # destroy it has to unblock. Seen live 2026-08-27: EKS already deleted, 2
           # instances still running, 4 ENIs held, a full cluster still billing.
           terraform destroy -target=module.eks -auto-approve -input=false -lock-timeout=300s \
               -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
-              echo "targeted EKS destroy failed — continuing; the sweep below still runs"
+              echo "targeted EKS destroy failed, continuing; the sweep below still runs"
 
-          # PHASE 2a — EFS mount targets. Each one holds an ENI in the node subnet, and
+          # PHASE 2a. EFS mount targets. Each one holds an ENI in the node subnet, and
           # aws_security_group.efs has an ingress rule referencing the NODE security
           # group, so neither the subnet nor the SG can go until the mount target does.
           # Deletion is asynchronous and takes minutes, so start it before the sweep.
@@ -648,7 +678,7 @@ jobs:
             done
           done
 
-          # PHASE 2 — terminate the orphans NOW, in the window between "control plane
+          # PHASE 2, terminate the orphans now, in the window between "control plane
           # gone" and "Terraform needs the security group". Karpenter is dead, so they
           # stay dead. Same three moves as before, reordered so this one is not trapped
           # behind the destroy it exists to unblock.
@@ -664,7 +694,7 @@ jobs:
           # is gone, but its CNI secondary ENIs take another minute or two to detach and
           # reach 'available'. A single sweep here finds them still in-use, deletes
           # nothing, and phase 3 then sits on the node security group for ~15 minutes
-          # waiting for a detach nothing is causing — which is exactly the
+          # waiting for a detach nothing is causing, which is exactly the
           # `aws_security_group.node[0]: Still destroying... 10m50s elapsed` symptom.
           # Six passes over ~3 minutes cost far less than one 15-minute Terraform retry.
           for _ in $(seq 1 6); do
@@ -682,12 +712,12 @@ jobs:
             sleep 30
           done
 
-          # PHASE 2c — clear whatever makes DeleteSecurityGroup return DependencyViolation.
+          # PHASE 2c, clear whatever makes DeleteSecurityGroup return DependencyViolation.
           # Seen live: `deleting Security Group (sg-048dbde20f2c4d2ac): DependencyViolation:
           # resource ... has a dependent object`, after ~15 minutes of retries. A security
           # group has exactly two kinds of dependent object, and the description-based ENI
           # sweep above only addresses part of the first:
-          #   (a) ENIs that reference it — swept here BY GROUP ID, so it does not matter
+          #   (a) ENIs that reference it, swept here BY GROUP ID, so it does not matter
           #       what created them or how they are described;
           #   (b) rules in OTHER security groups that reference it. AWS refuses to delete
           #       a group while another group's rule points at it, and efs.tf does exactly
@@ -718,13 +748,13 @@ jobs:
             done
           done
 
-          # PHASE 3 — everything else. The security group and VPC now delete promptly.
+          # PHASE 3, everything else. The security group and VPC now delete promptly.
           if terraform destroy -auto-approve -input=false -lock-timeout=300s \
                -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150"; then
             DESTROYED=1
           else
             DESTROYED=0
-            echo "destroy pass failed — sweeping blockers, then retrying ONCE"
+            echo "destroy pass failed, sweeping blockers, then retrying ONCE"
           fi
 
           # RETRY ONLY IF PHASE 3 FAILED. This sweep and second full destroy used to run
@@ -749,11 +779,11 @@ jobs:
           done
           terraform destroy -auto-approve -input=false -lock-timeout=300s \
               -var "run_id=${RUN_ID}" -var "teardown_after_minutes=150" || \
-              echo "destroy still failing — EventBridge kill switch will tear down at the 2.5h mark"
+              echo "destroy still failing. EventBridge kill switch will tear down at the 2.5h mark"
           fi
           # Sweep CSI-provisioned EBS orphans (PVCs; reclaimPolicy Delete, but the
           # cluster is gone before they're deleted → orphaned).
-          # CSI-provisioned volumes do NOT all carry kubernetes.io/cluster/<name>: some
+          # CSI-provisioned volumes do not all carry kubernetes.io/cluster/<name>: some
           # only have KubernetesCluster or ebs.csi.aws.com/cluster-name. Filtering on
           # the first key alone left 190GiB of Kafka/Postgres/Fluss volumes billing
           # after a teardown that reported success. Match every variant.
@@ -774,10 +804,10 @@ jobs:
           aws logs delete-log-group --region "$AWS_REGION" --log-group-name "$lg" || true
           done
 
-      - name: Teardown skipped — cluster left running
+      - name: Teardown skipped, cluster left running
         # WHENEVER THE CLUSTER SURVIVES, not only when the run failed. This used to be
         # `destroy_mode != 'always' && !success()`, so a SUCCESSFUL run with
-        # destroy_mode=never printed nothing at all — neither this notice nor the destroy
+        # destroy_mode=never printed nothing at all, neither this notice nor the destroy
         # step ran, and the workflow reported success while an EKS cluster and its nodes
         # kept billing. That is exactly how a run was believed torn down while 3 x
         # m6a.4xlarge stayed up (~$2.30/hr) until the kill switch caught it.

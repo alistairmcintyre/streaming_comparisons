@@ -3,8 +3,8 @@ set -e
 # On Kubernetes the Spark Operator runs this image as `driver`/`executor` and passes
 # every setting via --properties-file. Hand those args to Spark's own k8s entrypoint:
 # without this, the compose-oriented spark-submit below swallows them and dies with
-# "Failed to get main class in JAR ... /opt/spark/work-dir (Is a directory)" — and it
-# would also force --master local[2] plus MinIO creds. Compose passes NO args and
+# "Failed to get main class in JAR ... /opt/spark/work-dir (Is a directory)", and it
+# would also force --master local[2] plus MinIO creds. Compose passes no args and
 # drives the run through JOB_FILE, so it falls through to the block below unchanged.
 case "$1" in
   driver|executor|driver-py|driver-r) exec /opt/entrypoint.sh "$@" ;;
@@ -13,8 +13,8 @@ esac
 
 # Shared Spark catalog + S3A configuration passed to every job via spark-submit.
 # Two separate S3 config blocks are required:
-#   1. Iceberg S3FileIO (catalog-level) — used for data files
-#   2. Hadoop S3A (hadoop-level) — used for streaming checkpoints
+#   1. Iceberg S3FileIO (catalog-level), used for data files
+#   2. Hadoop S3A (hadoop-level), used for streaming checkpoints
 
 exec /opt/spark/bin/spark-submit \
   --master "local[2]" \

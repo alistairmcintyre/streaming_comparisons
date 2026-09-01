@@ -3,7 +3,7 @@
 --
 -- This file is a TEMPLATE. submit.sh runs `envsubst` over it, substituting these
 -- placeholders (named WITHOUT the $-brace here, so envsubst leaves this comment
--- intact — multi-line values would otherwise spill raw SQL into the file):
+-- intact, multi-line values would otherwise spill raw SQL into the file):
 --   PAIMON_S3_OPTS               catalog S3 access (endpoint+creds locally; empty on AWS)
 --   PAIMON_ICEBERG_OPTS          Iceberg-compat metadata (hadoop-catalog local; Glue on AWS)
 --   PAIMON_FULL_COMPACT_INTERVAL full-compaction cadence = Iceberg-view freshness knob
@@ -46,15 +46,15 @@ CREATE TABLE IF NOT EXISTS paimon.bronze.trades (
 -- ─── Silver trades (cleaned + deduped fills, stream-readable) ────────────────
 -- PK on trade_id dedupes exact re-deliveries; each fill is a unique key.
 --
--- merge-engine=first-row, NOT deduplicate. A trade is an immutable execution, so
--- first-row-wins IS the correct dedupe — and it decides the state profile of the gold
+-- merge-engine=first-row, not deduplicate. A trade is an immutable execution, so
+-- first-row-wins is the correct dedupe, and it decides the state profile of the gold
 -- fold downstream. BaseDataTableSource.getChangelogMode() (verified in
 -- paimon-flink-1.20-1.4.2.jar) returns insertOnly() for a FIRST_ROW table but
--- ChangelogMode.all() whenever changelog-producer != none — which is what 'input'
+-- ChangelogMode.all() whenever changelog-producer != none, which is what 'input'
 -- selected. The old comment here reasoned that the changelog was insert-only "by
 -- construction", which was true of the CONTENT and irrelevant: Flink plans on the
 -- DECLARED mode. Over a declared-retracting input it cannot un-apply MIN/MAX, so the
--- gold fold kept a per-key multiset of every value ever seen — O(total rows).
+-- gold fold kept a per-key multiset of every value ever seen. O(total rows).
 --
 -- Two constraints come with it, both enforced by SchemaValidation:
 --   "Only support 'none' and 'lookup' changelog-producer on FIRST_ROW merge engine"
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS paimon.silver.trades (
     -- IMMUTABLE EXECUTION: the source never updates it (gen_trades.py is INSERT-only,
     -- and real venues model amendments and busts as NEW events carrying the original
     -- trade id, not as updates in place). So the only duplicates that reach here are
-    -- at-least-once CDC RE-DELIVERIES, which are byte-identical — first-wins and
+    -- at-least-once CDC RE-DELIVERIES, which are byte-identical, first-wins and
     -- last-wins are therefore equivalent, and first-wins is cheaper.
     --
     -- Cheaper for a specific reason: FIRST_ROW makes the Paimon source declare
@@ -91,19 +91,19 @@ CREATE TABLE IF NOT EXISTS paimon.silver.trades (
     -- key instead of a retract multiset of every value ever seen. Last-wins would need
     -- a retracting changelog and put gold state back to O(total rows).
     --
-    -- Last-wins belongs on MUTABLE entities. silver.accounts is that entity here — it
+    -- Last-wins belongs on MUTABLE entities. silver.accounts is that entity here, it
     -- takes genuine UPDATEs and is maintained as a current view.
     'merge-engine'                     = 'first-row',
     -- 'lookup', not 'none'. SchemaValidation accepts either with FIRST_ROW, but a
     -- streaming read of first-row + none fails at RUNTIME: "First row streaming reading
     -- is not supported. You can use 'lookup' or 'full-compaction'". The gold job streams
-    -- this table, so 'none' silently cost us the gold job on the first live run —
-    -- schema-valid, runtime-invalid (DEPLOY_LOG #85).
+    -- this table, so 'none' silently cost us the gold job on the first live run, 
+    -- schema-valid, runtime-invalid.
     'changelog-producer'               = 'lookup',
     'file.format'                      = 'parquet',
     'compaction.optimization-interval' = '${PAIMON_FULL_COMPACT_INTERVAL}',
     -- SNAPSHOT RETENTION, declared rather than inherited. Paimon expires snapshots in
-    -- the writer, so no scheduled job is needed — but the bound was left to defaults.
+    -- the writer, so no scheduled job is needed, but the bound was left to defaults.
     -- A streaming writer committing every 10s creates ~8,600 snapshots/day; stating the
     -- retention explicitly is what makes metadata growth a known quantity instead of a
     -- property of whichever Paimon version happens to be in the image.
@@ -120,10 +120,10 @@ CREATE TABLE IF NOT EXISTS paimon.silver.accounts (
     tier              STRING,
     source_updated_at TIMESTAMP(6),
     event_ts          TIMESTAMP(6),
-    -- SCD2: effective_from is the SOURCE commit time (not ingest — an as-of join must not
+    -- SCD2: effective_from is the SOURCE commit time (not ingest, an as-of join must not
     -- depend on pipeline lag). effective_to / is_current are MATERIALISED by an atomic
-    -- close-out (see silver_accounts.sql): when version N+1 arrives the job writes BOTH
-    -- the new row AND version N again with effective_to set. PK is (account_id,
+    -- close-out (see silver_accounts.sql): when version N+1 arrives the job writes both
+    -- the new row and version N again with effective_to set. PK is (account_id,
     -- source_lsn), so rewriting version N merges onto the existing row.
     effective_from    TIMESTAMP(6),
     effective_to      TIMESTAMP(6),
@@ -132,9 +132,9 @@ CREATE TABLE IF NOT EXISTS paimon.silver.accounts (
     -- writes a NEW row, an at-least-once re-delivery has the same (account_id, source_lsn)
     -- and collapses.
     source_lsn        BIGINT NOT NULL,
-    -- Raw Debezium op, NOT a derived '+I'/'-D' row_kind. 'd' is filtered at the source on
+    -- Raw Debezium op, not a derived '+I'/'-D' row_kind. 'd' is filtered at the source on
     -- all five engines (see silver_accounts.sql), so this carries c/u/r. It used to be a
-    -- row_kind rendering here and a raw op on Delta/Iceberg — same concept, different
+    -- row_kind rendering here and a raw op on Delta/Iceberg, same concept, different
     -- field, so the five silver.accounts did not have the same schema.
     op                STRING,
     commit_ts         TIMESTAMP(6),
@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS paimon.silver.accounts (
     'file.format'                      = 'parquet',
     'compaction.optimization-interval' = '${PAIMON_FULL_COMPACT_INTERVAL}',
     -- SNAPSHOT RETENTION, declared rather than inherited. Paimon expires snapshots in
-    -- the writer, so no scheduled job is needed — but the bound was left to defaults.
+    -- the writer, so no scheduled job is needed, but the bound was left to defaults.
     -- A streaming writer committing every 10s creates ~8,600 snapshots/day; stating the
     -- retention explicitly is what makes metadata growth a known quantity instead of a
     -- property of whichever Paimon version happens to be in the image.
@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS paimon.silver.accounts (
 );
 
 -- ─── Gold open positions (net book per account+symbol) ──────────────────────
--- Maintained by Flink's streaming SUM ... GROUP BY over silver.trades —
+-- Maintained by Flink's streaming SUM ... GROUP BY over silver.trades, 
 -- retraction-aware, exactly-once from Flink state; upserted into this PK table.
 --
 -- opened_at / last_updated_at are EVENT time (from executed_at); commit_ts is
@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS paimon.gold.open_positions (
     net_notional    DECIMAL(38,4),
     trade_count     BIGINT,
     status          STRING,
-    -- country/tier are NOT denormalised here. They are account attributes, and a
+    -- country/tier are not denormalised here. They are account attributes, and a
     -- current-state position row has no defensible temporal semantic for them.
     -- Enrich at query time:  ... LEFT JOIN silver.accounts USING (account_id)
     -- LEFT always: a fill can land before its account row (independent CDC streams),
@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS paimon.gold.open_positions (
     'file.format'                      = 'parquet',
     'compaction.optimization-interval' = '${PAIMON_FULL_COMPACT_INTERVAL}',
     -- SNAPSHOT RETENTION, declared rather than inherited. Paimon expires snapshots in
-    -- the writer, so no scheduled job is needed — but the bound was left to defaults.
+    -- the writer, so no scheduled job is needed, but the bound was left to defaults.
     -- A streaming writer committing every 10s creates ~8,600 snapshots/day; stating the
     -- retention explicitly is what makes metadata growth a known quantity instead of a
     -- property of whichever Paimon version happens to be in the image.

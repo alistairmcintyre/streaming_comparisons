@@ -24,7 +24,7 @@ echo "JobManager is ready."
 
 # Point sql-client at the remote JobManager. Flink 1.20's config.yaml is nested,
 # so the old flat-key sed no-ops; write a minimal flat config instead (the
-# submitter only submits job graphs to the JM — it runs no tasks).
+# submitter only submits job graphs to the JM, it runs no tasks).
 cat > "${FLINK_HOME}/conf/config.yaml" <<EOF
 jobmanager.rpc.address: ${JM_HOST}
 rest.address: ${JM_HOST}
@@ -33,7 +33,7 @@ EOF
 
 # ── Build environment-specific SQL fragments ────────────────────────────────
 if [ "${DEPLOY_ENV}" = "aws" ]; then
-  # paimon-s3 needs static keys (it can't use the IRSA IAM-role chain) — injected
+  # paimon-s3 needs static keys (it can't use the IRSA IAM-role chain), injected
   # from SSM via env (S3_ACCESS_KEY/S3_SECRET_KEY). Real S3 → no endpoint/path-style.
   PAIMON_S3_OPTS=",
     's3.access-key' = '${S3_ACCESS_KEY}',
@@ -42,7 +42,7 @@ if [ "${DEPLOY_ENV}" = "aws" ]; then
   # hive-catalog/Glue committer needs Hive-metastore + Glue-client jars that the
   # flink-paimon image does not carry -> every commit died with
   # NoClassDefFoundError org/apache/hadoop/hive/metastore/api/NoSuchObjectException.
-  # Athena reads these via a Glue table pointing at metadata_location — registered
+  # Athena reads these via a Glue table pointing at metadata_location, registered
   # externally by infra/aws/scripts/register-glue-tables.sh, because in-writer Glue
   # registration (hive-catalog) needs com.amazonaws.glue...AWSCatalogMetastoreClient,
   # which AWS does not publish to Maven Central, and Paimon 1.4.2 ships only
@@ -68,7 +68,7 @@ else
     'metadata.iceberg.storage' = 'hadoop-catalog'"
 fi
 
-# ── Kafka auth (decoupled from lake env) — none | scram | msk_iam ────────────
+# ── Kafka auth (decoupled from lake env), none | scram | msk_iam ────────────
 # 'none' = PLAINTEXT for OSS Kafka in-cluster (Strimzi/AutoMQ on EKS); cheapest
 # for load testing. 'msk_iam' only if you actually run MSK.
 case "${KAFKA_AUTH:-none}" in

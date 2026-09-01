@@ -1,5 +1,5 @@
 """
-Delta table DDL as importable, idempotent functions — run IN the pipeline.
+Delta table DDL as importable, idempotent functions, run IN the pipeline.
 
 Each streaming job calls ensure_all(spark) at startup (after building the session,
 before streaming). createIfNotExists is create-once + idempotent, so every stage can
@@ -7,7 +7,7 @@ self-provision the tables it reads/writes with no separate ddl-init and no order
 dependency. Compaction is in-pipeline (delta.autoOptimize.optimizeWrite/.autoCompact);
 VACUUM is the only separate job. Warehouse base is env-driven (local MinIO / AWS S3).
 
-NOTE: create-once semantics — changing a schema/props in code only lands on a fresh
+NOTE: create-once semantics, changing a schema/props in code only lands on a fresh
 table (fine for ephemeral benchmark runs; a long-lived table needs explicit migration).
 """
 import os
@@ -79,19 +79,19 @@ def create_silver_accounts(spark):
     if _is_delta(spark, "silver/accounts"):
         return  # exists: properties are converged by _converge_properties()
     schema = StructType([
-        # SCD2 — ALL VERSIONS RETAINED, validity MATERIALISED.
+        # SCD2. ALL VERSIONS RETAINED, validity MATERIALISED.
         # Accounts are a MUTABLE dimension (gen_accounts.py issues real UPDATEs to
         # country/tier), and in a regulated trading platform you must be able to answer
-        # "what was this client's classification AT THE TIME OF THE TRADE" — MiFID II
+        # "what was this client's classification AT THE TIME OF THE TRADE". MiFID II
         # categorisation, suitability, best execution. SCD1 overwrites destroy that.
         #
         # effective_to and is_current are WRITTEN, by an atomic close-out: when version
-        # N+1 arrives the job emits BOTH the new row AND version N again with effective_to
-        # set, in ONE MERGE, so a reader never sees two current rows or none.
+        # N+1 arrives the job emits both the new row and version N again with effective_to
+        # set, in ONE MERGE, so a reader never sees two current rows OR none.
         # This was DERIVED at read (LEAD(effective_from) OVER ...) on the argument that
         # close-out is not expressible in Flink SQL for a PK table. That turned out to be
         # wrong: the PK is (account_id, source_lsn), so re-emitting version N MERGES onto
-        # the existing row — no need to know its old effective_from. All five engines
+        # the existing row, no need to know its old effective_from. All five engines
         # materialise it. See jobs/_shared/scd2.py and tests/scd2-behaviour.sh.
         #
         # The natural key is (account_id, source_lsn): source_lsn is the CDC total order,
@@ -102,8 +102,8 @@ def create_silver_accounts(spark):
         StructField("source_updated_at", TimestampType()), StructField("event_ts", TimestampType()),
         # effective_to / is_current ARE columns, closed by the MERGE described above.
         StructField("effective_from", TimestampType(), False),
-        # MATERIALISED by the atomic close-out in silver_accounts.py — when version
-        # N+1 arrives, one MERGE both closes N and inserts N+1.
+        # MATERIALISED by the atomic close-out in silver_accounts.py, when version
+        # N+1 arrives, one MERGE both closes N AND inserts N+1.
         StructField("effective_to", TimestampType()),
         StructField("is_current", BooleanType()),
         StructField("source_lsn", LongType(), False),
@@ -126,10 +126,10 @@ def create_gold_open_positions(spark):
         StructField("account_id", LongType(), False), StructField("symbol", StringType(), False),
         StructField("net_quantity", LongType()), StructField("net_notional", DecimalType(38, 4)),
         StructField("trade_count", LongType()), StructField("status", StringType()),
-        # country/tier are NOT denormalised here. They are account attributes, not
+        # country/tier are not denormalised here. They are account attributes, not
         # position attributes, and a current-state table has no defensible temporal
         # semantic for them: the value would be "whatever the last batch that happened
-        # to touch this row saw" — neither the account's country now, nor its country
+        # to touch this row saw", neither the account's country now, nor its country
         # at the fill. gen_accounts.py trickles real SCD updates, so that is live, not
         # theoretical. Enrich at query time instead:
         #   SELECT p.*, a.country, a.tier
@@ -141,8 +141,8 @@ def create_gold_open_positions(spark):
         # last_updated_at = MAX(executed_at). commit_ts stays PROCESSING time, so
         # (commit_ts - last_updated_at) is a per-row processing delay, uniform across
         # engines and computable from the table itself with no emit chain involved.
-        # opened_at is NOT reset when a flat position reopens: that is easy here in
-        # the MERGE and impossible as a pure Flink fold, so it would make the Spark
+        # opened_at is not reset when a flat position reopens: that is easy here in
+        # the MERGE AND impossible as a pure Flink fold, so it would make the Spark
         # and Flink golds disagree on identical input.
         StructField("opened_at", TimestampType()),
         StructField("last_updated_at", TimestampType()),
@@ -157,7 +157,7 @@ def create_gold_open_positions(spark):
         .execute())
 
 
-# Table properties we want to hold on EVERY layer. createIfNotExists() FAILS with
+# Table properties we want to hold on every layer. createIfNotExists() FAILS with
 # DELTA_CREATE_TABLE_WITH_DIFFERENT_PROPERTY when a table already exists with a
 # different property set, so changing this list would break every restart against
 # tables created by an earlier build. Converge with ALTER TABLE instead: create is
@@ -171,9 +171,9 @@ _TABLE_PATHS = ["bronze/trades", "silver/trades", "silver/accounts", "gold/open_
 
 
 def _converge_properties(spark):
-    """Make existing tables match _TABLE_PROPERTIES, ALTERing ONLY when they differ.
+    """Make existing tables match _TABLE_PROPERTIES, ALTERing only when they differ.
 
-    READ BEFORE WRITE, and the reason is not tidiness. ALTER TABLE ... SET TBLPROPERTIES
+    Read before write, and the reason is not tidiness. ALTER TABLE ... SET TBLPROPERTIES
     writes a Delta METADATA COMMIT even when every value is already correct, and a metadata
     change on a table another job is STREAMING FROM kills that stream outright:
 
@@ -181,13 +181,13 @@ def _converge_properties(spark):
         concurrent update. Please try the operation again.
 
     All four Delta jobs call ensure_all() at startup and this loop covers ALL FOUR tables,
-    so every job start — and every restart — could kill the other jobs' source streams.
+  so every job start (and every restart) could kill the other jobs' source streams.
     Seen live: delta-silver-trades failed repeatedly and ended the run 37 source versions
     behind bronze, 2,240,000 rows against bronze's 4,086,000. Its invariant still read `ok`,
     because that check compares gold to SILVER rather than to bronze, so a silver that has
     fallen behind passes cleanly.
 
-    The previous version called itself "idempotent" and was — in final STATE. It was not a
+    The previous version called itself "idempotent" and was, in final STATE. It was not a
     no-op, which is the property that actually mattered here.
     """
     for rel in _TABLE_PATHS:

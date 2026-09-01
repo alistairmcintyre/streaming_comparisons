@@ -1,10 +1,10 @@
 """
 Spark Structured Streaming: Delta bronze.trades → Delta silver.trades.
 
-Cleaned + deduped fills (still append — fills are immutable events, NOT a
+Cleaned + deduped fills (still append, fills are immutable events, not a
 current-view). Dedups exact re-deliveries on trade_id within a watermark (bounded
 state), drops the Kafka envelope/offsets. This is where derived/enriched fields
-would be added — none required yet, so it's a clean passthrough.
+would be added, none required yet, so it's a clean passthrough.
 """
 import os
 from pyspark.sql import SparkSession
@@ -30,10 +30,10 @@ def main():
         .option("startingVersion", "0")
         .option("maxFilesPerTrigger", "200")
         .load(BRONZE_TRADES)
-        # DEDUPE WINDOW — 2 hours, and the number is load-bearing.
-        # This is the ONLY place a re-delivered trade_id can be removed. Paimon and Fluss
+        # Dedupe window of 2 hours. The number matters:
+        # This is the only place a re-delivered trade_id can be removed. Paimon and Fluss
         # hold silver.trades as a PK table with the first-row merge engine, and Hudi as an
-        # upsert on trade_id, so on those three a duplicate CANNOT become a second row —
+        # upsert on trade_id, so on those three a duplicate CANNOT become a second row, 
         # the dedupe is structural and unbounded. Delta and Iceberg keep silver.trades
         # APPEND-ONLY (gold streams it, and a streaming read of an updating table either
         # fails or re-emits rewritten files, which would double-count far worse), so here
@@ -45,7 +45,7 @@ def main():
         # run: run_minutes defaults to 120 and the EventBridge kill switch fires at 150,
         # so for the runs this benchmark actually performs the window spans the entire
         # event-time range and all five engines dedupe identically. It is a MATCH to the
-        # run length, not a margin over it — a run configured longer than 2h reopens the
+        # run length, not a margin over it, a run configured longer than 2h reopens the
         # gap, and the window must be raised with it.
         # COST: dropDuplicatesWithinWatermark state is one entry per distinct trade_id in
         # the window, heap-resident under the default HDFS-backed state store. At 1k/s
@@ -55,13 +55,13 @@ def main():
         # conform(), not a bare select: this is a POSITIONAL append, and Iceberg matches
         # the frame to the table by position, not name. The bronze job got this wrong and
         # crash-looped on `source_lsn is out of order`. One canon decides the order here
-        # and in the DDL. (source_lsn is the CDC total order and Hudi's precombine key —
+        # and in the DDL. (source_lsn is the CDC total order and Hudi's precombine key, 
         # bronze carried it all along and silver used to drop it.)
     )
     cleaned = conform(cleaned, SILVER_TRADES_FIELDS)
 
     # LATENCY EMIT for the bronze->silver hop. Until now only bronze and gold emitted, so
-    # the dashboard could show end-to-end and gold but NOT where time goes in the middle —
+    # the dashboard could show end-to-end and gold but not where time goes in the middle, 
     # on four of five engines. Silver is where the dedupe and the SCD2 work happen, so an
     # unmeasured silver hop is the least useful one to be missing.
     attach_latency_listener(spark, "delta-silver")

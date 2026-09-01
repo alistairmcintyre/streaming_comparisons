@@ -1,4 +1,4 @@
-# STANDING resources — applied ONCE, never torn down per run: GitHub OIDC deploy
+# STANDING resources, applied ONCE, never torn down per run: GitHub OIDC deploy
 # role, the tflock table, and ECR repos. The ephemeral run (../) references these.
 terraform {
   required_version = ">= 1.6"

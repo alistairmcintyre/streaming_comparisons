@@ -1,4 +1,4 @@
-"""Unit test for jobs/_shared/scd2.py — the SCD2 staging shared by the Spark engines.
+"""Unit test for jobs/_shared/scd2.py, the SCD2 staging shared by the Spark engines.
 
 Same scenarios as tests/scd2-behaviour.sh does for Flink, so the two families are held to
 one definition of SCD2:
@@ -7,14 +7,14 @@ one definition of SCD2:
   account 2: v150, never changed                -> current, never closed
   account 3: v400 (day 6), then an OUT-OF-ORDER v300 (day 5, arrives later)
                                                 -> v400 stays current; v300 is a late
-                                                   historical row, NOT a second current one
+                                                   historical row, not a second current one
   account 4: v500 arrives twice (re-delivery)   -> collapses, one row
   account 5: v600 ALREADY in the table, batch brings v700
                                                 -> close row carries v600's real attributes
-                                                   (a MERGE only updates two columns and
+                                                   (a MERGE only updates two columns AND
                                                    hides a null here; a Hudi upsert does not)
 
-Plain DataFrames, no Delta/Iceberg/Hudi — the logic is engine-agnostic and this runs in
+Plain DataFrames, no Delta/Iceberg/Hudi, the logic is engine-agnostic and this runs in
 seconds without a table format.
 """
 import sys, datetime as dt
@@ -73,7 +73,7 @@ chk("acct1 v100 closed at day 5",
 chk("acct1 v200 current",       g[(1,200)]["effective_to"] is None and g[(1,200)]["is_current"] is True)
 chk("acct2 never closed",       g[(2,150)]["effective_to"] is None and g[(2,150)]["is_current"] is True)
 chk("acct3 v400 stays current", g[(3,400)]["is_current"] is True)
-chk("acct3 out-of-order v300 is NOT current", g[(3,300)]["is_current"] is False)
+chk("acct3 out-of-order v300 is not current", g[(3,300)]["is_current"] is False)
 chk("acct4 re-delivery collapsed to one row", len([r for r in rows if r["account_id"] == 4]) == 1)
 chk("acct5 v600 closed from the TABLE at day 9",
     g[(5,600)]["effective_to"] == D(9) and g[(5,600)]["is_current"] is False)

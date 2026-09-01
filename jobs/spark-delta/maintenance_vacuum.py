@@ -1,12 +1,12 @@
 """
-Delta maintenance — VACUUM only.
+Delta maintenance. VACUUM only.
 
-Compaction is NOT done here: the tables enable Optimized Writes + Auto Compaction
-IN the streaming pipeline (delta.autoOptimize.optimizeWrite / .autoCompact — set on
+Compaction is not done here: the tables enable Optimized Writes + Auto Compaction
+IN the streaming pipeline (delta.autoOptimize.optimizeWrite / .autoCompact, set on
 the tables in jobs/_shared/delta_tables.py, and belt-and-suspenders as session confs on
 the streaming SparkApplication). That mirrors Paimon's in-writer compaction, so this
-job runs only the piece that CAN'T run in-stream: VACUUM (GC of tombstoned files past
-retention — there is no auto-vacuum in OSS Delta).
+job runs only the piece that cannot run in-stream: VACUUM (GC of tombstoned files past
+retention, there is no auto-vacuum in OSS Delta).
 
 Warehouse base is env-driven so it works locally (MinIO 'warehouse') and on AWS.
 """
@@ -21,7 +21,7 @@ TABLES = [
     f"{BASE}/gold/open_positions",
 ]
 # Aggressive retention for an ephemeral benchmark; disable the 7-day safety check.
-# NEVER do this on a real table (you can delete files a reader/time-travel still needs).
+# Never do this on a real table (you can delete files a reader/time-travel still needs).
 VACUUM_RETAIN_HOURS = float(os.environ.get("VACUUM_RETAIN_HOURS", "1"))
 
 spark = (

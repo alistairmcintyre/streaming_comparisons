@@ -1,4 +1,4 @@
-"""SCD2 close-out staging — shared by the three Spark engines.
+"""SCD2 close-out staging, shared by the three Spark engines.
 
 Given a micro-batch of new dimension versions and the CURRENT row for each affected key,
 produce the rows to write:
@@ -6,41 +6,97 @@ produce the rows to write:
   action='new'    an incoming version, with effective_to / is_current computed
   action='close'  the table's existing current row, superseded by this batch
 
-Each engine then writes that staging set its own way — Delta and Iceberg with a single
-MERGE on (key, version), Hudi with an upsert on the same composite record key — but the
+Each engine then writes that staging set its own way. Delta and Iceberg with a single
+MERGE on (key, version), Hudi with an upsert on the same composite record key, but the
 LOGIC lives here once, so the five pipelines cannot drift on what SCD2 means.
 
 TWO INVARIANTS THIS FILE OWES ITS CALLERS, both learned the hard way:
 
   * NO KEY APPEARS TWICE in the returned set. Delta and Iceberg tolerate a duplicate
-    (whichever clause fails to match is a no-op); Hudi does not — its upsert combines
+    (whichever clause fails to match is a no-op); Hudi does not, its upsert combines
     same-key rows by precombine, and on a tie the winner is arbitrary. So within-batch
     supersession is expressed on the row ITSELF via LEAD, and a 'close' is only ever
     emitted for the row already IN the table.
   * A 'close' ROW IS A COMPLETE RECORD, carrying the closed version's real attributes.
     A MERGE close is an UPDATE of two columns so nulls there are invisible, but Hudi's
-    upsert replaces the whole record — nulling the attributes ERASES the history the
+    upsert replaces the whole record, nulling the attributes ERASES the history the
     close exists to preserve. Verified by tests/scd2_hudi_upsert_test.py, which caught
     exactly this after the Delta and Iceberg tests both passed.
 
 And two rules on ordering, from tests/scd2-behaviour.sh catching them in the Flink version:
 
-  * An OUT-OF-ORDER arrival (version < the current one) is NOT current. It is a late
+  * An OUT-OF-ORDER arrival (version < the current one) is not current. It is a late
     historical row, valid until the row that already superseded it. Marking it current
-    gives the key TWO current rows, which silently fans out every downstream join and
+    gives the key two current rows, which silently fans out every downstream join and
     passes every compile check.
-  * A re-delivery (same key AND same version as the current row) is dropped outright.
+  * A re-delivery (same key and same version as the current row) is dropped outright.
     Restating it as a non-current row is not harmless: on Hudi it overwrites the live
-    row with is_current=false and the key ends up with NO current version at all.
+    row with is_current=false and the key ends up with no current version at all.
 """
 from pyspark.sql import DataFrame, Window
-from pyspark.sql.functions import col, lead, lit, row_number, when
+from pyspark.sql.functions import (broadcast, col, lead, lit, max as _max,
+                                   min as _min, row_number, when)
+
+
+def current_for_batch(load_table, batch: DataFrame, attrs,
+                      key: str = "account_id", version: str = "source_lsn",
+                      eff_from: str = "effective_from") -> DataFrame:
+    """The is_current row of the dimension table for every key present in `batch`.
+
+    `load_table` is a CALLABLE returning the table, so that the only thing treated as
+    "the table does not exist yet" is the load itself. Inlining the read at the call site
+    put the pruning action inside that except too, and a transient failure there would
+    then be swallowed as a first batch, handing back an empty `current`, so nothing gets
+    closed and every key ends up with two current rows. Silent, and wrong in the one
+    direction SCD2 exists to prevent.
+
+    Shared by all three Spark engines so the read side cannot drift either, and because
+    the obvious version of this is a LANDMINE:
+
+        ids = [r[0] for r in batch.select(key).distinct().collect()]
+        table.filter(col("is_current") & col(key).isin(ids))
+
+    That puts one literal per key into the plan. Hudi's column-stats data skipping then
+    expands that IN into a per-literal chain of nested binary predicates, and Catalyst
+    resolves expressions RECURSIVELY, so the analyzer overflows the stack:
+
+        HoodieRecordCreationException: Failed to create Hoodie Spark Record
+        Caused by: java.lang.StackOverflowError
+            at ColumnResolutionHelper.innerResolve / BinaryLike.mapChildren   x~600
+
+    The depth is the number of distinct keys in the batch, so it is invisible in tests
+    (a 4-row batch nests 4 deep) and unavoidable in production: with
+    maxOffsetsPerTrigger=100000 against 1000 accounts, any restart backlog fills the
+    batch with the WHOLE key space. That is what killed hudi-silver-accounts on AWS, 
+    it failed, retried into a bigger backlog, and burned all 10 restarts.
+
+    So prune with a BOUNDED predicate instead. `key BETWEEN lo and hi` is two literals
+  whatever the batch size (it still pushes down to file/column stats) and the
+    semi-join against the batch's own keys makes the result exact. Turning data skipping
+    off would also have stopped the overflow, but data skipping is part of what this
+    benchmark measures, so switching it off to dodge a Spark limit would quietly bias
+    Hudi's numbers.
+    """
+    cols = [key, version, eff_from, *attrs]
+    try:
+        table = load_table()
+    except Exception:                       # first batch: the table does not exist yet
+        return batch.sparkSession.createDataFrame([], batch.select(*cols).schema)
+
+    keys = batch.select(col(key)).distinct()
+    bounds = keys.agg(_min(key).alias("lo"), _max(key).alias("hi")).first()
+    if bounds is None or bounds["lo"] is None:          # empty batch, or all-null keys
+        return table.limit(0).select(*cols)
+    return (table
+            .filter(col("is_current") & col(key).between(bounds["lo"], bounds["hi"]))
+            .join(broadcast(keys), key, "left_semi")
+            .select(*cols))
 
 
 def stage_scd2(batch: DataFrame, current: DataFrame, attrs,
                key: str = "account_id", version: str = "source_lsn",
                eff_from: str = "effective_from") -> DataFrame:
-    """batch: incoming versions. current: the is_current row per affected key, which MUST
+    """batch: incoming versions. current: the is_current row per affected key, which must
     carry the attribute columns as well (they are what the close row is rebuilt from) and
     may be empty. attrs: attribute column names carried on the dimension."""
     # One row per (key, version): an at-least-once re-delivery is byte-identical, so any
@@ -52,7 +108,7 @@ def stage_scd2(batch: DataFrame, current: DataFrame, attrs,
 
     # The version that supersedes each incoming row WITHIN this batch, if any. Two versions
     # of one account can land in the same micro-batch, and the earlier one is then already
-    # historical on arrival — it must never be written as current and then fixed up later.
+    # historical on arrival, it must never be written as current and then fixed up later.
     b = (b.withColumn("_next_ver", lead(col(version)).over(w_key))
           .withColumn("_next_eff", lead(col(eff_from)).over(w_key)))
 

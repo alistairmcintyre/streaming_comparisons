@@ -2,9 +2,9 @@
 # Build Fluss from source (main / 1.0-SNAPSHOT) and stage the artifacts our two
 # Fluss images consume. We build from source because FIP-27 ("clean" Paimon lake
 # schema without the __bucket/__offset/__timestamp system columns) is on main but
-# NOT in any release (latest tag 0.9.1-incubating, 2026-05-04). The precision-3
+# Not in any release (latest tag 0.9.1-incubating, 2026-05-04). The precision-3
 # __timestamp system column is what breaks Paimon's Iceberg-compat view (Athena),
-# and FIP-27 removes it. See jobs/flink-fluss/PHEASE_1_README.md.
+# and FIP-27 removes it. See README.md.
 #
 # Fluss requires JDK 11 to build; we do it in a container so no local JDK needed.
 #

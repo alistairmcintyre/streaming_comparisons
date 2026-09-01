@@ -38,7 +38,7 @@ RUN curl -fsSL -o /opt/spark/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
       https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/${AWS_SDK_BUNDLE_VERSION}/bundle-${AWS_SDK_BUNDLE_VERSION}.jar
 
 # kafka-python: the StreamingQueryListener emits post-commit latency from the
-# DRIVER, where a Spark action would risk deadlock — so it needs a plain client.
+# driver, where a Spark action would risk deadlock, so it needs a plain client.
 RUN pip install --no-cache-dir pyspark==4.0.4 kafka-python==2.0.2
 
 COPY entrypoint.sh /opt/spark/entrypoint.sh

@@ -10,7 +10,7 @@ happened on a real run: `fluss` was declared in 00-namespaces.yaml and created n
 else, so 00/20/60-*.yaml all failed, the run aborted, and the cluster was torn down for a
 defect that did not exist.
 
-The kind pre-flight has always created namespaces for real for this reason — but it only
+The kind pre-flight has always created namespaces for real for this reason, but it only
 proves the MANIFESTS are valid, never that the workflow's apply ORDER is. This closes that
 gap statically: a namespace used by any manifest must be created for real by the workflow
 before it dry-runs anything.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drain the pipelines before measuring.
 #
-# WHY: with the generator still running, gold legitimately trails silver by whatever
+# Why: with the generator still running, gold legitimately trails silver by whatever
 # is in flight, and bronze trails the Kafka end offset by the consumer lag. Every
 # correctness number taken mid-flight therefore shows a shortfall that is indistinguishable
 # from real data loss. A drain step is what makes "gold == silver" a testable invariant
@@ -34,7 +34,7 @@ echo "== 2. wait for CDC + every consumer group to drain =="
 lag_total() {
   # Sum the LAG column across all consumer groups. Columns are:
   #   $1 GROUP  $2 TOPIC  $3 PARTITION  $4 CURRENT-OFFSET  $5 LOG-END-OFFSET  $6 LAG
-  # LAG is $6, NOT $5. Summing $5 sums the log end offsets, which never reach zero, so
+  # LAG is $6, not $5. Summing $5 sums the log end offsets, which never reach zero, so
   # the drain would always time out and every run would be recorded as mid-flight.
   # The numeric guard also drops the per-group header rows and the '-' placeholder
   # printed for partitions with no committed offset.
@@ -66,7 +66,7 @@ if [ "${stable:-0}" -lt 2 ]; then
 fi
 
 # Sinks commit on their own cadence (Spark 15s triggers, Flink 10s checkpoints, Fluss
-# tiering 30s freshness). Zero lag means READ, not COMMITTED — give the slowest of those
+# tiering 30s freshness). Zero lag means READ, not COMMITTED, give the slowest of those
 # a couple of cycles to land before anything reads the tables.
 echo "== 3. settle sink commits (2x the slowest commit interval) =="
 sleep "${SETTLE_SECONDS:-90}"

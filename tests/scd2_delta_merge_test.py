@@ -1,6 +1,6 @@
 """End-to-end SCD2 against a REAL Delta table, across MICRO-BATCHES.
 
-tests/scd2_spark_test.py covers the staging logic with an empty `current` — i.e. versions
+tests/scd2_spark_test.py covers the staging logic with an empty `current`, i.e. versions
 arriving in one batch. This covers the path that actually happens: version N lands in one
 micro-batch, N+1 in a later one, and the close-out has to find N by READING THE TABLE.
 
@@ -58,16 +58,16 @@ def run_batch(rows):
                     s.event_ts, s.effective_from, s.effective_to, s.is_current,
                     s.source_lsn, s.op, s.commit_ts)""")
 
-# batch 1 — day 1
+# batch 1, day 1
 run_batch([(1, "acme", "GB", "A", D(1), D(1), D(1), 100, "c", D(1)),
            (2, "beta", "US", "X", D(3), D(3), D(3), 150, "c", D(3))])
-# batch 2 — day 5, a LATER micro-batch: the close-out must find v100 in the TABLE
+# batch 2, day 5, a LATER micro-batch: the close-out must find v100 in the TABLE
 run_batch([(1, "acme", "GB", "B", D(5), D(5), D(5), 200, "u", D(5))])
-# batch 3 — an at-least-once re-delivery of batch 2
+# batch 3, an at-least-once re-delivery of batch 2
 run_batch([(1, "acme", "GB", "B", D(5), D(5), D(5), 200, "u", D(5))])
 
 
-# batch 4 — TWO versions of one account in a SINGLE micro-batch. The earlier one is
+# batch 4. Two versions of one account in a SINGLE micro-batch. The earlier one is
 # already historical on arrival: it must never be written as current, and the pair
 # must not stage the same key twice (a MERGE tolerates that; a Hudi upsert does not).
 run_batch([(3, "gamma", "IE", "P", D(2), D(2), D(2), 10, "c", D(2)),

@@ -11,7 +11,7 @@
 #   Paimon: metadata.iceberg.storage=hive-catalog WOULD register itself, but it needs
 #   com.amazonaws.glue.catalog.metastore.AWSCatalogMetastoreClient, which AWS does not
 #   publish to Maven Central (source-only on GitHub), and Paimon 1.4.2 ships no
-#   Glue-native committer — IcebergHiveMetadataCommitter is the only one. So we keep
+#   Glue-native committer. IcebergHiveMetadataCommitter is the only one. So we keep
 #   hadoop-catalog (Paimon writes real Iceberg metadata beside the data) and point a
 #   Glue table at it here. Same result, no source builds in the image.
 #   Delta: Athena engine v3 reads the _delta_log natively; it only needs a Glue table
@@ -43,20 +43,20 @@ for spec in "bronze:trades_delta:delta/bronze/trades:BRONZE_TRADES" \
   path="${rest2%%:*}"; canon="${rest2#*:}"
   loc="s3://${WAREHOUSE_BUCKET}/${path}"
   if ! aws s3 ls "${loc}/_delta_log/" >/dev/null 2>&1; then
-    echo "  skip ${db}.${tbl} — no _delta_log yet"; continue
+    echo "  skip ${db}.${tbl}, no _delta_log yet"; continue
   fi
   # REGISTERED THROUGH THE GLUE API, NOT ATHENA DDL.
   # `CREATE EXTERNAL TABLE ... TBLPROPERTIES('table_type'='DELTA')` fails on any table with
   # deletion vectors:
   #     Delta protocol version is too new for Athena DDL engine
-  # which is why silver.accounts and gold.open_positions never registered — delta_tables.py
+  # which is why silver.accounts and gold.open_positions never registered, delta_tables.py
   # enables DVs on exactly those two (Delta's merge-on-read analogue). Athena's QUERY engine
   # reads deletion vectors perfectly well (since July 2024); only its DDL engine refuses the
   # protocol. So skip the DDL.
   #
   # The shape below is the NATIVE DELTA one, copied from a table Athena itself created:
   # table_type=delta plus spark.sql.sources.provider=delta and the Spark JSON schema, over
-  # SequenceFile/LazySimpleSerDe. Getting this wrong is dangerous, not merely broken — a
+  # SequenceFile/LazySimpleSerDe. Getting this wrong is dangerous, not merely broken, a
   # Glue table with a PARQUET SerDe over the same location also "works" and is silently
   # WRONG: it reads the directory as raw parquet, ignores _delta_log entirely, returns
   # DELETED ROWS AS LIVE DATA, and then dies with `HIVE_BAD_DATA: Malformed Parquet file
@@ -102,7 +102,7 @@ done
 # enabled in jobs/_shared/hudi_tables.py). That is why there is no CREATE TABLE here:
 # unlike Delta (Athena DDL) and Paimon (external metadata_location pointer), Hudi
 # needs no external registration and cannot go stale.
-# A MERGE_ON_READ table syncs as TWO Glue tables — _ro (base files only, STALE) and
+# A MERGE_ON_READ table syncs as two Glue tables, _ro (base files only, STALE) and
 # _rt (merges log files, CURRENT). Query _rt; _ro will look fast and return old data.
 echo "== hudi (self-registered via Glue sync) =="
 for spec in "bronze:trades_hudi" "silver:trades_hudi" "silver:accounts_hudi" \
@@ -111,7 +111,7 @@ for spec in "bronze:trades_hudi" "silver:trades_hudi" "silver:accounts_hudi" \
   FOUND=$(aws glue get-tables --database-name "$db" \
           --query "TableList[?starts_with(Name, '${tbl}')].Name" --output text 2>/dev/null)
   if [ -n "$FOUND" ]; then echo "  ok ${db}: $FOUND"
-  else echo "  MISSING ${db}.${tbl}(_ro/_rt) — Hudi Glue sync did not run: check hudi-aws-bundle is in the image and the workload role has glue:*Table*"; fi
+  else echo "  MISSING ${db}.${tbl}(_ro/_rt). Hudi Glue sync did not run: check hudi-aws-bundle is in the image and the workload role has glue:*Table*"; fi
 done
 
 # Athena reads an Iceberg table's COLUMNS FROM THE GLUE TABLE DEFINITION, not from the
@@ -119,9 +119,9 @@ done
 # table where `SELECT count(*)` WORKED (that only needs the snapshot) while `SELECT *`
 # failed with
 #     COLUMN_NOT_FOUND: line 1:8: Relation contains no accessible columns
-# for paimon AND fluss — three of five engines effectively unqueryable, and their rows in
+# for paimon and fluss, three of five engines effectively unqueryable, and their rows in
 # snapshot-results recorded as query_failed as if the pipelines were broken.
-# Verified directly: re-registering the SAME metadata pointer with columns populated
+# Verified directly: re-registering the same metadata pointer with columns populated
 # returned real rows (account_id=1, symbol=AMD, net_quantity=1633, status=OPEN).
 # Derived from the metadata's own schema rather than hardcoded, so it follows the table.
 glue_columns_from_metadata() {   # $1 = s3://.../vN.metadata.json  -> Glue Columns JSON
@@ -153,7 +153,7 @@ except Exception:
 # A Glue table with table_type=ICEBERG + metadata_location makes Athena read it.
 echo "== paimon (as iceberg) =="
 # NOTE the path: hadoop-catalog writes to <warehouse>/iceberg/<db>/<table>/metadata/,
-# NOT beside the Paimon data under <db>.db/<table>/.
+# Not beside the Paimon data under <db>.db/<table>/.
 for spec in "bronze:trades_paimon:paimon/iceberg/bronze/trades" \
             "silver:trades_paimon:paimon/iceberg/silver/trades" \
             "silver:accounts_paimon:paimon/iceberg/silver/accounts" \
@@ -161,7 +161,7 @@ for spec in "bronze:trades_paimon:paimon/iceberg/bronze/trades" \
   db="${spec%%:*}"; rest="${spec#*:}"; tbl="${rest%%:*}"; path="${rest#*:}"
   latest=$(aws s3 ls "s3://${PAIMON_BUCKET}/${path}/metadata/" 2>/dev/null \
            | grep -oE '[^ ]+\.metadata\.json$' | grep -v '^\.' | sort -V | tail -1 || true)
-  if [ -z "$latest" ]; then echo "  skip ${db}.${tbl} — no iceberg metadata yet"; continue; fi
+  if [ -z "$latest" ]; then echo "  skip ${db}.${tbl}, no iceberg metadata yet"; continue; fi
   meta="s3://${PAIMON_BUCKET}/${path}/metadata/${latest}"
   COLS=$(glue_columns_from_metadata "$meta"); [ -z "$COLS" ] && COLS="[]"
   aws glue create-table --database-name "$db" --table-input "{
@@ -196,7 +196,7 @@ for spec in "silver:trades_fluss:fluss/paimon/iceberg/silver/trades" \
   db="${spec%%:*}"; rest="${spec#*:}"; tbl="${rest%%:*}"; path="${rest#*:}"
   latest=$(aws s3 ls "s3://${PAIMON_BUCKET}/${path}/metadata/" 2>/dev/null \
            | grep -oE '[^ ]+\.metadata\.json$' | grep -v '^\.' | sort -V | tail -1 || true)
-  if [ -z "$latest" ]; then echo "  skip ${db}.${tbl} — no iceberg metadata yet"; continue; fi
+  if [ -z "$latest" ]; then echo "  skip ${db}.${tbl}, no iceberg metadata yet"; continue; fi
   meta="s3://${PAIMON_BUCKET}/${path}/metadata/${latest}"
   COLS=$(glue_columns_from_metadata "$meta"); [ -z "$COLS" ] && COLS="[]"
   aws glue create-table --database-name "$db" --table-input "{
@@ -218,7 +218,7 @@ done
 # is_current are now MATERIALISED by an atomic close-out in every engine's
 # silver_accounts job, so deriving them per query would be redundant work and a second
 # definition of the same thing. The as-of join is now a plain range predicate on stored
-# columns — or, better, an equality join on (account_id, source_lsn) when the fact carries
+# columns, or, better, an equality join on (account_id, source_lsn) when the fact carries
 # the version pointer.
 
 echo "== registered tables =="

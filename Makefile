@@ -1,7 +1,7 @@
 .PHONY: up down build wait create-tables register-connectors sql \
         start-generators start-spark start-compactor consistency-check \
         start-delta start-flink-paimon \
-        ui logs status all clean logs-spark logs-delta logs-flink-paimon test test-all
+        logs status all clean logs-spark logs-delta logs-flink-paimon test test-all
 
 # ─── Bring up infrastructure ────────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ wait:
 
 create-tables:
 	@echo "Tables are now created IN the pipelines (idempotent ensure_all at job startup)."
-	@echo "No separate DDL step — start the pipelines directly."
+	@echo "No separate DDL step, start the pipelines directly."
 
 register-connectors:
 	@bash scripts/register_connectors.sh
@@ -86,7 +86,7 @@ consistency-check:
 	@case "$(ENGINE)" in \
 	  delta)   SVC=delta-bronze-trades ;; \
 	  iceberg) SVC=spark-bronze-trades ;; \
-	  *) echo "ENGINE=$(ENGINE) has no local compose service — hudi and paimon run on AWS only"; exit 2 ;; \
+	  *) echo "ENGINE=$(ENGINE) has no local compose service, hudi and paimon run on AWS only"; exit 2 ;; \
 	esac; \
 	docker compose run --rm --no-deps \
 	  -v $(CURDIR)/scripts/integration:/opt/integration \
@@ -94,13 +94,6 @@ consistency-check:
 
 # ─── Open UI ─────────────────────────────────────────────────────────────────
 
-ui:
-	docker compose up -d streamlit-ui
-	@echo ""
-	@echo "Streamlit UI: http://localhost:8501"
-	@echo "MinIO console: http://localhost:9001  (user: minioadmin / minioadmin)"
-	@echo "Flink UI:      http://localhost:8081"
-	@echo "Connect REST:  http://localhost:8083"
 
 # ─── Full bring-up in order ──────────────────────────────────────────────────
 
@@ -148,7 +141,7 @@ logs-connect:
 down:
 	docker compose down
 
-# Remove ALL data including volumes (destructive — use with care)
+# Remove all data including volumes (destructive, use with care)
 clean:
 	docker compose down -v
 	@echo "All containers and volumes removed."
@@ -156,9 +149,9 @@ clean:
 
 # ── pre-deploy checks ───────────────────────────────────────────────────────
 # Run after every change. `test` is seconds and needs nothing; `test-all` adds the
-# Flink SQL compile for BOTH engines (Docker, ~6 min: paimon needs a Flink, fluss also
+# Flink SQL compile for both engines (Docker, ~6 min: paimon needs a Flink, fluss also
 # needs zookeeper + coordinator + tablet server). Both tiers also verify each CHECKER can still fail
-# against a known-bad fixture — several checks written on 2026-08-27 were themselves
+# against a known-bad fixture, several checks written on 2026-08-27 were themselves
 # broken in ways that made them silently pass, which is how ~$42 of clusters went on
 # bugs that were free to catch.
 test:

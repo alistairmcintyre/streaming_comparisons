@@ -14,17 +14,19 @@
 #   (1, A) closed  -> effective_to = day 5, is_current false
 #   (1, B) open    -> effective_to NULL,    is_current true
 #   (2, X) open    -> effective_to NULL,    is_current true     (never closed)
-#   (3, P) open    -> NOT closed by the lsn-300 arrival: the source_lsn > prev_lsn guard
+#   (3, P) open    -> not closed by the lsn-300 arrival: the source_lsn > prev_lsn guard
 #                     must skip it rather than write a range that runs backwards.
 #   (3, Q) closed  -> the late arrival is a HISTORICAL version, not a second current one.
 #
 # That last case is the one that matters: the first implementation marked it current, so
-# account 3 had TWO current rows. It compiled and planned cleanly. Only running it found it.
+# account 3 had two current rows. It compiled and planned cleanly. Only running it found it.
 #
 # Filesystem source (bounded) + print sink, so the job finishes and the output is
 # assertable. No Kafka, no Paimon, no AWS.
 set -uo pipefail
-IMG="${FLINK_PAIMON_IMAGE:-167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/flink-paimon:latest}"
+. "$(dirname "$0")/../scripts/ecr-env.sh"
+IMG="${FLINK_PAIMON_IMAGE:-$ECR_REGISTRY/flink-paimon:latest}"
+ecr_required || exit 1
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/data" "$W/sql"
 
@@ -105,11 +107,11 @@ docker run --rm -v "$W/data:/data:ro" -v "$W/sql:/sql:ro" -v "$W/run.sh:/run.sh:
 raw=$(grep -oE '^\+I\[[^]]*\]' "$W/out.txt" | sed 's/^+I\[//;s/\]$//')
 # MODEL THE SINK. The real target is a PK table on (account_id, source_lsn), so when the
 # close-out rewrites version N it MERGES onto the original row. The print connector has no
-# merge semantics and emits both, which looked like "account 1 has 2 current rows" — a
+# merge semantics and emits both, which looked like "account 1 has 2 current rows", a
 # property of the harness, not of the logic. Collapse by key, last write wins, as the PK
 # table would.
 rows=$(echo "$raw" | awk -F', *' '{key=$1"|"$6; line[key]=$0} END {for (k in line) print line[k]}' | sort)
-[ -n "$raw" ] || { echo "  no output rows — harness problem, not a logic result"; tail -15 "$W/out.txt" | sed 's/^/      /'; exit 1; }
+[ -n "$raw" ] || { echo "  no output rows, harness problem, not a logic result"; tail -15 "$W/out.txt" | sed 's/^/      /'; exit 1; }
 echo "  emitted rows (raw):"; echo "$raw" | sed 's/^/      /'
 echo "  after PK merge on (account_id, source_lsn):"; echo "$rows" | sed 's/^/      /'
 
@@ -123,16 +125,16 @@ chk "account 1 v200 is current"           '^1, ?B, ?2026-01-05.*(null|NULL).*tru
 chk "account 2 never closed"              '^2, ?X, ?2026-01-03.*(null|NULL).*true'
 chk "account 3 v400 emitted as current"   '^3, ?P, ?2026-01-06.*(null|NULL).*true'
 # A re-delivery must be a NO-OP. Restating it as a non-current row is not harmless: the PK
-# table merges it onto the live row and the account ends up with ZERO current versions.
+# table merges it onto the live row and the account ends up with zero current versions.
 # The equivalent bug in the Spark staging was found by tests/scd2_hudi_upsert_test.py.
 chk "account 4 re-delivery left the row current" '^4, ?Z, ?2026-01-08.*(null|NULL).*true'
 if echo "$rows" | grep -qE '^3, ?P.*false'; then
-  echo "  FAIL  out-of-order guard: lsn 300 closed lsn 400 — validity would run backwards"; fail=1
+  echo "  FAIL  out-of-order guard: lsn 300 closed lsn 400, validity would run backwards"; fail=1
 else
-  echo "  PASS  out-of-order arrival did NOT close the newer version"
+  echo "  PASS  out-of-order arrival did not close the newer version"
 fi
-# THE invariant: exactly one current row per account. The first version of this logic
-# marked the out-of-order arrival current too, giving account 3 two current rows — which
+# The invariant: exactly one current row per account. The first version of this logic
+# marked the out-of-order arrival current too, giving account 3 two current rows, which
 # compiles, plans, and silently fans out every downstream join.
 for a in 1 2 3 4; do
   n=$(echo "$rows" | grep -cE "^$a, .*, true, ")

@@ -1,5 +1,5 @@
 {
-  "title": "Pipeline Comparison — Live",
+  "title": "Pipeline Comparison. Live",
   "uid": "pipeline-compare-live",
   "schemaVersion": 39,
   "editable": true,
@@ -19,7 +19,7 @@
   "panels": [
     {
       "id": 1,
-      "title": "Liveness — latency-event rate per pipeline (flat 0 = pipeline down)",
+      "title": "Liveness, latency-event rate per pipeline (flat 0 = pipeline down)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
@@ -63,7 +63,7 @@
     },
     {
       "id": 5,
-      "title": "Now — p50 / p95 / p99 per pipeline",
+      "title": "Now, p50 / p95 / p99 per pipeline",
       "type": "table",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },

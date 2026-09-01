@@ -1,13 +1,13 @@
 """The five pipelines must write the SAME FIELDS, or the benchmark compares different tables.
 
-Checks every DECLARED schema — Delta and Iceberg (Python/SQL DDL in jobs/_shared) and
-Paimon and Fluss (CREATE TABLE in each engine's create_tables.sql) — against the single
+Checks every DECLARED schema. Delta and Iceberg (Python/SQL DDL in jobs/_shared) and
+Paimon and Fluss (CREATE TABLE in each engine's create_tables.sql), against the single
 definition in jobs/_shared/schemas.py, for silver.trades, silver.accounts and
 gold.open_positions.
 
 HUDI IS NOT HERE, because it has no DDL: a Hudi table's schema is whatever DataFrame gets
 written to it. It is pinned instead by conform() at each write site, and MEASURED on the
-real table by tests/gold_fold_test.py. That distinction is not academic — Hudi's gold
+real table by tests/gold_fold_test.py. That distinction is not academic. Hudi's gold
 net_notional had inferred to decimal(33,4) against the decimal(38,4) the other four
 declare, and no value-based check could see it.
 
@@ -41,7 +41,7 @@ def from_delta(func):
 
 
 def _split_top(text):
-    """Split on commas at paren depth 0. A naive split breaks DECIMAL(12,4) in half —
+    """Split on commas at paren depth 0. A naive split breaks DECIMAL(12,4) in half, 
     which is exactly what the first version of this parser did, reporting six false
     failures against schemas that were in fact correct."""
     parts, depth, cur = [], 0, ""
@@ -85,7 +85,7 @@ def from_sql(path, table):
 ICE, PAI, FLU = ("jobs/_shared/iceberg_tables.py",
                  "jobs/flink-paimon/create_tables.sql", "jobs/flink-fluss/create_tables.sql")
 CASES = [
-    # FLUSS IS ABSENT FROM bronze BY DESIGN, not by omission: it has no bronze hop — its
+    # FLUSS IS ABSENT FROM bronze BY DESIGN, not by omission: it has no bronze hop, its
     # PK table is the cleaned landing table, one hop fewer, recorded as `hops` in
     # results.json. Inventing one to make the table counts match would misrepresent it.
     ("bronze.trades", BRONZE_TRADES, [

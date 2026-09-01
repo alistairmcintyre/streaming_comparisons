@@ -3,7 +3,7 @@
 # WHY THIS EXISTS: the cluster ran with `auto.create.topics.enable: true` and no
 # topic declarations, so every topic inherited the broker default retention (7 days)
 # with no size bound. At ~1k trades/s the Debezium JSON envelope is roughly 500 B/record
-# — order 40 GB/day — against a 50Gi per-broker volume. The run is 1-2h so it never
+# (order 40 GB/day) against a 50Gi per-broker volume. The run is 1-2h so it never
 # showed, but the design would fill the brokers in about a day. A pipeline meant to
 # run for months declares retention per topic and sizes it to the disk.
 #
@@ -24,8 +24,8 @@ spec:
   partitions: 6
   replicas: 3
   config:
-    retention.ms: "604800000"          # 7d — the semantic bound
-    retention.bytes: "5368709120"      # 5Gi/partition — the disk bound; whichever hits first
+    retention.ms: "604800000"          # 7d, the semantic bound
+    retention.bytes: "5368709120"      # 5Gi/partition, the disk bound; whichever hits first
     # 256Mi segments so retention actually deletes at a useful granularity. With the
     # 1Gi default, a topic can exceed retention.bytes by most of a segment per partition.
     segment.bytes: "268435456"
@@ -34,17 +34,17 @@ spec:
 ---
 # The accounts dimension is COMPACTED, not time-retained. Under delete-retention a
 # consumer replaying from earliest after the retention window gets an INCOMPLETE
-# dimension — accounts that never changed have aged out — and every read-time enrichment
+# dimension (accounts that never changed have aged out) and every read-time enrichment
 # silently produces NULL country/tier. Compaction keeps the latest value for every key
 # forever, bounded by account count.
 #
 # KNOWN CONSEQUENCE, stated rather than discovered later: silver.accounts is SCD2, but
-# compaction is SCD1 by nature — it keeps only the newest record per key. So the version
+# compaction is SCD1 by nature, it keeps only the newest record per key. So the version
 # HISTORY in silver is only as complete as what the pipeline consumed LIVE; a rebuild from
 # a compacted topic yields one version per account, not its history. That is inherent to
 # compaction, not a bug here, and the alternative (unbounded retention of every account
 # change) is what compaction exists to avoid. It matters only for a from-scratch replay,
-# which this benchmark does not do — each run starts with an empty lake.
+# which this benchmark does not do, each run starts with an empty lake.
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
@@ -61,7 +61,7 @@ spec:
     segment.bytes: "268435456"
     min.insync.replicas: "2"
 ---
-# DLQ: low volume, long retention. This is forensic data — losing it to retention
+# DLQ: low volume, long retention. This is forensic data, losing it to retention
 # defeats the purpose, and a full DLQ is a signal, not something to age away quietly.
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -82,7 +82,7 @@ spec:
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
-  # RFC 1123: a k8s resource name cannot contain '_'. The Kafka topic IS
+  # RFC 1123: a k8s resource name cannot contain '_'. The Kafka topic is
   # pipeline_latency, so the resource is named with a '-' and spec.topicName carries
   # the real name. This is what 94-observability.yaml did before it was folded in here.
   name: pipeline-latency

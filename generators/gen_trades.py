@@ -1,5 +1,5 @@
 """
-Trades (fills) generator — append-only stock executions, the load driver.
+Trades (fills) generator, append-only stock executions, the load driver.
 
 Emits immutable BUY/SELL fills into the `trades` table at a configurable rate
 (TRADES_PER_SEC), batched for throughput so it can sustain 1k / 10k+ fills/sec.

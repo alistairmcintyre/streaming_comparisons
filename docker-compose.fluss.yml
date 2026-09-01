@@ -1,7 +1,7 @@
 # Fluss hot tier (+ its own Flink) tiering into Paimon, which exposes the Iceberg
 # view for Athena/Trino/spark-iceberg.
 #
-# OVERLAY on the base stack — Fluss is isolated here. Run with both files:
+# OVERLAY on the base stack. Fluss is isolated here. Run with both files:
 #   docker compose -f docker-compose.yml -f docker-compose.fluss.yml up -d \
 #       fluss-zookeeper fluss-coordinator fluss-tablet-server \
 #       fluss-flink-jobmanager fluss-flink-taskmanager fluss-flink-submitter
@@ -13,7 +13,7 @@
 # CONFIG is env-driven with local (MinIO) defaults via ${VAR:-default}. To target
 # AWS, source an env file with your values before `up`, e.g.:
 #   set -a && source env/aws.env && set +a
-# and see jobs/flink-fluss/PHEASE_1_README.md (Glue + MSK + IAM + S3 remote data).
+# and see README.md (Glue + MSK + IAM + S3 remote data).
 #
 # Flow:  Kafka trades ─► Fluss (hot PK tables) ─► fold in Flink ─► Fluss book
 #        Fluss tiering job ─► Paimon (${FLUSS_PAIMON_WAREHOUSE}) ─► Iceberg view
@@ -39,7 +39,7 @@ services:
         advertised.listeners: CLIENT://fluss-coordinator:9123
         internal.listener.name: INTERNAL
         # Local: a shared volume (MinIO can't serve Fluss's STS GetSessionToken).
-        # AWS: an s3:// path — real S3 + IAM makes the STS token path work.
+        # AWS: an s3:// path, real S3 + IAM makes the STS token path work.
         remote.data.dir: ${FLUSS_REMOTE_DATA_DIR:-/fluss-remote-data}
         datalake.format: ${DATALAKE_FORMAT:-paimon}
         datalake.paimon.metastore: filesystem

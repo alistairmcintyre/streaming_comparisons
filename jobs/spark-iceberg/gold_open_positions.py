@@ -2,10 +2,10 @@
 Spark Structured Streaming: Iceberg silver.trades_spark → gold.open_positions_spark.
 
 Folds signed fills into a net book per (account_id, symbol) via MERGE, work ∝ the
-fills in each micro-batch (append stream of silver.trades — never a full scan):
+fills in each micro-batch (append stream of silver.trades, never a full scan):
     BUY -> +quantity   SELL -> -quantity ;  net_quantity += Σ signed_qty
-Enrichment is NOT denormalised into gold. country/tier are account attributes, and a
-current-state position row has no defensible temporal semantic for them — the value
+Enrichment is not denormalised into gold. country/tier are account attributes, and a
+current-state position row has no defensible temporal semantic for them, the value
 would be "whatever the last batch that happened to touch this row saw", which is an
 artifact of batch boundaries rather than a fact about the position. Enrich at read time:
 
@@ -15,10 +15,10 @@ artifact of batch boundaries rather than a fact about the position. Enrich at re
 
 LEFT, always: the trades and accounts CDC streams are independent, so a fill can land
 before its account row does. An inner join would silently drop that position from the
-book — the row count would depend on dimension timing, with no error.
+book, the row count would depend on dimension timing, with no error.
 
-EXACTLY-ONCE: Iceberg has NO idempotent-write primitive (no txnAppId/txnVersion like
-Delta), so this incrementing `+=` MERGE is **at-least-once** — a failed micro-batch that
+EXACTLY-ONCE: Iceberg has no idempotent-write primitive (no txnAppId/txnVersion like
+Delta), so this incrementing `+=` MERGE is **at-least-once**, a failed micro-batch that
 replays double-applies, and the drift is permanent. In a no-failure run the fold is exact.
 
 This is DETECTED, NOT REPAIRED, and that is deliberate. After the load is drained
@@ -28,7 +28,7 @@ This is DETECTED, NOT REPAIRED, and that is deliberate. After the load is draine
 
 per engine and publishes any difference in invariants.csv. A reconcile job that
 recomputed the book would repair drift but add write amplification to exactly the
-engine that drifted — contaminating the numbers this pipeline exists to produce.
+engine that drifted, contaminating the numbers this pipeline exists to produce.
 "Did Iceberg drift under sustained load, and by how much?" is a result worth having;
 silently correcting it is not. This is the concrete cost of lacking Delta's idempotent
 write and Flink's exactly-once state: cheap incremental writes, measured drift.
@@ -36,7 +36,8 @@ write and Flink's exactly-once state: cheap incremental writes, measured drift.
 import os
 from iceberg_tables import ensure_all  # in-pipeline DDL
 from pyspark.sql import SparkSession, DataFrame
-from latency import observe_event_time, attach_latency_listener
+from latency import (SAMPLE_ACCOUNTS, observe_event_time,
+                     attach_latency_listener)
 from pyspark.sql.functions import (
     col, when, lit, sum as _sum, count as _count,
     min as _min, max as _max,
@@ -58,14 +59,14 @@ def fold_to_book(batch: DataFrame, batch_id: int):
         _count(lit(1)).alias("dcnt"),
         # EVENT time carried through the fold: opened_at = MIN over the position's
         # history, last_updated_at = MAX. Both fold incrementally via least/greatest
-        # in the MERGE, so this stays proportional to the batch — no rescan.
+        # in the MERGE, so this stays proportional to the batch, no rescan.
         _min("executed_at").alias("dmin"),
         _max("executed_at").alias("dmax")))
 
     # No dimension read here, deliberately. This previously did a FULL batch read of
-    # silver.accounts on EVERY micro-batch — every 15s, forever — and broadcast it, to
+  # silver.accounts on every micro-batch (every 15s, forever) and broadcast it, to
     # stamp country/tier onto the book. That is a rescan of a silver table (the one
-    # thing STREAMING_DESIGN_PRINCIPLES.md rules out), it is O(dimension) rather than
+    # thing README.md (Design principles) rules out), it is O(dimension) rather than
     # O(batch), and the value it wrote had no defensible temporal meaning anyway.
     # country/tier now come from a LEFT JOIN to silver.accounts at query time.
 
@@ -112,7 +113,7 @@ def main():
               .load(SILVER_TRADES))
 
     attach_latency_listener(spark, "iceberg-gold")
-    trades = observe_event_time(trades)
+    trades = observe_event_time(trades, sample=SAMPLE_ACCOUNTS)
 
     (trades.writeStream.foreachBatch(fold_to_book)
         .option("checkpointLocation", CHECKPOINT_PATH)

@@ -2,7 +2,7 @@
 #
 # Keeps the quickstart image's known-good Flink 1.20 / JDK base, but REPLACES its
 # bundled 0.9.1 Fluss jars with our source-built 1.0-SNAPSHOT ones (FIP-27 clean
-# lake schema — see docker/fluss/Dockerfile). Paimon is bumped to 1.4.2 to match
+# lake schema, see docker/fluss/Dockerfile). Paimon is bumped to 1.4.2 to match
 # what Fluss main builds against. Artifacts come from docker/fluss/build-fluss.sh.
 FROM apache/fluss-quickstart-flink:1.20-0.9.1-incubating
 
@@ -37,7 +37,7 @@ RUN curl -fsSL -o /opt/flink/lib/paimon-flink-1.20-1.4.2.jar \
       https://repo1.maven.org/maven2/org/apache/flink/flink-shaded-hadoop-2-uber/2.8.3-10.0/flink-shaded-hadoop-2-uber-2.8.3-10.0.jar
 
 # ── S3 filesystem plugin for Flink's OWN filesystem (s3://) ─────────────────
-# paimon-s3 above is Paimon's FileIO — it does NOT register a Flink FileSystem, so
+# paimon-s3 above is Paimon's FileIO, it does not register a Flink FileSystem, so
 # anything Flink itself opens on s3:// (HA blob store, savepoints, checkpoints) fails
 # with:
 #   UnsupportedFileSystemSchemeException: Could not find a file system implementation

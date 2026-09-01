@@ -1,13 +1,13 @@
 """
 Spark Structured Streaming: Kafka accounts (Debezium) -> silver.accounts as SCD2.
 
-Every version is retained. Accounts are a MUTABLE dimension — gen_accounts.py issues
-real UPDATEs to country/tier — and in a regulated trading platform you must be able to
+Every version is retained. Accounts are a MUTABLE dimension, gen_accounts.py issues
+real UPDATEs to country/tier, and in a regulated trading platform you must be able to
 answer "what was this client's classification AT THE TIME OF THE TRADE" (MiFID II
 categorisation, suitability, best execution). An SCD1 overwrite destroys exactly that.
 
 Validity is MATERIALISED by an atomic close-out: when version N+1 arrives, ONE MERGE
-writes the new row AND re-writes version N with effective_to set, so a reader never sees
+writes the new row and re-writes version N with effective_to set, so a reader never sees
 two current rows or none.
 
     SELECT * FROM silver.accounts WHERE is_current      -- current view
@@ -16,10 +16,10 @@ two current rows or none.
 This was derived at read (LEAD(effective_from) OVER ...) on the argument that close-out
 is not expressible in Flink SQL for a PK table. That was wrong: the key is
 (account_id, source_lsn), so re-emitting version N MERGES onto the existing row and the
-job never needs to know its old effective_from. All five engines materialise it — see
+job never needs to know its old effective_from. All five engines materialise it, see
 jobs/_shared/scd2.py, and tests/scd2-behaviour.sh for the Flink half.
 
-Deletes are kept as a version with op='d' rather than removed — a closed account must
+Deletes are kept as a version with op='d' rather than removed, a closed account must
 still be joinable for trades that happened while it was open.
 
 Dedupe of at-least-once CDC re-deliveries is on (account_id, source_lsn): source_lsn is
@@ -27,7 +27,7 @@ the CDC total order, so an identical re-delivery collapses while a real change d
 """
 import os
 from delta_tables import ensure_all  # in-pipeline DDL
-from scd2 import stage_scd2
+from scd2 import current_for_batch, stage_scd2
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, from_json, current_timestamp, to_timestamp, coalesce, row_number,
@@ -61,16 +61,16 @@ ENVELOPE = StructType([
     StructField("source", SOURCE,       True),
 ])
 
-# The dimension's attribute columns. Both the incoming batch AND the current-row read
+# The dimension's attribute columns. Both the incoming batch and the current-row read
 # must project these: a close row is rebuilt from the CURRENT row, so if the read
-# omits an attribute the close writes a NULL over it — invisible on a MERGE, which
+# omits an attribute the close writes a NULL over it, invisible on a MERGE, which
 # only updates two columns; fatal on Hudi, whose upsert replaces the whole record.
 ATTRS = ["name", "country", "tier", "source_updated_at", "event_ts", "op", "commit_ts"]
 
 
 
 def upsert_scd2(batch, batch_id):
-    """One MERGE that both CLOSES the predecessor and INSERTS the new version.
+    """One MERGE that both CLOSES the predecessor AND INSERTS the new version.
 
     Atomic: a reader never sees a moment with two current rows, or none. The staging is
     jobs/_shared/scd2.py, shared with the other Spark engines so the five pipelines cannot
@@ -79,14 +79,8 @@ def upsert_scd2(batch, batch_id):
     spark = batch.sparkSession
     if batch.rdd.isEmpty():
         return
-    ids = [r[0] for r in batch.select("account_id").distinct().collect()]
-    try:
-        current = (spark.read.format("delta").load(TABLE_PATH)
-                   .filter(col("is_current") & col("account_id").isin(ids))
-                   .select("account_id", "source_lsn", "effective_from", *ATTRS))
-    except Exception:                      # first batch: the table does not exist yet
-        current = spark.createDataFrame(
-            [], batch.select("account_id", "source_lsn", "effective_from", *ATTRS).schema)
+    current = current_for_batch(
+        lambda: spark.read.format("delta").load(TABLE_PATH), batch, ATTRS)
 
     stage_scd2(batch, current, attrs=ATTRS).createOrReplaceTempView("_scd2")
     spark.sql(f"""
@@ -113,7 +107,7 @@ def main():
            # Bound the catch-up batch, as bronze_trades already does (at 200k). Without
            # it, a restart with a backlog makes the FIRST micro-batch attempt the whole
            # backlog at once. accounts is a low-volume SCD trickle so this never bites in
-           # steady state — but the accounts topic is COMPACTED, so a replay from earliest
+           # steady state, but the accounts topic is COMPACTED, so a replay from earliest
            # delivers one record per account in a single burst, which is exactly the
            # unbounded first batch this caps.
            .option("maxOffsetsPerTrigger", os.environ.get("MAX_OFFSETS_PER_TRIGGER", "100000"))
@@ -136,7 +130,7 @@ def main():
                 col("env.after.tier").alias("tier"),
                 to_timestamp(col("env.after.updated_at")).alias("source_updated_at"),
                 (col("env.source.ts_ms") / 1000).cast("timestamp").alias("event_ts"),
-                # effective_from IS the source commit time: when this version became the truth
+                # effective_from is the source commit time: when this version became the truth
                 # in the source system. Not ingest time, which would make as-of joins depend
                 # on pipeline lag.
                 (col("env.source.ts_ms") / 1000).cast("timestamp").alias("effective_from"),

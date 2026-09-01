@@ -2,7 +2,7 @@
 Spark Structured Streaming: Kafka (Debezium) → Hudi bronze.trades
 
 Append-only fills, mirroring jobs/spark-delta/bronze_trades.py so the engines differ
-only in table format. MOR + inline compaction — see jobs/_shared/hudi_tables.py.
+only in table format. MOR + inline compaction, see jobs/_shared/hudi_tables.py.
 """
 import os
 from pyspark.sql import SparkSession
@@ -20,7 +20,7 @@ CHECKPOINT_BASE = os.environ.get("CHECKPOINT_BASE", "s3a://warehouse/_chk")
 CHECKPOINT_PATH = f"{CHECKPOINT_BASE}/bronze_trades_hudi"
 
 # price arrives as an exact decimal STRING (decimal.handling.mode=string) and is cast
-# to DECIMAL — it must never pass through a float. See DEPLOY_LOG #51.
+# to DECIMAL, it must never pass through a float.
 PAYLOAD = StructType([
     StructField("trade_id",    LongType(),    True),
     StructField("account_id",  LongType(),    True),
@@ -30,7 +30,7 @@ PAYLOAD = StructType([
     StructField("price",       StringType(),  True),
     StructField("executed_at", StringType(),  True),
 ])
-# lsn is Postgres's Log Sequence Number from the Debezium envelope — a STRICT TOTAL
+# lsn is Postgres's Log Sequence Number from the Debezium envelope, a STRICT TOTAL
 # ORDER across the whole replication stream. kafka_offset only orders within a
 # partition, so it is a valid tiebreaker solely because Debezium keys by the table's
 # primary key and every version of a trade therefore lands in the same partition; if

@@ -9,13 +9,13 @@
 #
 # It catches the class of bug that has hit this pipeline repeatedly: a table option that
 # is accepted by the docs and rejected by the server, and SQL that plans to nothing.
-# Asserts every job file produces a job — "some jobs submitted" is exactly what the bad
+# Asserts every job file produces a job, "some jobs submitted" is exactly what the bad
 # runs looked like.
 #
 # IMAGE CAVEAT, stated because it decides what this proves: the deployment runs a
 # SOURCE-BUILT Fluss (docker/fluss, main/FIP-27), not the released 0.9.1. Options that
 # exist on main may not exist in a release. This uses the locally-built image when
-# present and falls back to the release, and SAYS WHICH — a pass against the release is
+# present and falls back to the release, and SAYS WHICH, a pass against the release is
 # weaker evidence than a pass against the image you deploy.
 set -uo pipefail
 NET="fluss-sqlcheck-$$"
@@ -34,12 +34,14 @@ for cand in "${FLUSS_SERVER_IMAGE:-}" streaming-comparisons-fluss-coordinator:la
   docker image inspect "$cand" >/dev/null 2>&1 && { SERVER_IMG="$cand"; break; }
 done
 [ -n "$SERVER_IMG" ] || { echo "  no Fluss server image available locally"; exit 1; }
-FLINK_IMG="${FLUSS_FLINK_IMAGE:-167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/fluss-flink:latest}"
+. "$(dirname "$0")/../../../scripts/ecr-env.sh"
+FLINK_IMG="${FLUSS_FLINK_IMAGE:-$ECR_REGISTRY/fluss-flink:latest}"
+ecr_required || exit 1
 docker image inspect "$FLINK_IMG" >/dev/null 2>&1 || FLINK_IMG=apache/fluss-quickstart-flink:1.20-0.9.1-incubating
 echo "  server image: $SERVER_IMG"
 echo "  flink  image: $FLINK_IMG"
 case "$SERVER_IMG" in
-  apache/fluss:*) echo "  NOTE: released image, not the source-built one the deployment uses — a pass here is weaker evidence" ;;
+  apache/fluss:*) echo "  NOTE: released image, not the source-built one the deployment uses, a pass here is weaker evidence" ;;
 esac
 
 docker network create "$NET" >/dev/null
@@ -113,8 +115,8 @@ if grep -vE '^\s*>|^\s*--' "$WORK/out.txt" | grep -qiE 'InvalidConfigException|I
 fi
 
 # PLANNING/VALIDATION FAILURES. The per-file check below only asserts that a file
-# produced AT LEAST ONE job — which is not the same as "every statement in it compiled".
-# A file whose STATEMENT SET submits fine and whose NEXT statement fails planning still
+# produced AT LEAST ONE job, which is not the same as "every statement in it compiled".
+# A file whose STATEMENT SET submits fine and whose next statement fails planning still
 # counts 1 job and passed silently; the meta-check in tests/run-checks.sh caught exactly
 # that. This is the same scan validate-flink-sql.sh runs, and it was simply missing here.
 # Runtime failures are EXPECTED (no Kafka broker on this network) and must not fail the
@@ -124,7 +126,7 @@ PLAN_ERR=$(grep -vE '^\s*>|^\s*--' "$WORK/out.txt" \
            | grep -nE 'TableException|ValidationException|SqlParserException|Could not execute SQL' \
            | grep -viE 'TimeoutException|UnknownHostException|ConnectException|Connection refused|Failed to send data to Kafka|NetworkException' || true)
 if [ -n "$PLAN_ERR" ]; then
-  echo "SQL PLANNING ERRORS — these would have cost a cluster:"
+  echo "SQL PLANNING ERRORS, these would have cost a cluster:"
   echo "$PLAN_ERR" | head -20 | sed 's/^/  /'
   [ "${KEEP:-0}" = 1 ] && cp "$WORK/out.txt" ./fluss-sql-validate.log
   exit 1
@@ -147,6 +149,6 @@ if [ -n "$FAILED" ]; then
   [ "${KEEP:-0}" = 1 ] && cp "$WORK/out.txt" ./fluss-sql-validate.log
   exit 1
 fi
-# KEEP writes the log on SUCCESS too — a stale failure log read as this run twice.
+# KEEP writes the log on SUCCESS too, a stale failure log read as this run twice.
 [ "${KEEP:-0}" = 1 ] && cp "$WORK/out.txt" ./fluss-sql-validate.log
-echo "fluss SQL compiles — every job file produced a job"
+echo "fluss SQL compiles, every job file produced a job"

@@ -6,11 +6,11 @@ name: Teardown (manual cleanup)
 #     of paying a ~15 minute rebuild and a ~15 minute teardown per try;
 #   - a run that was cancelled hard enough to skip its own destroy step.
 # eks-run.yml now defaults to destroy_mode=always and destroys on failure and cancellation
-# alike, so this is no longer the usual path — but the 2.5h EventBridge kill switch is the
+# alike, so this is no longer the usual path, but the 2.5h EventBridge kill switch is the
 # only thing standing behind a destroy_mode=never cluster, and it fires 150 minutes after
 # the FIRST apply, not after the most recent one.
 #
-# Safe to run at any time, including when nothing exists — every step tolerates
+# Safe to run at any time, including when nothing exists, every step tolerates
 # absent resources. It verifies against the AWS API at the end and FAILS if anything
 # is left, because a teardown that reports success while resources bill is the single
 # most expensive failure mode this project has.
@@ -22,7 +22,7 @@ on:
         description: "Run id to tear down (matches the eks-run input)"
         default: "iter"
       clean_lake:
-        description: "ALSO delete lake data + Glue tables (destructive — leaves tfstate/teardown/ECR alone)"
+        description: "ALSO delete lake data + Glue tables (destructive, leaves tfstate/teardown/ECR alone)"
         type: boolean
         default: false
 
@@ -35,6 +35,9 @@ env:
   PROJECT: streaming-comparison
   PAIMON_BUCKET: streaming-comparison-amc-paimon
   WAREHOUSE_BUCKET: streaming-comparison-amc-warehouse
+  # terraform reads TF_VAR_* from the environment, so this covers every
+  # init/plan/apply/destroy below without repeating -var on each one.
+  TF_VAR_aws_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
   TF_DIR: infra/aws
 
 jobs:
@@ -47,7 +50,7 @@ jobs:
       - name: Assume deploy role (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::167217327348:role/streaming-comparison-gha-deploy
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/streaming-comparison-gha-deploy
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
@@ -56,9 +59,9 @@ jobs:
         run: echo "CN=sc-${{ inputs.run_id }}" >> "$GITHUB_ENV"
 
       # Order matters and was learned the hard way:
-      #   EFS mount targets first  — terraform retries them very slowly otherwise.
-      #   nodegroup before cluster — delete-cluster fails with ResourceInUseException.
-      #   cluster before EC2       — deleting the cluster kills Karpenter; terminating
+      #   EFS mount targets first , terraform retries them very slowly otherwise.
+      #   nodegroup before cluster, delete-cluster fails with ResourceInUseException.
+      #   cluster before EC2      , deleting the cluster kills Karpenter; terminating
       #                              nodes while it is alive just makes it launch
       #                              replacements (watched 3 terminated -> 4 new).
       - name: Delete EFS mount targets
@@ -98,7 +101,7 @@ jobs:
           # -reconfigure: the backend changed from dynamodb_table to use_lockfile, and
           # without it init stops with "Backend configuration changed" and, under
           # -input=false, simply fails. Bucket and key are unchanged, so there is no state
-          # to migrate — only the lock mechanism differs.
+          # to migrate, only the lock mechanism differs.
           terraform init -input=false -reconfigure
           # An interrupted destroy leaves the DynamoDB state lock HELD, and every later
           # attempt dies with "Error acquiring the state lock" while the steps after it
@@ -109,7 +112,7 @@ jobs:
           [ -n "$LID" ] && terraform force-unlock -force "$LID" || true
           terraform destroy -auto-approve -input=false -lock-timeout=300s \
             -var "run_id=${{ inputs.run_id }}" -var "teardown_after_minutes=150" || \
-            echo "first pass failed — sweeping blockers, then retrying"
+            echo "first pass failed, sweeping blockers, then retrying"
 
       - name: Sweep orphans and destroy again
         working-directory: ${{ env.TF_DIR }}
@@ -120,7 +123,7 @@ jobs:
               --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
             aws ec2 delete-network-interface --network-interface-id "$eni" || true
           done
-          # CSI volumes do NOT all carry kubernetes.io/cluster/<name>; filtering on that
+          # CSI volumes do not all carry kubernetes.io/cluster/<name>; filtering on that
           # alone once left 190GiB of Kafka/Postgres/Fluss volumes billing.
           for key in "tag:kubernetes.io/cluster/$CN" "tag:KubernetesCluster" "tag:ebs.csi.aws.com/cluster-name"; do
             case "$key" in *cluster/$CN) VAL=owned ;; *) VAL="$CN" ;; esac
@@ -158,7 +161,7 @@ jobs:
 
       # Verify against the AWS API, never the steps' own exit codes. A teardown that
       # reported state=0 while a VPC and an unattached EIP were still billing is exactly
-      # why this step exists — and why it FAILS the job rather than just printing.
+      # why this step exists, and why it FAILS the job rather than just printing.
       - name: Verify nothing is left
         working-directory: ${{ env.TF_DIR }}
         run: |
@@ -174,8 +177,8 @@ jobs:
           chk "unattached eip" 0 "$(aws ec2 describe-addresses --query "length(Addresses[?AssociationId==null])" --output text)"
           chk "$CN iam roles"  0 "$(aws iam list-roles --query "length(Roles[?starts_with(RoleName,'$CN')])" --output text)"
           # `grep -c` EXITS 1 when the count is zero, so `|| echo 0` fired *after* grep
-          # had already printed "0" — the substitution captured "0\n0", which never
+          # had already printed "0", the substitution captured "0\n0", which never
           # equals "0", and a perfectly clean teardown reported TEARDOWN INCOMPLETE.
           # `wc -l` always succeeds and emits exactly one number.
           chk "tf state"       0 "$(terraform state list 2>/dev/null | grep -vE '^data\.' | wc -l | tr -d ' ')"
-          [ "$fail" = 0 ] && echo "teardown verified clean" || { echo "TEARDOWN INCOMPLETE — see LEFT lines above"; exit 1; }
+          [ "$fail" = 0 ] && echo "teardown verified clean" || { echo "TEARDOWN INCOMPLETE, see LEFT lines above"; exit 1; }

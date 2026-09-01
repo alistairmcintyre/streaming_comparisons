@@ -1,4 +1,4 @@
-"""Every Spark write must be pinned to jobs/_shared/schemas.py — one way or the other.
+"""Every Spark write must be pinned to jobs/_shared/schemas.py, one way or the other.
 
 A table's DDL constrains the TABLE. It does not constrain the DataFrame written to it, and
 the two are only kept in step by hand. That gap is what crash-looped iceberg-bronze-trades
@@ -7,7 +7,7 @@ on a live cluster:
     Cannot write incompatible dataset ... source_lsn is out of order, before kafka_partition
 
 The job emitted source_lsn between event_ts and ingest_ts; the DDL put it last. DELTA
-NEVER NOTICED, because it appends by column NAME — Iceberg matches by POSITION. So the
+NEVER NOTICED, because it appends by column NAME. Iceberg matches by POSITION. So the
 same defect sat in the Delta job too, invisible until pointed at a positional writer.
 
 Spark has two write shapes here and each needs a different guarantee:
@@ -91,5 +91,5 @@ for job in sorted(pathlib.Path("jobs").glob("spark-*/*.py")):
             "" if want_name in resolved else f"conform() called with {sorted(resolved) or 'nothing'}")
 
 print(("\nevery Spark write path is pinned to the canon" if not fails
-       else f"\n{len(fails)} write path(s) not pinned — a DDL change can diverge silently"))
+       else f"\n{len(fails)} write path(s) not pinned, a DDL change can diverge silently"))
 sys.exit(1 if fails else 0)

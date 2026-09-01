@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 -- Insert-only: default replica identity is enough (Debezium needs only 'after').
 
--- Per-table publications so each Debezium slot streams only its own table's WAL —
+-- Per-table publications so each Debezium slot streams only its own table's WAL, 
 -- trades is high-volume; don't make the accounts slot process it.
 CREATE PUBLICATION dbz_pub_accounts FOR TABLE accounts;
 CREATE PUBLICATION dbz_pub_trades   FOR TABLE trades;

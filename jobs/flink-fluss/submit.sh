@@ -23,7 +23,7 @@ until curl -sf "http://${JM_HOST}:${JM_REST}/overview" > /dev/null; do sleep 3; 
 echo "JobManager is ready."
 
 # NOTE: this overwrites the image's config.yaml, so we must re-add the Java 17
-# module opens Flink needs — the tiering `flink run` builds a DataStream job graph
+# module opens Flink needs, the tiering `flink run` builds a DataStream job graph
 # in this client JVM and hits InaccessibleObjectException without them (the Table
 # API sql-client jobs don't need them, but the tiering job does).
 cat > "${FLINK_HOME}/conf/config.yaml" <<EOF
@@ -35,17 +35,17 @@ EOF
 
 # ── Lake env (where the Paimon warehouse + Iceberg catalog live) ────────────
 if [ "${DEPLOY_ENV}" = "aws" ]; then
-  # hadoop-catalog, NOT hive-catalog. hive-catalog needs AWSCatalogMetastoreClient,
+  # hadoop-catalog, not hive-catalog. hive-catalog needs AWSCatalogMetastoreClient,
   # which AWS publishes source-only (never to Maven Central), so this image carries no
-  # Hive/Glue jars and every Iceberg commit died with NoClassDefFoundError — the tiered
+  # Hive/Glue jars and every Iceberg commit died with NoClassDefFoundError, the tiered
   # tables got data files but no metadata.json, leaving them invisible to Athena. This
-  # is the same fix the flink-paimon path already took (DEPLOY_LOG #30); it was never
+  # is the same fix the flink-paimon path already took; it was never
   # applied here. Paimon then writes real Iceberg metadata to
   # <warehouse>/iceberg/<db>/<table>/metadata/ and register-glue-tables.sh points Glue
-  # at it — the same route every other non-Spark engine uses.
+  # at it, the same route every other non-Spark engine uses.
   FLUSS_ICEBERG_OPTS=",
     'paimon.metadata.iceberg.storage' = 'hadoop-catalog'"
-  # paimon-s3 needs static keys (no IRSA) — injected from SSM via env (S3_ACCESS_KEY/
+  # paimon-s3 needs static keys (no IRSA), injected from SSM via env (S3_ACCESS_KEY/
   # S3_SECRET_KEY). Real S3 → no endpoint/path-style.
   DATALAKE_S3_ARGS="--datalake.paimon.s3.region ${AWS_REGION} \
     --datalake.paimon.s3.access-key ${S3_ACCESS_KEY} \
@@ -60,9 +60,9 @@ else
     --datalake.paimon.s3.region ${AWS_REGION}"
 fi
 
-# ── Kafka auth (decoupled from the lake env) — none | scram | msk_iam ────────
+# ── Kafka auth (decoupled from the lake env), none | scram | msk_iam ────────
 # 'none' = PLAINTEXT, for OSS Kafka in-cluster (Strimzi/AutoMQ on EKS). Cheapest
-# path for load testing — see jobs/flink-fluss/PHEASE_1_README.md. 'msk_iam' only for MSK.
+# path for load testing, see README.md. 'msk_iam' only for MSK.
 case "${KAFKA_AUTH:-none}" in
   msk_iam)
     KAFKA_EXTRA_OPTS=",
@@ -86,7 +86,7 @@ render() { envsubst "${SUBST}" < "${JOB_DIR}/$1" > "${RENDER_DIR}/$1"; }
 SQL_CLIENT="${FLINK_HOME}/bin/sql-client.sh"
 
 # create_tables: retry until the coordinator's event processor is initialised
-# (after a fresh/recreated coordinator this can lag ~40s — see README).
+# (after a fresh/recreated coordinator this can lag ~40s, see README).
 render "create_tables.sql"
 echo "Creating Fluss tables (DEPLOY_ENV=${DEPLOY_ENV})..."
 for attempt in $(seq 1 24); do
@@ -97,7 +97,7 @@ for attempt in $(seq 1 24); do
 done
 
 submit_job() { render "$1"; echo "Submitting: $1"; ${SQL_CLIENT} -f "${RENDER_DIR}/$1" & }
-# Fluss has no bronze: the PK table IS the cleaned deduped view, so silver.trades is
+# Fluss has no bronze: the PK table is the cleaned deduped view, so silver.trades is
 # fed straight from Kafka. accounts is the dimension gold joins for country/tier.
 submit_job "silver_trades.sql"
 submit_job "silver_accounts.sql"

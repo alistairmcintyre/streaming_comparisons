@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Validate every k8s manifest BEFORE terraform builds anything.
 #
-# WHY: an invalid manifest is currently only discovered by applying it to a live
-# cluster — roughly 25 minutes and a cluster's worth of money into a run. That is
+# Why: an invalid manifest is currently only discovered by applying it to a live
+# cluster, roughly 25 minutes and a cluster's worth of money into a run. That is
 # exactly how `metadata.name: pipeline_latency` (illegal '_' in an RFC 1123 name) burned
 # a deploy: catchable offline in under a second.
 #
-# Deliberately NOT `kubectl apply --dry-run=client`: the name violation above is
+# Deliberately not `kubectl apply --dry-run=client`: the name violation above is
 # rejected SERVER-side, so client dry-run does not catch it, and the CRDs here
 # (KafkaTopic, FlinkDeployment, PodMonitor, SparkApplication) have no local schema
 # anyway. These are the checks that actually work without a cluster.
@@ -27,14 +27,14 @@ try:
         for k, v in node.value:
             key = loader.construct_object(k, deep=deep)
             if key in seen:
-                raise yaml.YAMLError(f"duplicate key {key!r} — the later value silently wins")
+                raise yaml.YAMLError(f"duplicate key {key!r}, the later value silently wins")
             seen.add(key)
             out[key] = loader.construct_object(v, deep=deep)
         return out
     Dup.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_dup)
 except ImportError:
     yaml = None
-    print("  WARN pyyaml missing — structural checks skipped, running regex checks only")
+    print("  WARN pyyaml missing, structural checks skipped, running regex checks only")
 
 RFC1123 = re.compile(r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$')
 problems = []
@@ -72,7 +72,7 @@ for f in files:
         name = (doc.get("metadata") or {}).get("name")
         if name and not name.startswith("PLACEHOLDER") and not RFC1123.match(str(name)):
             problems.append(f"{base} doc[{i}]: {doc.get('kind')} name {name!r} is not a valid "
-                            f"RFC 1123 name (no '_', no uppercase) — the apiserver WILL reject it")
+                            f"RFC 1123 name (no '_', no uppercase), the apiserver will reject it")
 
 if problems:
     print("preflight FAILED:")

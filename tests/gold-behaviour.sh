@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Does the Flink gold fold produce the RIGHT BOOK? Not "does it compile" — the SQL
+# Does the Flink gold fold produce the RIGHT BOOK? Not "does it compile", the SQL
 # validators already answer that, and both bad runs to date compiled perfectly.
 #
 # The fold under test is EXTRACTED FROM THE REAL JOB FILE, not retyped here: this script
@@ -16,7 +16,9 @@
 #   acct 2 MSFT  buy 10@100 (d4), sell 4@105 (d6)   -> stays OPEN
 #   acct 3 TSLA  buy 5@200 (d2),  sell 5@210 (d8)   -> ends CLOSED at exactly zero
 set -uo pipefail
-IMG="${FLINK_PAIMON_IMAGE:-167217327348.dkr.ecr.eu-west-1.amazonaws.com/streaming-comparison/flink-paimon:latest}"
+. "$(dirname "$0")/../scripts/ecr-env.sh"
+IMG="${FLINK_PAIMON_IMAGE:-$ECR_REGISTRY/flink-paimon:latest}"
+ecr_required || exit 1
 SRC="${1:-jobs/flink-paimon/gold_open_positions.sql}"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/data" "$W/sql"
@@ -40,7 +42,7 @@ FOLD=$(sed -n '/CREATE TEMPORARY VIEW gold_book AS/,/^) p;/p' "$SRC" \
              -e "s|FROM fluss_catalog\.silver\.trades|FROM src|" \
              -e "/scan\.mode/d")
 if ! echo "$FOLD" | grep -q "FROM src"; then
-  echo "  could not extract the fold from $SRC — the view or its FROM clause changed shape"; exit 1
+  echo "  could not extract the fold from $SRC, the view or its FROM clause changed shape"; exit 1
 fi
 
 {
@@ -92,10 +94,10 @@ docker run --rm -v "$W/data:/data:ro" -v "$W/sql:/sql:ro" -v "$W/run.sh:/run.sh:
 
 # A streaming GROUP BY emits the running aggregate: +I on first sight of a key, then
 # -U/+U pairs as it revises. The gold table is a PK upsert sink, so the row that survives
-# is the LAST +I/+U per (account_id, symbol) — retractions are not rows, they are the
+# is the LAST +I/+U per (account_id, symbol), retractions are not rows, they are the
 # sink being told to forget the previous value.
 raw=$(grep -oE '^[+-][IU]\[[^]]*\]' "$W/out.txt")
-[ -n "$raw" ] || { echo "  no output rows — harness problem, not a logic result"; tail -15 "$W/out.txt" | sed 's/^/      /'; exit 1; }
+[ -n "$raw" ] || { echo "  no output rows, harness problem, not a logic result"; tail -15 "$W/out.txt" | sed 's/^/      /'; exit 1; }
 book=$(echo "$raw" | grep -E '^\+[IU]\[' | sed 's/^+[IU]\[//;s/\]$//' \
        | awk -F', *' '{key=$1"|"$2; line[key]=$0} END {for (k in line) print line[k]}' | sort)
 

@@ -1,5 +1,5 @@
 # Debezium CDC via Strimzi KafkaConnect. spec.build adds the Postgres connector and
-# pushes the built image to ECR (the Connect build pod needs ECR push — via the node
+# pushes the built image to ECR (the Connect build pod needs ECR push, via the node
 # role or a push secret). Two connectors = two replication slots (trades, accounts).
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaConnect
@@ -39,11 +39,11 @@ spec:
     # debezium-json format defaults to schema-include=false. With the default on,
     # `after` parses as null, every row is filtered out, and the pipelines commit
     # empty batches forever. docker-compose already sets these (VALUE_CONVERTER_
-    # SCHEMAS_ENABLE=false) — this is the local→AWS gap.
-    # Dead-letter queue. Kafka Connect is the ONE layer here with real DLQ support:
+    # SCHEMAS_ENABLE=false), this is the local→AWS gap.
+    # Dead-letter queue. Kafka Connect is the one layer here with real DLQ support:
     # a record that cannot be converted/serialised goes to `debezium-dlq` with the
     # failure reason in its headers, instead of killing the task or vanishing.
-    # errors.tolerance=all applies to conversion/transform errors only — genuine
+    # errors.tolerance=all applies to conversion/transform errors only, genuine
     # connector failures (lost DB connection, invalid slot) still fail loudly.
     errors.tolerance: all
     errors.deadletterqueue.topic.name: debezium-dlq
@@ -58,11 +58,11 @@ spec:
   resources:
     requests: { cpu: "1", memory: 1Gi }
     limits:   { cpu: "2", memory: 2Gi }
-# ONE connector captures both tables. Debezium requires topic.prefix to be UNIQUE
+# One connector captures both tables. Debezium requires topic.prefix to be UNIQUE
 # per connector (it namespaces JMX MBeans + offsets), but both tables must share
 # prefix `app` to yield the topic names the downstream jobs subscribe to
 # (app.public.trades / app.public.accounts). Two connectors with prefix `app`
-# therefore collide on JMX and the second one stalls — so a single connector with
+# therefore collide on JMX and the second one stalls, so a single connector with
 # table.include.list = both tables is the correct design (one slot, one publication).
 ---
 apiVersion: kafka.strimzi.io/v1
@@ -89,7 +89,7 @@ spec:
     max.batch.size: 8192
     # Debezium requires max.queue.size > max.batch.size (default queue is 8192).
     max.queue.size: 32768
-    # `price` is NUMERIC(12,4) in Postgres — money, so it must stay exact.
+    # `price` is NUMERIC(12,4) in Postgres, money, so it must stay exact.
     # `precise` (the default) emits base64 Connect Decimal bytes, which the JSON
     # consumers cannot decode; `double` parses but is LOSSY, and the error compounds
     # in net_notional = SUM(quantity * price) over millions of rows. `string` keeps
@@ -98,7 +98,7 @@ spec:
     # Broker auto-create is OFF (30-kafka.yaml), so Connect must be able to create the
     # topics it routes to. The declared topics in 31-kafka-topics.yaml already exist and
     # Connect leaves those alone; this is the safety net for a table added to
-    # table.include.list without a matching KafkaTopic — it gets bounded retention
+    # table.include.list without a matching KafkaTopic, it gets bounded retention
     # rather than failing the task or inheriting no bound at all.
     topic.creation.default.replication.factor: 3
     topic.creation.default.partitions: 3

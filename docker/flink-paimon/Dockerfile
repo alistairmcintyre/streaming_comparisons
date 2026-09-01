@@ -21,7 +21,7 @@ RUN curl -fsSL -o /opt/flink/lib/flink-sql-connector-kafka-3.4.0-${FLINK_MAJOR}.
 
 # ── Hadoop client bundle (required by Paimon's catalog at runtime) ──────────
 # Paimon references org.apache.hadoop.conf.Configuration when creating a catalog,
-# even with the paimon-s3 filesystem — without it CREATE CATALOG throws
+# even with the paimon-s3 filesystem, without it CREATE CATALOG throws
 # ClassNotFoundException. Shaded bundle avoids chasing transitive deps. Needed
 # both locally and on AWS.
 RUN curl -fsSL -o /opt/flink/lib/flink-shaded-hadoop-2-uber-2.8.3-10.0.jar \

@@ -23,7 +23,7 @@ check "MinIO"                "http://localhost:9000/minio/health/live"
 if docker ps --format '{{.Names}}' | grep -q '^flink-jobmanager$'; then
   check "Flink JobManager" "http://localhost:8081/overview"
 else
-  echo "Flink JobManager not started — skipping"
+  echo "Flink JobManager not started, skipping"
 fi
 
 echo ""

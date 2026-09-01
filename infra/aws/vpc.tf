@@ -24,7 +24,7 @@ module "vpc" {
   }
 }
 
-# S3 gateway endpoint — free, and keeps Paimon/Fluss/Iceberg S3 traffic off the NAT.
+# S3 gateway endpoint, free, and keeps Paimon/Fluss/Iceberg S3 traffic off the NAT.
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = module.vpc.vpc_id
   service_name      = "com.amazonaws.${var.aws_region}.s3"

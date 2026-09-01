@@ -1,4 +1,4 @@
-# Strict 2.5h cutoff — an AWS-side dead-man's switch that does NOT depend on the
+# Strict 2.5h cutoff, an AWS-side dead-man's switch that does not depend on the
 # GitHub Actions runner (or your laptop) staying alive.
 #
 #   time_offset (apply time + 150m)  ─►  EventBridge Scheduler one-time  ─►
@@ -27,7 +27,7 @@ resource "aws_codebuild_project" "teardown" {
   name          = "${local.name}-teardown"
   description   = "Dead-man's-switch teardown for ${local.name}"
   service_role  = aws_iam_role.teardown.arn
-  build_timeout = 60 # minutes — EKS + VPC teardown fits comfortably
+  build_timeout = 60 # minutes. EKS + VPC teardown fits comfortably
 
   artifacts { type = "NO_ARTIFACTS" }
 
@@ -57,7 +57,7 @@ resource "aws_codebuild_project" "teardown" {
       phases:
         install:
           commands:
-            # 1.10+ is REQUIRED, not cosmetic: the backend uses use_lockfile (S3 native
+            # 1.10+ is required: the backend uses use_lockfile (S3 native
             # locking) and 1.9.8 does not understand it, so init would fail here and
             # the dead-man's switch would quietly stop being able to destroy anything.
             - curl -fsSL -o /tmp/tf.zip https://releases.hashicorp.com/terraform/1.10.5/terraform_1.10.5_linux_amd64.zip
@@ -66,18 +66,18 @@ resource "aws_codebuild_project" "teardown" {
           commands:
             # Three phases. Terminating EC2 while the control plane is ALIVE just makes
             # Karpenter launch replacements (seen live 2026-08-25: 3 terminated -> 4 new
-            # within minutes) — but a FULL destroy first blocks on a security group those
+            # within minutes), but a FULL destroy first blocks on a security group those
             # same nodes hold. So: kill the control plane, terminate, then destroy the
             # rest. Same moves as before, ordered so neither blocks the other.
             # -reconfigure: backend moved from dynamodb_table to use_lockfile; without it
             # init fails with "Backend configuration changed" under -input=false.
             - terraform init -input=false -reconfigure
-            # PHASE 1 — EKS only. Kills Karpenter so its nodes stop being replaced.
+            # PHASE 1. EKS only. Kills Karpenter so its nodes stop being replaced.
             # A full destroy here blocks ~13 minutes on the node security group, whose
-            # ENIs belong to Karpenter instances that are NOT in Terraform state and are
+            # ENIs belong to Karpenter instances that are not in Terraform state and are
             # only terminated by the step queued behind it (seen live 2026-08-27).
             - terraform destroy -target=module.eks -auto-approve -input=false || true
-            # PHASE 2 — terminate leftovers now, while nothing is waiting on them.
+            # PHASE 2, terminate leftovers now, while nothing is waiting on them.
             - |
               IDS=$(aws ec2 describe-instances --region "$AWS_REGION" \
                 --filters "Name=tag:kubernetes.io/cluster/$CLUSTER_NAME,Values=owned" \
@@ -118,7 +118,7 @@ resource "aws_codebuild_project" "teardown" {
             #     leaving a VPC, subnets, an IGW, an EIP and 190GB of EBS behind. A
             #     security group has exactly two kinds of dependent object: ENIs that use
             #     it, and RULES IN OTHER GROUPS that reference it. efs.tf creates the
-            #     second kind, and nothing here cleared it — the GHA destroy path gained
+            #     second kind, and nothing here cleared it, the GHA destroy path gained
             #     this fix and the BACKSTOP did not, which is precisely backwards.
             - |
               for SG in $(aws ec2 describe-security-groups --region "$AWS_REGION" \
@@ -141,7 +141,7 @@ resource "aws_codebuild_project" "teardown" {
                   fi
                 done
               done
-            # PHASE 3 — everything else; SG and VPC now delete promptly.
+            # PHASE 3, everything else; SG and VPC now delete promptly.
             - terraform destroy -auto-approve -input=false
             # 3) sweep CSI-provisioned EBS orphans (PVCs; cluster gone before delete)
             - |
@@ -218,7 +218,7 @@ resource "aws_iam_role" "teardown" {
   })
 }
 
-# Same broad provisioning surface as the deploy role — it must be able to delete
+# Same broad provisioning surface as the deploy role, it must be able to delete
 # everything the run created. Repo/account-scoped; tighten with a boundary later.
 resource "aws_iam_role_policy" "teardown" {
   name = "destroy"
@@ -233,7 +233,7 @@ resource "aws_iam_role_policy" "teardown" {
           "eks:*", "ec2:*", "elasticloadbalancing:*", "autoscaling:*",
           "iam:*", "ecr:*", "logs:*", "events:*", "scheduler:*", "lambda:*",
           "codebuild:*", "sqs:*", "glue:*", "athena:*", "cloudwatch:*", "budgets:*",
-          # efs.tf + the delta-logstore DynamoDB table are run resources too —
+          # efs.tf + the delta-logstore DynamoDB table are run resources too, 
           # without these the destroy dies in refresh (AccessDenied, seen live
           # 2026-08-25: elasticfilesystem:DescribeFileSystems + dynamodb:DescribeTable).
           "elasticfilesystem:*", "dynamodb:*", "kms:*", "ssm:*"

@@ -2,19 +2,19 @@
 # Does register-glue-tables.sh build VALID Glue tables? Locally, for nothing, re-runnably.
 #
 # WHY THIS EXISTS: the script registered paimon and fluss with "Columns": [], and Athena
-# reads an Iceberg table's columns FROM THE GLUE DEFINITION — so `SELECT count(*)` worked
+# reads an Iceberg table's columns FROM THE GLUE DEFINITION, so `SELECT count(*)` worked
 # while `SELECT *` failed with "Relation contains no accessible columns". Three of five
 # engines were effectively unqueryable and it was found on a live cluster, late, by hand.
 # A column-count assertion would have caught it in seconds.
 #
 # WHAT THIS DOES *NOT* TEST, and must never be claimed to:
-#   floci's Athena is a DuckDB sidecar, NOT Trino, and it is not wired to the Glue catalog
+#   floci's Athena is a DuckDB sidecar, not Trino, and it is not wired to the Glue catalog
 #   (`SELECT ... FROM gold.open_positions_delta` -> `Catalog Error: Table does not exist`).
 #   So NOTHING here says whether real Athena can read Delta deletion vectors, Hudi's
 #   timeline, Paimon's Iceberg-compat metadata or Iceberg MOR deletes. Every one of those
 #   was settled against real AWS and none of it is reproducible here.
-#   This tests the SHAPE OF OUR API CALLS. That is a real class of bug — it is the class
-#   that actually bit — but it is not engine compatibility.
+#   This tests the SHAPE OF OUR API CALLS. That is a real class of bug, it is the class
+#   that actually bit, but it is not engine compatibility.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 IMG="${FLOCI_IMAGE:-floci/floci:latest}"
@@ -24,7 +24,7 @@ cleanup() { docker rm -f "$NAME" >/dev/null 2>&1; }
 trap cleanup EXIT
 
 docker image inspect "$IMG" >/dev/null 2>&1 || docker pull "$IMG" >/dev/null 2>&1 || {
-  echo "  floci image unavailable — skipping"; exit 0; }
+  echo "  floci image unavailable, skipping"; exit 0; }
 docker run -d --name "$NAME" -p "${PORT}:4566" "$IMG" >/dev/null 2>&1
 for _ in $(seq 1 25); do
   curl -sf --max-time 2 "http://localhost:${PORT}/_localstack/health" >/dev/null 2>&1 && break
@@ -43,7 +43,7 @@ for b in wh pm; do
 done
 
 # Seed exactly what the script gates on: a _delta_log for Delta, and REAL Iceberg metadata
-# for paimon/fluss — the columns it registers are derived from that file, so a fake one
+# for paimon/fluss, the columns it registers are derived from that file, so a fake one
 # also exercises glue_columns_from_metadata.
 TMP=$(mktemp -d)
 python3 - "$TMP" <<'PYEOF'

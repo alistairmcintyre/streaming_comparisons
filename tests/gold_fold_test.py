@@ -2,7 +2,7 @@
 
     python3 tests/gold_fold_test.py delta|iceberg|hudi
 
-Imports and calls the ENGINE'S OWN fold_to_book — not a copy of it — so what passes here
+Imports and calls the ENGINE'S OWN fold_to_book (not a copy of it) so what passes here
 is the code that runs on the cluster. The three engines fold the same trades three
 different ways (Delta MERGE with a txn stamp, Iceberg MERGE, Hudi read-modify-upsert),
 and the point of the exercise is that they must agree to the last decimal.
@@ -11,14 +11,14 @@ The scenario is built so every incremental rule has to hold ACROSS micro-batches
 is where a fold that only ever gets tested on one batch quietly breaks:
 
   acct 1 AAPL  buy 100@10 (day 5), buy 50@12 (day 3) | sell 150@11 (day 7) | buy 20@9 (day 1)
-        -> nets to ZERO in batch 2 (must go CLOSED) and REOPENS in batch 3.
+        -> nets to zero in batch 2 (must go CLOSED) and REOPENS in batch 3.
         -> the day-1 fill arrives LAST and is the EARLIEST: opened_at must move BACK to
-           day 1, while last_updated_at must NOT move back off day 7.
+           day 1, while last_updated_at must not move back off day 7.
   acct 2 MSFT  buy 10@100 (day 4) | sell 4@105 (day 6)          -> stays OPEN
   acct 3 TSLA  buy 5@200  (day 2) | sell 5@210 (day 8)          -> ends CLOSED at zero
 
-Anything the fold gets wrong — sign, accumulation, status transition, least/greatest
-direction, or double-counting — changes one of the printed numbers.
+Anything the fold gets wrong, sign, accumulation, status transition, least/greatest
+direction, or double-counting, changes one of the printed numbers.
 """
 import os, sys, datetime as dt
 from decimal import Decimal
@@ -97,8 +97,8 @@ BATCHES = [
 for i, rows in enumerate(BATCHES):
     job.fold_to_book(spark.createDataFrame([r + (r[6], r[6]) for r in rows], SILVER), i)
 
-# FIELD PARITY, measured on the table this engine actually built. Hudi has no DDL — its
-# schema is whatever DataFrame was written — so this is the only way to catch it drifting.
+# FIELD PARITY, measured on the table this engine actually built. Hudi has no DDL, its
+# schema is whatever DataFrame was written, so this is the only way to catch it drifting.
 # It had: net_notional came out decimal(33,4) against the decimal(38,4) the other four
 # declare, and every value-based check passed regardless.
 from schemas import (GOLD_OPEN_POSITIONS, HIVE_PARTITION_COLUMNS, HUDI_META_PREFIX,
@@ -112,7 +112,7 @@ book = sorted(READ().collect(), key=lambda r: (r["account_id"], r["symbol"]))
 lines = [f"{r['account_id']}|{r['symbol']}|{r['net_quantity']}|{float(r['net_notional']):.4f}"
          f"|{r['trade_count']}|{r['status']}|{r['opened_at']:%Y-%m-%d}|{r['last_updated_at']:%Y-%m-%d}"
          for r in book]
-print(f"  book ({ENGINE}) — acct|symbol|net_qty|net_notional|trades|status|opened|updated")
+print(f"  book ({ENGINE}), acct|symbol|net_qty|net_notional|trades|status|opened|updated")
 for l in lines:
     print("      " + l)
     print("BOOK " + l)          # machine-readable; tests/gold-consistency.sh diffs these

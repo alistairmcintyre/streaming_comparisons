@@ -15,7 +15,7 @@ ENV ICEBERG_VERSION=1.11.0 \
 # iceberg-aws-bundle provides the AWS SDK v2 for Iceberg's S3FileIO; hadoop-aws
 # + the standalone AWS SDK v2 bundle serve S3A (streaming checkpoints).
 # NOTE: both jars put software.amazon.awssdk on the classpath, so the standalone
-# bundle must not be OLDER than what iceberg-aws-bundle was built against — 2.24.6
+# bundle must not be OLDER than what iceberg-aws-bundle was built against, 2.24.6
 # lacks RetryMode.ADAPTIVE_V2 and GlueCatalog init died with NoSuchFieldError.
 RUN curl -fsSL -o /opt/spark/jars/iceberg-spark-runtime-${SPARK_VERSION}_${SCALA_VERSION}-${ICEBERG_VERSION}.jar \
       https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-${SPARK_VERSION}_${SCALA_VERSION}/${ICEBERG_VERSION}/iceberg-spark-runtime-${SPARK_VERSION}_${SCALA_VERSION}-${ICEBERG_VERSION}.jar \
@@ -36,7 +36,7 @@ RUN curl -fsSL -o /opt/spark/jars/iceberg-spark-runtime-${SPARK_VERSION}_${SCALA
 
 # Python deps for PySpark jobs
 # kafka-python: the StreamingQueryListener emits post-commit latency from the
-# DRIVER, where a Spark action would risk deadlock — so it needs a plain client.
+# DRIVER, where a Spark action would risk deadlock, so it needs a plain client.
 RUN pip install --no-cache-dir pyspark==4.0.4 kafka-python==2.0.2
 
 # Entrypoint: JOB_FILE env var specifies which job to run. On k8s the SparkApplication

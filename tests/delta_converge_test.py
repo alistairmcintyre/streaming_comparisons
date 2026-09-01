@@ -9,7 +9,7 @@ tables the OTHER jobs were streaming from, and killed those streams:
     concurrent update.
 
 Live consequence: delta-silver-trades failed repeatedly and finished 37 source versions
-behind bronze — 2,240,000 rows against 4,086,000 — while its gold/silver invariant still
+behind bronze (2,240,000 rows against 4,086,000) while its gold/silver invariant still
 read `ok`, because that compares gold to silver rather than to bronze.
 
 So the property under test is not "the properties end up right" (they always did) but
@@ -50,7 +50,7 @@ for rel in D._TABLE_PATHS:
 
 # and it must still CONVERGE when a property really has drifted
 rel = D._TABLE_PATHS[0]
-# Drift to a VALID alternate value — these are booleans, so 'false' is the only sane
+# Drift to a VALID alternate value, these are booleans, so 'false' is the only sane
 # "wrong" setting. An arbitrary string is rejected by Delta and tests nothing.
 k, v = next(iter(D._TABLE_PROPERTIES.items()))
 spark.sql(f"ALTER TABLE delta.`{ROOT}/{rel}` SET TBLPROPERTIES ('{k}' = 'false')")

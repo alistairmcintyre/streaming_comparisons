@@ -2,12 +2,12 @@
 Iceberg maintenance job: compaction, position delete rewrite, snapshot expiry.
 
 Runs in a loop every 10 minutes, processing all 8 tables.
-Spark is used for both Spark-written and Flink-written tables — Iceberg is
+Spark is used for both Spark-written and Flink-written tables. Iceberg is
 engine-agnostic, so this is standard practice.
 
 Why this is not optional:
   - merge-on-read silver tables accumulate position/equality delete files at
-    every streaming commit (10–20s cadence).
+    every streaming commit (10, 20s cadence).
   - Without rewrite_position_delete_files, read performance collapses within
     an hour as Iceberg must apply thousands of delete files on every scan.
   - expire_snapshots prevents unbounded metadata growth.
@@ -27,13 +27,12 @@ COMPACTION_INTERVAL_SECS = int(os.environ.get("COMPACTION_INTERVAL_SECS", "600")
 SNAPSHOT_RETAIN_HOURS    = int(os.environ.get("SNAPSHOT_RETAIN_HOURS", "1"))
 SNAPSHOT_RETAIN_LAST     = int(os.environ.get("SNAPSHOT_RETAIN_LAST", "5"))
 
-# The tables this run actually writes. These were the CUSTOMERS tables until the customers
-# pipeline was removed — which meant this job, which IS deployed on AWS
-# (infra/aws/k8s/93-maintenance.yaml), had been compacting eight tables that do not exist
-# in the run while the Iceberg trades tables went untouched. It failed silently per table
-# and reported healthy. That matters more for Iceberg than for any other engine here:
-# it is the one format with no in-writer compaction, so this job is the ONLY thing
-# keeping its file counts down (see SIZING.md).
+# The tables this run actually writes. This list went stale once when the pipeline it
+# was written for was replaced: the job kept compacting eight tables that no longer
+# existed, left the real ones untouched, failed per table without raising, and reported
+# healthy throughout. That matters more for Iceberg than for any other engine here:
+# it is the one format with no in-writer compaction, so this job is the only thing
+# keeping its file counts down (see README.md (Sizing)).
 TABLES = [
     "rest.bronze.trades_spark",
     "rest.silver.trades_spark",

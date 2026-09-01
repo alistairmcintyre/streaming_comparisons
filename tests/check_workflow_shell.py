@@ -11,15 +11,15 @@ ends, the next line starts a new command, and bash dies with `syntax error near
 unexpected token`. The YAML is perfectly valid throughout. This shipped, and the failure
 appeared only when the validate job actually ran.
 
-${{ }} expressions are substituted with a placeholder first — GitHub expands them before
+${{ }} expressions are substituted with a placeholder first. GitHub expands them before
 bash ever sees the script, so leaving them in would test the wrong grammar.
 
 SECOND CHECK: `[ $? -ne 0 ]` after a bare `VAR=$(cmd)`.
 
 GitHub runs these blocks as `bash --noprofile --norc -eo pipefail`, so a failing command
-substitution in an assignment IS a failing command and the shell exits THERE. Any test of
+substitution in an assignment is a failing command and the shell exits THERE. Any test of
 $? on a later line is unreachable on the path it was written for. The apply step's
-server-dry-run loop captured kubectl's output into R and then checked $? — so a rejected
+server-dry-run loop captured kubectl's output into R and then checked $?, so a rejected
 manifest exited the step with the header printed and the rejection reason discarded, which
 is the least debuggable possible outcome. Use `cmd && RC=0 || RC=$?` instead: the ||
 suppresses set -e and RC carries the real status.
@@ -45,15 +45,15 @@ for wf in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
             if p.returncode != 0:
                 err = (p.stderr.strip().splitlines() or ["?"])[0]
                 fails.append(f"{wf.name} :: {jname} :: step {i} "
-                             f"({step.get('name', 'unnamed')!r}) — {err}")
+                             f"({step.get('name', 'unnamed')!r}), {err}")
             for ln, line in enumerate(script.split("\n"), 1):
-                # Ignore comments — the fix for this very bug is documented in a comment
+                # Ignore comments, the fix for this very bug is documented in a comment
                 # containing the offending idiom, and the first version of this lint
                 # flagged its own explanation.
                 code = line.split("#", 1)[0]
                 if re.search(r"\[\[? +\$\? ", code):
                     fails.append(f"{wf.name} :: {jname} :: step {i} "
-                                 f"({step.get('name', 'unnamed')!r}) line {ln} — tests $? under "
+                                 f"({step.get('name', 'unnamed')!r}) line {ln}, tests $? under "
                                  f"`set -e`, which never runs after a failing assignment; "
                                  f"use `cmd && RC=0 || RC=$?`")
 

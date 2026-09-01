@@ -1,14 +1,14 @@
-"""silver.trades dedupe — does it actually survive a restart, on RocksDB state?
+"""silver.trades dedupe, does it actually survive a restart, on RocksDB state?
 
-This is the ONLY place a re-delivered trade_id can be removed on Delta and Iceberg
+This is the only place a re-delivered trade_id can be removed on Delta and Iceberg
 (Paimon/Fluss dedupe structurally via a first-row PK table, Hudi via upsert on trade_id),
 and gold cannot repair a duplicate: its fold is `+=` over (account_id, symbol) and never
-sees trade_id at all. So this operator is load-bearing and worth running, not assuming.
+sees trade_id at all. So this operator is worth testing rather than assuming.
 
 Two things are checked, and the second is the one that matters:
 
   1. a re-delivery inside the watermark collapses to one row;
-  2. it still collapses when the re-delivery arrives in a LATER QUERY RUN — i.e. the
+  2. it still collapses when the re-delivery arrives in a LATER QUERY RUN, i.e. the
      dedupe state was checkpointed and restored, not merely held in memory for the life
      of one query. A state store that quietly failed to persist would pass a
      single-run test and duplicate every trade across a restart in production.
@@ -47,7 +47,7 @@ def land(name, rows):
      .write.mode("append").parquet(f"{ROOT}/bronze"))
 
 def drain():
-    """One run of the REAL silver dedupe, to completion, then stop — as a restart would."""
+    """One run of the REAL silver dedupe, to completion, then stop, as a restart would."""
     src = spark.readStream.schema(SCHEMA).parquet(f"{ROOT}/bronze")
     # NO_DEDUPE drops the operator so tests/run-checks.sh can confirm these assertions
     # actually fail when the dedupe is gone, rather than passing for some other reason.
@@ -63,7 +63,7 @@ def drain():
 
 land("b1", [(1, D(1, 0)), (2, D(1, 0)), (3, D(1, 1))])
 p1 = drain()
-# A re-delivery of trade 3 — same id, same event time — landing in a LATER run.
+# A re-delivery of trade 3 (same id, same event time) landing in a LATER run.
 land("b2", [(3, D(1, 1)), (4, D(1, 2))])
 p2 = drain()
 

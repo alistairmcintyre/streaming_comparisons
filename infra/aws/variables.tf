@@ -3,8 +3,9 @@ variable "aws_region" {
   default = "eu-west-1"
 }
 variable "aws_account_id" {
-  type    = string
-  default = "167217327348"
+  # No default: the account is supplied per deployment, from the
+  # AWS_ACCOUNT_ID repository variable in CI (TF_VAR_aws_account_id).
+  type = string
 }
 variable "project_tag" {
   type    = string
@@ -19,7 +20,7 @@ variable "warehouse_bucket" {
   default = "streaming-comparison-amc-warehouse"
 }
 
-# Unique per run (timestamp) — tags every resource so the kill-switch + orphan
+# Unique per run (timestamp), tags every resource so the kill-switch + orphan
 # sweep can find and destroy exactly this run. Passed in by the workflow.
 variable "run_id" {
   type    = string

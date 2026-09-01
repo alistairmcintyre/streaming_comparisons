@@ -1,7 +1,7 @@
 """
-Pipeline latency exporter for the "Pipeline Comparison — Live" dashboard.
+Pipeline latency exporter for the "Pipeline Comparison. Live" dashboard.
 
-Consumes the `pipeline_latency` Kafka topic — each event is a sampled per-record
+Consumes the `pipeline_latency` Kafka topic, each event is a sampled per-record
 timing from a pipeline: {"pipeline": "...", "executed_at_ms": <int>, "ingest_ts_ms": <int>}.
 It:
   - observes delay_ms/1000 into a Prometheus Histogram processing_delay_seconds{pipeline}
@@ -30,7 +30,7 @@ S3_PREFIX = os.environ.get("S3_BENCHMARK_PREFIX", "")  # s3://bucket/benchmarks/
 RUN_ID = os.environ.get("RUN_ID", "manual")
 FLUSH_SECONDS = int(os.environ.get("FLUSH_SECONDS", "60"))
 
-# Buckets in seconds — tuned for streaming freshness (10ms .. 5m).
+# Buckets in seconds, tuned for streaming freshness (10ms .. 5m).
 BUCKETS = (0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300)
 DELAY = Histogram("processing_delay_seconds", "event->processed delay", ["pipeline"], buckets=BUCKETS)
 EVENTS = Counter("pipeline_latency_events_total", "events consumed", ["pipeline"])
@@ -71,7 +71,7 @@ def main():
         # TOMBSTONE-SAFE. The Flink gold emitters use upsert-kafka (the only Kafka sink
         # that accepts the updating stream a GROUP BY produces), and upsert-kafka writes
         # a NULL value on retraction. `b.decode` on None raises AttributeError inside the
-        # deserializer, which kills the consumer loop and takes the whole exporter down —
+        # deserializer, which kills the consumer loop and takes the whole exporter down, 
         # so every pipeline's metrics stop, not just the one that retracted.
         value_deserializer=lambda b: json.loads(b.decode("utf-8")) if b else None,
     )
@@ -91,7 +91,18 @@ def main():
             _buf.append({"run_id": RUN_ID, "pipeline": pipeline,
                          "executed_at_ms": e.get("executed_at_ms"),
                          "ingest_ts_ms": e.get("ingest_ts_ms"),
-                         "delay_ms": int(delay_ms), "ts_ms": int(time.time() * 1000)})
+                         "delay_ms": int(delay_ms),
+                         # HOW THIS POINT WAS SAMPLED. Both families now sample the same
+                         # records (trade_id % 997, or account_id % 97 on gold), but they
+                         # emit differently: "flink_record" is one uniformly-sampled
+                         # record, "spark_batch_extreme" is the oldest or newest sampled
+                         # event of a committed batch. Percentiles over a pooled mix of
+                         # the two are not a percentile of anything, split on this
+                         # column before computing them offline. The live Grafana
+                         # histogram deliberately pools: it is a freshness signal, not a
+                         # published figure.
+                         "sample_kind": e.get("sample_kind", "unknown"),
+                         "ts_ms": int(time.time() * 1000)})
 
 
 if __name__ == "__main__":

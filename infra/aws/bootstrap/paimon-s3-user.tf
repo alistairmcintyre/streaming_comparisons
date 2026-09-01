@@ -1,7 +1,7 @@
 # paimon-s3 requires static S3 access-key/secret-key (it can't use the IRSA IAM-role
-# chain). So we create a dedicated IAM user scoped to ONLY the two buckets, and stash
+# chain). So we create a dedicated IAM user scoped to only the two buckets, and stash
 # its key in SSM SecureString. The per-run workflow (OIDC) reads SSM and injects a
-# k8s Secret — no static secret ever lives in the repo or GitHub.
+# k8s Secret, no static secret ever lives in the repo or GitHub.
 #
 # Everything else (Iceberg/Delta Spark, the pods' general S3) stays on IRSA. This user
 # is only for the Paimon-based stacks (Fluss + flink-paimon).
@@ -29,7 +29,7 @@ resource "aws_iam_access_key" "paimon_s3" {
   user = aws_iam_user.paimon_s3.name
 }
 
-# SSM SecureString — encrypted at rest; the workflow reads these via the deploy role.
+# SSM SecureString, encrypted at rest; the workflow reads these via the deploy role.
 resource "aws_ssm_parameter" "paimon_s3_key_id" {
   name  = "/${var.project_tag}/paimon-s3/access-key-id"
   type  = "SecureString"

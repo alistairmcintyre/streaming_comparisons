@@ -1,10 +1,10 @@
 # GitHub Actions → AWS via OIDC (no static access keys). Standing: the run assumes
-# this deploy role; destroying the run must NOT delete it.
+# this deploy role; destroying the run must not delete it.
 data "aws_partition" "current" {}
 
 # One OIDC provider per account. If it already exists, import it once:
 #   terraform import aws_iam_openid_connect_provider.github \
-#     arn:aws:iam::167217327348:oidc-provider/token.actions.githubusercontent.com
+#     arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com
 resource "aws_iam_openid_connect_provider" "github" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]

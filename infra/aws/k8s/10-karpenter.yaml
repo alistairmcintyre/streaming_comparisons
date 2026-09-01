@@ -36,10 +36,32 @@ spec:
     # for the ~4 vCPU the EKS managed nodegroup holds.
     # 96 fits FIVE engines at 1k/s with maintenance running: ~64 vCPU for
     # Iceberg/Delta/Paimon/Fluss plus ~18 for Hudi's 4 apps, with headroom. For 30k/s
-    # raise to 256 (see SIZING.md) — that needs another quota increase first.
+    # raise to 256 (see README.md (Sizing)), that needs another quota increase first.
     cpu: "96"                                 # cap the run's blast radius
   disruption:
-    consolidationPolicy: WhenEmptyOrUnderutilized
+    # WhenEmpty, not WhenEmptyOrUnderutilized, this cluster exists to MEASURE, and
+    # "underutilized" describes a benchmark node for most of its life. Karpenter would
+    # drain and repack it every 2 minutes, mid-measurement, which:
+    #   * kills the executors on it, and every Spark app here runs instances: 1, so
+    #     that is not a degraded query, it is a dead one (ExecutorDeadException on the
+    #     app itself, MetadataFetchFailedException on whatever wanted its shuffle output
+    #     which are the two failures the last run came back with and could not
+    #     explain);
+    #   * forces recomputation inside the window whose latency is being recorded;
+    #   * can land the pod on a different instance type, so the hardware under the
+    #     comparison changes partway through it.
+    # Ruled out first, by measurement rather than assumption: the executors are not
+    # running out of memory. tests/executor_memory_soak.py drives the real workloads at
+    # the real pod limit (2g heap + Spark's 0.4 non-JVM overhead = 2867MiB) and 8.4M keys
+    # of RocksDB state peaked at 1451MiB, with 200k-row batches flat at ~800MiB. Nodes
+    # also carry 100Gi root volumes, so this is not disk pressure either.
+    # SPOT IS STILL AN UNCONTROLLED VARIABLE. This stops Karpenter disrupting a node
+    # voluntarily; it cannot stop EC2 reclaiming one. That is a deliberate cost trade, not
+    # an oversight, but it means a reclaimed node silently corrupts one engine's numbers,
+    # so collect-diagnostics.sh now captures the Karpenter log and NodeClaim lifecycle to
+    # make it identifiable after the fact. Pin capacity-type to on-demand above if a run's
+    # numbers need to be defensible rather than cheap.
+    consolidationPolicy: WhenEmpty
     consolidateAfter: 2m
 ---
 apiVersion: karpenter.k8s.aws/v1

@@ -1,4 +1,4 @@
-# OSS Kafka on EKS via the Strimzi operator (KRaft, no ZooKeeper) — the cheap
+# OSS Kafka on EKS via the Strimzi operator (KRaft, no ZooKeeper), the cheap
 # alternative to MSK for load testing. In-cluster PLAINTEXT listener on :9092,
 # so KAFKA_AUTH=none and KAFKA_BOOTSTRAP=trades-kafka-bootstrap.kafka.svc:9092.
 #
@@ -9,7 +9,7 @@
 #
 # COST NOTE: 22 MB/s at 30k msg/s is trivial for Kafka; you pay for the pods, not
 # throughput. For a pure single-run throughput test, drop replicas to 1 and set
-# every *.replication.factor / min.insync to 1 and pin to ONE AZ — that removes
+# every *.replication.factor / min.insync to 1 and pin to ONE AZ, that removes
 # cross-AZ replication traffic (the only real AWS Kafka cost). 3 replicas below
 # is the HA default; keep all brokers + Flink in the same AZ during a test.
 apiVersion: kafka.strimzi.io/v1

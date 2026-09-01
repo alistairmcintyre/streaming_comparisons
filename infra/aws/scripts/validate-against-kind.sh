@@ -2,7 +2,7 @@
 # Run every manifest through REAL admission webhooks on a throwaway local cluster,
 # before a single AWS resource exists.
 #
-# WHY: three runs failed today on bugs that only appeared after ~20 minutes of cluster
+# Why: three runs failed today on bugs that only appeared after ~20 minutes of cluster
 # build, at roughly $5 a time:
 #   - metadata.name: pipeline_latency   (illegal '_')      -> caught offline now
 #   - Forbidden Flink config key: kubernetes.cluster-id     -> WEBHOOK, needs a cluster
@@ -11,7 +11,7 @@
 # with a valid name and is rejected only by the Flink operator's validating webhook. A
 # kind cluster on a GitHub runner costs nothing and takes a couple of minutes.
 #
-# Installs the full Flink operator (webhooks and all — it is the config-heaviest and has
+# Installs the full Flink operator (webhooks and all, it is the config-heaviest and has
 # bitten twice) plus CRDs for everything else, then server-dry-runs every manifest.
 set -euo pipefail
 CLUSTER="${KIND_CLUSTER:-manifest-validate}"
@@ -37,7 +37,7 @@ kubectl apply --server-side -f https://raw.githubusercontent.com/prometheus-oper
 kubectl apply --server-side -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml >/dev/null 2>&1 || true
 kubectl apply --server-side -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_prometheusrules.yaml >/dev/null 2>&1 || true
 
-echo "== flink operator (FULL — its webhook is what we are here to exercise) =="
+echo "== flink operator (FULL, its webhook is what we are here to exercise) =="
 helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1
 helm repo add flink-operator "${FLINK_OPERATOR_REPO:-https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.13.0/}" >/dev/null 2>&1
 helm repo update >/dev/null 2>&1
@@ -46,9 +46,9 @@ helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --crea
 helm upgrade --install flink-operator flink-operator/flink-kubernetes-operator \
   -n flink --create-namespace --wait --timeout 5m >/dev/null
 kubectl -n flink rollout status deploy/flink-kubernetes-operator --timeout=180s >/dev/null
-# The Deployment being Available is NOT the same as its validating webhook serving.
+# The Deployment being Available is not the same as its validating webhook serving.
 # cert-manager still has to issue and inject the cert, and until it does every
-# FlinkDeployment dry-run fails with "failed calling webhook ... connection refused" —
+# FlinkDeployment dry-run fails with "failed calling webhook ... connection refused", 
 # which looks exactly like a rejected manifest. Wait for real endpoints.
 echo "  waiting for the validating webhook to serve..."
 for i in $(seq 1 60); do
@@ -59,12 +59,12 @@ done
 
 # Namespaces must EXIST, not be dry-run. A --dry-run=server of 00-namespaces.yaml
 # creates nothing, so every namespaced manifest after it fails with
-# `namespaces "kafka" not found` — 8 of 17 manifests, none of them actually broken.
+# `namespaces "kafka" not found`, 8 of 17 manifests, none of them actually broken.
 # The real workflow has these by the time it applies: some from 00-namespaces.yaml,
 # the rest from explicit `kubectl create ns` and helm --create-namespace. Create them
 # for real here so the dry-run validates against a cluster shaped like production.
 # SPARK OPERATOR CRDs. Without these, `kubectl apply --dry-run=server` on the four Spark
-# manifests fails with "no matches for kind SparkApplication" — which the loop below used
+# manifests fails with "no matches for kind SparkApplication", which the loop below used
 # to treat as OK. That silently left 14 SparkApplication and 2 ScheduledSparkApplication
 # resources, across 90/91/93/95-*.yaml, COMPLETELY UNVALIDATED: a third of the manifests
 # and every one of the Spark pipelines. Only the CRDs are needed (schema validation); the
@@ -74,7 +74,7 @@ helm repo add spark-operator https://kubeflow.github.io/spark-operator >/dev/nul
 helm repo update >/dev/null 2>&1 || true
 helm upgrade --install spark-operator spark-operator/spark-operator \
   -n spark-operator --create-namespace --set webhook.enable=false >/dev/null 2>&1 || \
-  echo "  spark-operator chart unavailable — its manifests will be reported UNVALIDATED"
+  echo "  spark-operator chart unavailable, its manifests will be reported UNVALIDATED"
 
 echo "== namespaces (created for real, so the dry-run is meaningful) =="
 kubectl apply -f infra/aws/k8s/00-namespaces.yaml >/dev/null 2>&1 || true
@@ -87,7 +87,7 @@ echo "== server dry-run every manifest =="
 # Placeholders: the webhook validates SHAPE and CONFIG KEYS, not secret values.
 # Every ${VAR} the manifests reference gets a placeholder, DISCOVERED from the
 # manifests rather than hardcoded. A hand-maintained list drifts, and an unset var is
-# not a loud failure — envsubst silently substitutes EMPTY, producing a subtly invalid
+# not a loud failure, envsubst silently substitutes EMPTY, producing a subtly invalid
 # manifest. That is exactly what happened here: EFS_ID was missing from the list, so
 # volumeHandle became "" and the PV was rejected for a reason that had nothing to do
 # with the manifest. Auto-discovery means a newly-introduced var can never do that again.
@@ -115,7 +115,7 @@ unvalidated=""
 set +e
 for f in $(ls infra/aws/k8s/*.yaml | sort); do
   b=$(basename "$f")
-  # 96-alerts.yaml is applied without envsubst in the real workflow — match that here,
+  # 96-alerts.yaml is applied without envsubst in the real workflow, match that here,
   # or its {{ $labels }} templating gets blanked and we validate the wrong thing.
   if [ "$b" = "96-alerts.yaml" ]; then out=$(kubectl apply --dry-run=server -f "$f" 2>&1); rc=$?
   else out=$(envsubst < "$f" | kubectl apply --dry-run=server -f - 2>&1); rc=$?; fi
@@ -130,7 +130,7 @@ for f in $(ls infra/aws/k8s/*.yaml | sort); do
     else out=$(envsubst < "$f" | kubectl apply --dry-run=server -f - 2>&1); rc=$?; fi
   fi
   if [ $rc -ne 0 ] && echo "$out" | grep -qiE 'no matches for kind|could not find the requested resource|ensure CRDs'; then
-    # NOT a pass. A missing CRD means this manifest was never checked at all, and saying
+    # Not a pass. A missing CRD means this manifest was never checked at all, and saying
     # "ok" is how 14 SparkApplications went unvalidated while this script reported all
     # green. Record it; the allowlist below decides whether that is acceptable.
     echo "  UNVALIDATED $b (no CRD installed here)"
@@ -146,7 +146,7 @@ set -e
 # Manifests we ACCEPT as unvalidatable here, each with a reason. Anything else that lands
 # in the unvalidated list is a blind spot that has to be closed, not discovered later at
 # ~$5 and 20 minutes a go.
-#   10-karpenter.yaml — NodePool/EC2NodeClass. Karpenter's CRDs ship in an OCI chart that
+#   10-karpenter.yaml. NodePool/EC2NodeClass. Karpenter's CRDs ship in an OCI chart that
 #   expects a real cluster with the AWS provider; installing it on kind is more moving
 #   parts than the manifest is worth. It is 2 resources of stable shape.
 ALLOW_UNVALIDATED="10-karpenter.yaml"
@@ -157,7 +157,7 @@ for b in $unvalidated; do
   esac
 done
 
-[ "$fails" = 0 ] || { echo; echo "manifests would be REJECTED in AWS — fix before spending a cluster"; exit 1; }
+[ "$fails" = 0 ] || { echo; echo "manifests would be REJECTED in AWS, fix before spending a cluster"; exit 1; }
 echo
 echo "all manifests accepted by real admission webhooks"
 [ -n "$unvalidated" ] && echo "(allowlisted, not checked:$unvalidated)"
