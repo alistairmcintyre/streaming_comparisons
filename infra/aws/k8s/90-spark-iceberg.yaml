@@ -227,7 +227,11 @@ spec:
   executor:
     instances: 1
     cores: 1
-    memory: "2g"
+    # 3g for the same reason as silver-trades: the diagnostics bundle attributed all
+    # 20 OOMKilled executors of a live run to the silver jobs (16 delta trades, 3
+    # iceberg trades, 1 delta accounts), and delta-silver-accounts shows the full
+    # chain: OOMKilled -> SparkExecutorFailed -> SparkDriverFailed -> PendingRerun.
+    memory: "3g"
     serviceAccount: lake
     env:
       - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
