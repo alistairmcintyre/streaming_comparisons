@@ -290,6 +290,138 @@ Above 10k/s a single Debezium replication slot becomes the limit, which is per s
 and combined across the publication's tables. Going further means sharding
 publications or having the generator write to Kafka directly.
 
+## Debugging a live run
+
+The run workflow tears the cluster down when it finishes, so anything you want to
+understand has to be looked at while it is up, or read out of the diagnostics bundle
+afterwards.
+
+### Getting a shell on the cluster
+
+`kubectl` needs two things that are easy to miss. First, the cluster only admits the
+GitHub deploy role that created it, so your own SSO identity has no access until you
+add an entry for it:
+
+```bash
+export AWS_PROFILE=streaming-comparisons AWS_REGION=eu-west-1
+CLUSTER=sc-iter                    # the run_id: sc-<run_id>
+ROLE=$(aws iam list-roles \
+  --query "Roles[?contains(RoleName,'AWSReservedSSO_AdministratorAccess')].Arn" \
+  --output text | head -1)
+
+aws eks create-access-entry --cluster-name "$CLUSTER" --principal-arn "$ROLE" --type STANDARD
+aws eks associate-access-policy --cluster-name "$CLUSTER" --principal-arn "$ROLE" \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+  --access-scope type=cluster
+
+aws eks update-kubeconfig --name "$CLUSTER"
+```
+
+An access entry is additive auth config and cannot disturb running pods, so it is safe
+mid-run. It disappears with the cluster at teardown.
+
+Second, every AWS command needs the profile. There is no `default` profile in this
+setup, so a bare `aws ...` fails with `NoCredentials` even straight after a successful
+`aws sso login`.
+
+### What is running, and what is not
+
+```bash
+kubectl -n spark get sparkapplications \
+  -o custom-columns='NAME:.metadata.name,STATE:.status.applicationState.state,ATTEMPTS:.status.executionAttempts'
+kubectl -n flink get flinkdeployment \
+  -o custom-columns='NAME:.metadata.name,LIFECYCLE:.status.lifecycleState'
+```
+
+`ATTEMPTS` is the number to watch. A job in `RUNNING` on attempt 4 is crash-looping and
+recovering, which the state alone does not tell you.
+
+`FlinkDeployment` reports the deployment, not the SQL jobs. For those, ask the
+JobManager directly:
+
+```bash
+JM=$(kubectl -n flink get pods --no-headers | awk '$1 ~ /^flink-paimon-[0-9a-f]{8,}/{print $1}')
+kubectl -n flink exec "$JM" -- curl -s localhost:8081/jobs/overview
+```
+
+### Why something died
+
+```bash
+# anything not healthy, and anything that has restarted
+kubectl get pods -A --no-headers | awk '$4!="Running" && $4!="Completed"'
+kubectl get pods -A --no-headers | awk '$5+0>0'
+
+# the termination reason, which is where OOMKilled and exit 137 live
+kubectl -n spark get pod <pod> -o jsonpath='{.status.containerStatuses[0].state.terminated}'
+
+# the error message the operator kept
+kubectl -n spark get sparkapplication <app> -o jsonpath='{.status.applicationState.errorMessage}'
+
+kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -20
+```
+
+A Spark stack trace is hundreds of frames deep, so grep for the message rather than
+paging the log, and read the FIRST error rather than the last: a late failure is often
+a rollback or cleanup failing after the real one.
+
+```bash
+kubectl -n spark logs <app>-driver --tail=-1 > /tmp/driver.log
+grep -nE "ERROR|Exception:|Caused by" /tmp/driver.log | grep -vE "^\s+at " | head
+```
+
+Executor pods carry the evidence for an executor death, and Spark deletes them by
+default. The manifests set `spark.kubernetes.executor.deleteOnTermination=false` so they
+survive long enough to inspect. Note the host Spark reports for a lost executor is the
+**pod** IP, not the node IP, since the VPC CNI allocates pod addresses from the node
+subnet. Looking for it in `get nodes` will find nothing and suggest a node was lost when
+none was.
+
+### Was the node taken away?
+
+```bash
+kubectl get nodes -L karpenter.sh/capacity-type
+kubectl get nodeclaims -o custom-columns=\
+'NAME:.metadata.name,TYPE:.metadata.labels.karpenter\.sh/capacity-type,NODE:.status.nodeName'
+kubectl -n kube-system logs -l app.kubernetes.io/name=karpenter --tail=4000 \
+  | grep -E "disrupting|tainted|deleted node|interrupt"
+```
+
+`disrupting node(s)` followed by `tainted node` and `deleted node` is Karpenter removing
+a node. The NodePool is set to `consolidationPolicy: WhenEmpty` so it should only ever
+remove empty ones; anything else there is worth investigating. Spot reclaim is a
+separate path that this policy cannot prevent.
+
+### Is data actually flowing?
+
+```bash
+# source rate, run it twice and difference the offsets
+kubectl -n kafka exec trades-dual-role-0 -- \
+  bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic app.public.trades \
+  | awk -F: '{s+=$3} END {print s}'
+
+# per-engine write recency, no cluster access needed
+for p in delta iceberg hudi; do
+  aws s3api list-objects-v2 --bucket streaming-comparison-amc-warehouse --prefix "$p/" \
+    --query 'sort_by(Contents,&LastModified)[-1].[LastModified,Key]' --output text
+done
+```
+
+The Flink engines write to the `-paimon` bucket, not the warehouse bucket, so an empty
+`paimon/` or `fluss/` prefix in the warehouse bucket is expected rather than a fault.
+
+### Reading the run from outside
+
+Workflow logs for a job still in progress are only served through the API, and only up
+to what has been flushed:
+
+```bash
+gh run list --limit 3
+JID=$(gh run view <run-id> --json jobs --jq '.jobs[] | select(.name=="run") | .databaseId')
+gh api "repos/<owner>/<repo>/actions/jobs/$JID/logs" > /tmp/job.log
+```
+
+`gh run view --log` returns nothing until the job finishes.
+
 ## Testing
 
 ```bash
