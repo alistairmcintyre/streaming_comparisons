@@ -15,6 +15,22 @@ module "karpenter" {
 
   # Pod Identity for the controller (simpler than IRSA for Karpenter v1).
   create_pod_identity_association = true
+
+  # The interruption controller needs ec2:DescribeInstanceStatus, and the upstream
+  # module's policy omits it. Karpenter logs this at startup and then carries on with
+  # interruption handling dead:
+  #   ERROR ... ec2:DescribeInstanceStatus permission is not allowed, update the IAM
+  #   policy and restart the Karpenter deployment
+  # Harmless while every node is on-demand, which is what a live run happened to get,
+  # but it means a spot reclaim would go unhandled: no drain, no cordon, just an
+  # instance disappearing under whatever was running on it.
+  iam_policy_statements = [
+    {
+      effect    = "Allow"
+      actions   = ["ec2:DescribeInstanceStatus"]
+      resources = ["*"]
+    }
+  ]
 }
 
 output "karpenter_controller_role_arn" {

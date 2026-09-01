@@ -47,6 +47,16 @@ spec:
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
     "spark.sql.extensions": "org.apache.spark.sql.hudi.HoodieSparkSessionExtension"
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.hudi.catalog.HoodieCatalog"
+    # Hudi opens its own handle on the metadata table and closes it. The S3A cache
+    # returns the SAME S3AFileSystem for a given bucket and conf, so that close
+    # shuts the credentials provider the rest of the JVM is still using, and every
+    # later read dies with
+    #   NoAuthWithAWSException ... WebIdentityTokenCredentialsProvider(): Connection pool shut down
+    # on a job whose IRSA setup is correct and identical to jobs that work. Seen on
+    # hudi-gold-open-positions (killed it, 11 attempts) and hudi-silver-trades (42
+    # occurrences), always on .hoodie/metadata/ paths. Disabling the cache gives each
+    # consumer its own filesystem so one component's close cannot break another's.
+    "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-hudi-jobs } }
@@ -113,6 +123,16 @@ spec:
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
     "spark.sql.extensions": "org.apache.spark.sql.hudi.HoodieSparkSessionExtension"
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.hudi.catalog.HoodieCatalog"
+    # Hudi opens its own handle on the metadata table and closes it. The S3A cache
+    # returns the SAME S3AFileSystem for a given bucket and conf, so that close
+    # shuts the credentials provider the rest of the JVM is still using, and every
+    # later read dies with
+    #   NoAuthWithAWSException ... WebIdentityTokenCredentialsProvider(): Connection pool shut down
+    # on a job whose IRSA setup is correct and identical to jobs that work. Seen on
+    # hudi-gold-open-positions (killed it, 11 attempts) and hudi-silver-trades (42
+    # occurrences), always on .hoodie/metadata/ paths. Disabling the cache gives each
+    # consumer its own filesystem so one component's close cannot break another's.
+    "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-hudi-jobs } }
@@ -179,6 +199,16 @@ spec:
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
     "spark.sql.extensions": "org.apache.spark.sql.hudi.HoodieSparkSessionExtension"
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.hudi.catalog.HoodieCatalog"
+    # Hudi opens its own handle on the metadata table and closes it. The S3A cache
+    # returns the SAME S3AFileSystem for a given bucket and conf, so that close
+    # shuts the credentials provider the rest of the JVM is still using, and every
+    # later read dies with
+    #   NoAuthWithAWSException ... WebIdentityTokenCredentialsProvider(): Connection pool shut down
+    # on a job whose IRSA setup is correct and identical to jobs that work. Seen on
+    # hudi-gold-open-positions (killed it, 11 attempts) and hudi-silver-trades (42
+    # occurrences), always on .hoodie/metadata/ paths. Disabling the cache gives each
+    # consumer its own filesystem so one component's close cannot break another's.
+    "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-hudi-jobs } }
@@ -245,6 +275,16 @@ spec:
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
     "spark.sql.extensions": "org.apache.spark.sql.hudi.HoodieSparkSessionExtension"
     "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.hudi.catalog.HoodieCatalog"
+    # Hudi opens its own handle on the metadata table and closes it. The S3A cache
+    # returns the SAME S3AFileSystem for a given bucket and conf, so that close
+    # shuts the credentials provider the rest of the JVM is still using, and every
+    # later read dies with
+    #   NoAuthWithAWSException ... WebIdentityTokenCredentialsProvider(): Connection pool shut down
+    # on a job whose IRSA setup is correct and identical to jobs that work. Seen on
+    # hudi-gold-open-positions (killed it, 11 attempts) and hudi-silver-trades (42
+    # occurrences), always on .hoodie/metadata/ paths. Disabling the cache gives each
+    # consumer its own filesystem so one component's close cannot break another's.
+    "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
     - { name: jobs, configMap: { name: spark-hudi-jobs } }

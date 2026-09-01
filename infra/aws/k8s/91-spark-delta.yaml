@@ -145,7 +145,12 @@ spec:
   executor:
     instances: 1
     cores: 1
-    memory: "2g"
+    # 3g, not 2g. At 2g the pod limit is 2867Mi (heap x Spark's 0.4 non-JVM
+    # factor) and this executor was OOMKilled at exactly that during a live run:
+    # the 2h dropDuplicatesWithinWatermark state is on RocksDB (off-heap native),
+    # and the Kafka buffers, S3A upload buffers and PySpark workers are off-heap
+    # too, none of which a JVM heap setting bounds.
+    memory: "3g"
     serviceAccount: lake
     env:
       - { name: KAFKA_BROKERS, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }

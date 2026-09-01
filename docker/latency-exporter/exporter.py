@@ -22,6 +22,7 @@ import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 from kafka import KafkaConsumer
+from kafka.errors import NoBrokersAvailable
 from prometheus_client import Histogram, Counter, start_http_server
 
 BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "trades-kafka-bootstrap.kafka.svc:9092")
@@ -65,7 +66,27 @@ def _flush_loop():
 def main():
     start_http_server(8000)
     threading.Thread(target=_flush_loop, daemon=True).start()
-    consumer = KafkaConsumer(
+    # Kafka is usually not accepting connections yet when this starts, and
+    # KafkaConsumer raises NoBrokersAvailable immediately rather than retrying, so the
+    # pod crash-looped twice on a live run before Kafka came up. Nothing was lost (the
+    # topic keeps the events), but the restarts look like a fault and the exporter is
+    # missing for however long the backoff lasts. Wait for the broker instead.
+    consumer = None
+    deadline = time.time() + int(os.environ.get("KAFKA_WAIT_SECONDS", "300"))
+    while consumer is None:
+        try:
+            consumer = _consumer()
+        except NoBrokersAvailable:
+            if time.time() > deadline:
+                raise
+            print(f"waiting for kafka at {BOOTSTRAP}", flush=True)
+            time.sleep(5)
+    for msg in consumer:
+        _handle(msg)
+
+
+def _consumer():
+    return KafkaConsumer(
         TOPIC, bootstrap_servers=BOOTSTRAP.split(","),
         group_id="latency-exporter", auto_offset_reset="latest",
         # TOMBSTONE-SAFE. The Flink gold emitters use upsert-kafka (the only Kafka sink
@@ -75,34 +96,34 @@ def main():
         # so every pipeline's metrics stop, not just the one that retracted.
         value_deserializer=lambda b: json.loads(b.decode("utf-8")) if b else None,
     )
-    for msg in consumer:
-        e = msg.value
-        if not e:                      # tombstone from an upsert-kafka retraction
-            continue
-        pipeline = e.get("pipeline", "unknown")
-        delay_ms = e.get("delay_ms")
-        if delay_ms is None and e.get("ingest_ts_ms") and e.get("executed_at_ms"):
-            delay_ms = e["ingest_ts_ms"] - e["executed_at_ms"]
-        if delay_ms is None:
-            continue
-        DELAY.labels(pipeline).observe(max(delay_ms, 0) / 1000.0)
-        EVENTS.labels(pipeline).inc()
-        with _lock:
-            _buf.append({"run_id": RUN_ID, "pipeline": pipeline,
-                         "executed_at_ms": e.get("executed_at_ms"),
-                         "ingest_ts_ms": e.get("ingest_ts_ms"),
-                         "delay_ms": int(delay_ms),
-                         # HOW THIS POINT WAS SAMPLED. Both families now sample the same
-                         # records (trade_id % 997, or account_id % 97 on gold), but they
-                         # emit differently: "flink_record" is one uniformly-sampled
-                         # record, "spark_batch_extreme" is the oldest or newest sampled
-                         # event of a committed batch. Percentiles over a pooled mix of
-                         # the two are not a percentile of anything, split on this
-                         # column before computing them offline. The live Grafana
-                         # histogram deliberately pools: it is a freshness signal, not a
-                         # published figure.
-                         "sample_kind": e.get("sample_kind", "unknown"),
-                         "ts_ms": int(time.time() * 1000)})
+def _handle(msg):
+    e = msg.value
+    if not e:                      # tombstone from an upsert-kafka retraction
+        return
+    pipeline = e.get("pipeline", "unknown")
+    delay_ms = e.get("delay_ms")
+    if delay_ms is None and e.get("ingest_ts_ms") and e.get("executed_at_ms"):
+        delay_ms = e["ingest_ts_ms"] - e["executed_at_ms"]
+    if delay_ms is None:
+        return
+    DELAY.labels(pipeline).observe(max(delay_ms, 0) / 1000.0)
+    EVENTS.labels(pipeline).inc()
+    with _lock:
+        _buf.append({"run_id": RUN_ID, "pipeline": pipeline,
+                     "executed_at_ms": e.get("executed_at_ms"),
+                     "ingest_ts_ms": e.get("ingest_ts_ms"),
+                     "delay_ms": int(delay_ms),
+                     # HOW THIS POINT WAS SAMPLED. Both families now sample the same
+                     # records (trade_id % 997, or account_id % 97 on gold), but they
+                     # emit differently: "flink_record" is one uniformly-sampled
+                     # record, "spark_batch_extreme" is the oldest or newest sampled
+                     # event of a committed batch. Percentiles over a pooled mix of
+                     # the two are not a percentile of anything, split on this
+                     # column before computing them offline. The live Grafana
+                     # histogram deliberately pools: it is a freshness signal, not a
+                     # published figure.
+                     "sample_kind": e.get("sample_kind", "unknown"),
+                     "ts_ms": int(time.time() * 1000)})
 
 
 if __name__ == "__main__":

@@ -95,6 +95,23 @@ cap nodes $KB get nodes -o custom-columns='NAME:.metadata.name,CREATED:.metadata
 cap nodes $KB get events -A --field-selector reason=NodeNotReady,reason=DisruptionBlocked,reason=Unconsolidatable,reason=SpotInterrupted
 cap kafka $KB -n kafka get kafka,kafkatopic,kafkaconnect,kafkaconnector -o wide
 
+# ── Hudi timeline state ──────────────────────────────────────────────────────
+# A Hudi table wedges by accumulating inflight/requested instants: every failed commit
+# leaves one, the next attempt tries to roll it back, that fails, and it leaves another.
+# gold/open_positions reached 18 of them on a live run while the driver reported only a
+# credentials error, so nothing in this bundle said the table itself was stuck. The
+# counts below make that obvious at a glance rather than forty minutes in.
+{
+  echo "### hudi timeline: pending instants per table ###"
+  for t in bronze/trades silver/trades silver/accounts gold/open_positions; do
+    n=$(aws s3 ls "s3://${WAREHOUSE_BUCKET}/hudi/$t/.hoodie/" 2>/dev/null \
+        | grep -cE "inflight|requested" || echo "?")
+    last=$(aws s3 ls "s3://${WAREHOUSE_BUCKET}/hudi/$t/.hoodie/" 2>/dev/null \
+        | grep -E "\\.(delta)?commit$" | tail -1 | awk '{print $1" "$2" "$4}')
+    printf "  %-22s pending=%-4s last_commit=%s\n" "$t" "$n" "${last:-none}"
+  done
+} > "$OUT/hudi-timeline.txt" 2>&1
+
 # Prometheus: which targets exist, and are the alert rules actually loaded? Both were
 # silently wrong on the first run. Via the apiserver proxy, the prometheus container
 # is distroless and has no wget/curl, so `kubectl exec` cannot work here.
