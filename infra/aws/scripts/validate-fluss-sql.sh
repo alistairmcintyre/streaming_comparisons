@@ -35,8 +35,9 @@ for cand in "${FLUSS_SERVER_IMAGE:-}" streaming-comparisons-fluss-coordinator:la
 done
 [ -n "$SERVER_IMG" ] || { echo "  no Fluss server image available locally"; exit 1; }
 . "$(dirname "$0")/../../../scripts/ecr-env.sh"
-FLINK_IMG="${FLUSS_FLINK_IMAGE:-$ECR_REGISTRY/fluss-flink:latest}"
-ecr_required || exit 1
+# NOT ecr_required: the line below falls back to the public quickstart image, so this
+# check runs with no registry configured.
+FLINK_IMG="${FLUSS_FLINK_IMAGE:-${ECR_REGISTRY:-none}/fluss-flink:latest}"
 docker image inspect "$FLINK_IMG" >/dev/null 2>&1 || FLINK_IMG=apache/fluss-quickstart-flink:1.20-0.9.1-incubating
 echo "  server image: $SERVER_IMG"
 echo "  flink  image: $FLINK_IMG"

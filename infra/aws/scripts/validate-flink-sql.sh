@@ -16,8 +16,10 @@
 # we only fail on planning/validation errors.
 set -uo pipefail
 . "$(dirname "$0")/../../../scripts/ecr-env.sh"
-IMG="${FLINK_PAIMON_IMAGE:-$ECR_REGISTRY/flink-paimon:latest}"
-ecr_required || exit 1
+# NOT ecr_required. This check must work with no registry at all: the CI validate job
+# runs before any AWS credentials are assumed, and falls through to the local build
+# below. An empty ECR_REGISTRY just makes the inspect miss, which is the intended path.
+IMG="${FLINK_PAIMON_IMAGE:-${ECR_REGISTRY:-none}/flink-paimon:latest}"
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 
 # Self-contained: the validate job has no AWS credentials, so if the ECR image is not
