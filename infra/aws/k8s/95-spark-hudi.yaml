@@ -56,6 +56,19 @@ spec:
     # hudi-gold-open-positions (killed it, 11 attempts) and hudi-silver-trades (42
     # occurrences), always on .hoodie/metadata/ paths. Disabling the cache gives each
     # consumer its own filesystem so one component's close cannot break another's.
+    #
+    # VERIFIED on a live cluster, not reasoned about: hudi-silver-trades was climbing
+    # an attempt a minute with 36 of these errors in the current driver log. Patched
+    # in place, it held attempt 1 for over ten minutes with zero, and kept committing
+    # (20260901213555915.deltacommit). hudi-bronze-trades likewise went to attempt 1.
+    #
+    # IT DOES NOT FIX GOLD. With the credential failure gone, hudi-gold-open-positions
+    # still crash-loops on a different error that only appears once the cache is off:
+    #   IllegalArgumentException: Wrong FS: s3a://.../gold/open_positions/symbol=JPM,
+    #   expected: file:///
+    # so some Hudi path there resolves the default filesystem rather than the table's.
+    # Gold was already dead before this change, so it is no worse, but it needs its own
+    # fix and that one is still open.
     "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
@@ -132,6 +145,19 @@ spec:
     # hudi-gold-open-positions (killed it, 11 attempts) and hudi-silver-trades (42
     # occurrences), always on .hoodie/metadata/ paths. Disabling the cache gives each
     # consumer its own filesystem so one component's close cannot break another's.
+    #
+    # VERIFIED on a live cluster, not reasoned about: hudi-silver-trades was climbing
+    # an attempt a minute with 36 of these errors in the current driver log. Patched
+    # in place, it held attempt 1 for over ten minutes with zero, and kept committing
+    # (20260901213555915.deltacommit). hudi-bronze-trades likewise went to attempt 1.
+    #
+    # IT DOES NOT FIX GOLD. With the credential failure gone, hudi-gold-open-positions
+    # still crash-loops on a different error that only appears once the cache is off:
+    #   IllegalArgumentException: Wrong FS: s3a://.../gold/open_positions/symbol=JPM,
+    #   expected: file:///
+    # so some Hudi path there resolves the default filesystem rather than the table's.
+    # Gold was already dead before this change, so it is no worse, but it needs its own
+    # fix and that one is still open.
     "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
@@ -208,6 +234,19 @@ spec:
     # hudi-gold-open-positions (killed it, 11 attempts) and hudi-silver-trades (42
     # occurrences), always on .hoodie/metadata/ paths. Disabling the cache gives each
     # consumer its own filesystem so one component's close cannot break another's.
+    #
+    # VERIFIED on a live cluster, not reasoned about: hudi-silver-trades was climbing
+    # an attempt a minute with 36 of these errors in the current driver log. Patched
+    # in place, it held attempt 1 for over ten minutes with zero, and kept committing
+    # (20260901213555915.deltacommit). hudi-bronze-trades likewise went to attempt 1.
+    #
+    # IT DOES NOT FIX GOLD. With the credential failure gone, hudi-gold-open-positions
+    # still crash-loops on a different error that only appears once the cache is off:
+    #   IllegalArgumentException: Wrong FS: s3a://.../gold/open_positions/symbol=JPM,
+    #   expected: file:///
+    # so some Hudi path there resolves the default filesystem rather than the table's.
+    # Gold was already dead before this change, so it is no worse, but it needs its own
+    # fix and that one is still open.
     "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
@@ -284,6 +323,19 @@ spec:
     # hudi-gold-open-positions (killed it, 11 attempts) and hudi-silver-trades (42
     # occurrences), always on .hoodie/metadata/ paths. Disabling the cache gives each
     # consumer its own filesystem so one component's close cannot break another's.
+    #
+    # VERIFIED on a live cluster, not reasoned about: hudi-silver-trades was climbing
+    # an attempt a minute with 36 of these errors in the current driver log. Patched
+    # in place, it held attempt 1 for over ten minutes with zero, and kept committing
+    # (20260901213555915.deltacommit). hudi-bronze-trades likewise went to attempt 1.
+    #
+    # IT DOES NOT FIX GOLD. With the credential failure gone, hudi-gold-open-positions
+    # still crash-loops on a different error that only appears once the cache is off:
+    #   IllegalArgumentException: Wrong FS: s3a://.../gold/open_positions/symbol=JPM,
+    #   expected: file:///
+    # so some Hudi path there resolves the default filesystem rather than the table's.
+    # Gold was already dead before this change, so it is no worse, but it needs its own
+    # fix and that one is still open.
     "spark.hadoop.fs.s3a.impl.disable.cache": "true"
     "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
   volumes:
