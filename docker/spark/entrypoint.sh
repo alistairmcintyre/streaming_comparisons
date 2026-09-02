@@ -16,6 +16,11 @@ esac
 #   1. Iceberg S3FileIO (catalog-level), used for data files
 #   2. Hadoop S3A (hadoop-level), used for streaming checkpoints
 
+# S3A is configured entirely from the environment so the same image can write to MinIO
+# or to real S3 without a rebuild or a branch in here. Defaults are MinIO, which is what
+# `make up` gives you. Setting S3A_* for real S3 is the "lake on AWS" mode: see the
+# README, it exists so catalog, timeline and Athena behaviour can be tested for pennies
+# instead of a cluster.
 exec /opt/spark/bin/spark-submit \
   --master "local[2]" \
   --conf "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions" \
@@ -29,10 +34,10 @@ exec /opt/spark/bin/spark-submit \
   --conf "spark.sql.catalog.rest.s3.access-key-id=${AWS_ACCESS_KEY_ID:-minioadmin}" \
   --conf "spark.sql.catalog.rest.s3.secret-access-key=${AWS_SECRET_ACCESS_KEY:-minioadmin}" \
   --conf "spark.sql.defaultCatalog=rest" \
-  --conf "spark.hadoop.fs.s3a.endpoint=${MINIO_ENDPOINT:-http://minio:9000}" \
-  --conf "spark.hadoop.fs.s3a.path.style.access=true" \
-  --conf "spark.hadoop.fs.s3a.connection.ssl.enabled=false" \
-  --conf "spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider" \
+  --conf "spark.hadoop.fs.s3a.endpoint=${S3A_ENDPOINT:-http://minio:9000}" \
+  --conf "spark.hadoop.fs.s3a.path.style.access=${S3A_PATH_STYLE:-true}" \
+  --conf "spark.hadoop.fs.s3a.connection.ssl.enabled=${S3A_SSL:-false}" \
+  --conf "spark.hadoop.fs.s3a.aws.credentials.provider=${S3A_CREDS_PROVIDER:-org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider}" \
   --conf "spark.hadoop.fs.s3a.access.key=${AWS_ACCESS_KEY_ID:-minioadmin}" \
   --conf "spark.hadoop.fs.s3a.secret.key=${AWS_SECRET_ACCESS_KEY:-minioadmin}" \
   --conf "spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem" \

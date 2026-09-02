@@ -232,6 +232,37 @@ Four other things about this stack are non-obvious:
 - The TaskManager needs `taskmanager.memory.process.size: 4096m`. The quickstart
   default OOMs running bronze, gold and tiering together, which kills the cluster.
 
+### Local stack, lake on real S3 and Glue
+
+The tier between a laptop and a cluster. Kafka, Postgres, Debezium and the generators
+stay in Compose; only the lake moves to real S3 and the real Glue catalog.
+
+```bash
+cp env/aws.example.env env/aws.env         # set AWS_ACCOUNT_ID
+aws sso login --profile streaming-comparisons
+. scripts/lake-aws-env.sh && make up start-delta
+```
+
+It writes under `s3://<warehouse>/_devlake/<you>/`, a per-user prefix that no benchmark
+run reads, and the script prints the cleanup command.
+
+Worth using because most of what has actually broken on this project broke against real
+AWS rather than under MinIO, and none of it needed a cluster to find: Glue registering
+tables with an empty column list, Athena refusing Delta tables with deletion vectors,
+Hudi's timeline wedging on an incomplete instant, and the partition-column ordering that
+made Athena misread Hudi. All reproducible here in minutes.
+
+What it cannot tell you, so a clean run here is not a green light for a full run:
+
+- **IRSA credential behaviour.** `WebIdentityTokenCredentialsProvider` only exists on a
+  pod with a projected service-account token, so the failure that killed the Hudi jobs
+  on a live run cannot occur here at all.
+- **Node disruption**, multi-executor distribution, and sustained 1000/s throughput.
+
+Everything else has a cheaper tier still: `make test` needs no AWS whatever, and
+`make test-all` runs SCD2 and gold folds against real Delta, Iceberg and Hudi tables
+locally.
+
 ## Running on AWS
 
 Each run creates an EKS cluster, exercises it, snapshots results to S3 and destroys

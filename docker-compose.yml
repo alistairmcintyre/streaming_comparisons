@@ -18,13 +18,27 @@ x-spark-env: &spark-env
   SPARK_S3_ENDPOINT: http://minio:9000
   PYTHONPATH: /opt/shared
 
+# Everything the lake side of a pipeline needs, in one place. Defaults are MinIO, so
+# `make up` is unchanged. Every value is overridable, which is what `make lake-aws`
+# uses to point the SAME containers at real S3 and Glue: see the README. That mode
+# exists because catalog registration, Hudi timeline behaviour and Athena readability
+# are all testable for pennies, and only IRSA and node-level behaviour actually need a
+# cluster.
 x-s3-env: &s3-env
-  MINIO_ENDPOINT: http://minio:9000
-  AWS_REGION: us-east-1
-  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
-  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  MINIO_ENDPOINT: ${S3A_ENDPOINT:-http://minio:9000}
+  S3A_ENDPOINT: ${S3A_ENDPOINT:-http://minio:9000}
+  S3A_PATH_STYLE: ${S3A_PATH_STYLE:-true}
+  S3A_SSL: ${S3A_SSL:-false}
+  S3A_CREDS_PROVIDER: ${S3A_CREDS_PROVIDER:-org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+  # Empty under MinIO; SSO credentials are temporary and carry one.
+  AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
   KAFKA_BROKERS: kafka:9092
-  CHECKPOINT_BASE: s3a://warehouse/_chk
+  CHECKPOINT_BASE: ${CHECKPOINT_BASE:-s3a://warehouse/_chk}
+  DELTA_WAREHOUSE: ${DELTA_WAREHOUSE:-s3a://warehouse/delta}
+  HUDI_WAREHOUSE: ${HUDI_WAREHOUSE:-s3a://warehouse/hudi}
   PYTHONPATH: /opt/shared
 
 x-flink-env: &flink-env

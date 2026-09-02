@@ -16,16 +16,21 @@ esac
 # Hudi takes over spark_catalog like Delta.
 # Tables are path-addressed (s3a://); no warehouse catalog needed.
 
+# S3A is configured entirely from the environment so the same image can write to MinIO
+# or to real S3 without a rebuild or a branch in here. Defaults are MinIO, which is what
+# `make up` gives you. Setting S3A_* for real S3 is the "lake on AWS" mode: see the
+# README, it exists so catalog, timeline and Athena behaviour can be tested for pennies
+# instead of a cluster.
 exec /opt/spark/bin/spark-submit \
   --master "local[2]" \
   --conf "spark.sql.extensions=org.apache.spark.sql.hudi.HoodieSparkSessionExtension" \
   --conf "spark.sql.catalog.spark_catalog=org.apache.spark.sql.hudi.catalog.HoodieCatalog" \
   --conf "spark.serializer=org.apache.spark.serializer.KryoSerializer" \
   --conf "spark.kryo.registrator=org.apache.spark.HoodieSparkKryoRegistrar" \
-  --conf "spark.hadoop.fs.s3a.endpoint=${MINIO_ENDPOINT:-http://minio:9000}" \
-  --conf "spark.hadoop.fs.s3a.path.style.access=true" \
-  --conf "spark.hadoop.fs.s3a.connection.ssl.enabled=false" \
-  --conf "spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider" \
+  --conf "spark.hadoop.fs.s3a.endpoint=${S3A_ENDPOINT:-http://minio:9000}" \
+  --conf "spark.hadoop.fs.s3a.path.style.access=${S3A_PATH_STYLE:-true}" \
+  --conf "spark.hadoop.fs.s3a.connection.ssl.enabled=${S3A_SSL:-false}" \
+  --conf "spark.hadoop.fs.s3a.aws.credentials.provider=${S3A_CREDS_PROVIDER:-org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider}" \
   --conf "spark.hadoop.fs.s3a.access.key=${AWS_ACCESS_KEY_ID:-minioadmin}" \
   --conf "spark.hadoop.fs.s3a.secret.key=${AWS_SECRET_ACCESS_KEY:-minioadmin}" \
   --conf "spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem" \
