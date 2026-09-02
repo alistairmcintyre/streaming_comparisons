@@ -34,8 +34,7 @@ And two rules on ordering, from tests/scd2-behaviour.sh catching them in the Fli
     row with is_current=false and the key ends up with no current version at all.
 """
 from pyspark.sql import DataFrame, Window
-from pyspark.sql.functions import (broadcast, col, lead, lit, max as _max,
-                                   min as _min, row_number, when)
+from pyspark.sql.functions import broadcast, col, lead, lit, row_number, when
 
 
 def current_for_batch(load_table, batch: DataFrame, attrs,
@@ -70,12 +69,19 @@ def current_for_batch(load_table, batch: DataFrame, attrs,
     batch with the WHOLE key space. That is what killed hudi-silver-accounts on AWS, 
     it failed, retried into a bigger backlog, and burned all 10 restarts.
 
-    So prune with a BOUNDED predicate instead. `key BETWEEN lo and hi` is two literals
-  whatever the batch size (it still pushes down to file/column stats) and the
-    semi-join against the batch's own keys makes the result exact. Turning data skipping
-    off would also have stopped the overflow, but data skipping is part of what this
-    benchmark measures, so switching it off to dodge a Spark limit would quietly bias
-    Hudi's numbers.
+    So use a broadcast semi-join against the batch's own keys instead. The key set
+    travels as DATA rather than as plan literals, so the predicate stays the same size
+    whatever the batch holds. Turning data skipping off would also have stopped the
+    overflow, but data skipping is part of what this benchmark measures, so switching it
+    off to dodge a Spark limit would quietly bias Hudi's numbers.
+
+    This carried a `key BETWEEN lo AND hi` predicate for a while, on the theory that two
+    literals would still give file-level pruning. Measured, it was worse than useless.
+    Account ids are scattered across the key space, so a 73-key batch spans [2..996],
+    100% of it, and computing the bounds cost an extra Spark action per batch on top.
+    Against 1000 accounts with 30 versions each: semi-join alone 369ms, isin 393ms,
+    semi-join plus the range 564ms. The range was the slowest of the three and pruned
+    nothing.
     """
     cols = [key, version, eff_from, *attrs]
     try:
@@ -84,11 +90,7 @@ def current_for_batch(load_table, batch: DataFrame, attrs,
         return batch.sparkSession.createDataFrame([], batch.select(*cols).schema)
 
     keys = batch.select(col(key)).distinct()
-    bounds = keys.agg(_min(key).alias("lo"), _max(key).alias("hi")).first()
-    if bounds is None or bounds["lo"] is None:          # empty batch, or all-null keys
-        return table.limit(0).select(*cols)
-    return (table
-            .filter(col("is_current") & col(key).between(bounds["lo"], bounds["hi"]))
+    return (table.filter(col("is_current"))
             .join(broadcast(keys), key, "left_semi")
             .select(*cols))
 
