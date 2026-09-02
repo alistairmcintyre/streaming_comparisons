@@ -41,13 +41,30 @@ _STATEMENTS = [
         -- key this repo documents everywhere existed on three engines of five.
         source_lsn BIGINT)
       USING iceberg PARTITIONED BY (days(executed_at)) TBLPROPERTIES ({_APPEND_PROPS})""",
-    # bucket(16, account_id), the only silver or gold table here that had no layout at
-    # all. Every SCD2 micro-batch reads the current row for the keys in the batch, so an
-    # unorganised table means the MERGE scans everything to find them. Bucketing on
-    # account_id rather than partitioning by it: 1000 accounts would be 1000 directories,
-    # and bucket() is Iceberg's hidden-partition transform for exactly this shape.
-    # NOT is_current, which is the tempting choice and wrong: partitioning on a mutable
-    # field moves a row between partitions on every update.
+    # DELIBERATELY UNPARTITIONED, and this is the second answer to that question. The
+    # first was bucket(16, account_id), on the reasoning that this was the only silver or
+    # gold table with no layout, that every SCD2 micro-batch reads the current row for the
+    # keys in its batch, and that an unorganised table therefore makes the MERGE scan
+    # everything. That reasoning is fine and the conclusion was wrong, because it ignored
+    # how a STREAMING table is written. Measured on real S3, 1000 accounts and 36,000
+    # versions built by 120 micro-batches (tests/bucket_layout_bench.py):
+    #
+    #                            files   lookup     MERGE
+    #     no layout               120    1384ms    5692ms
+    #     bucket(16, account_id) 1920   15159ms   28825ms
+    #
+    # Bucketing was 11x worse on the lookup and 5x worse on the MERGE. The mechanism is
+    # the file count. A bucketed append must write one file per bucket it touches, so 120
+    # micro-batches produce 1920 files instead of 120, and the pruning that is supposed to
+    # pay for that never arrives: a 75-key batch hashes across all 16 buckets, so every
+    # bucket is read anyway. All of the cost, none of the benefit.
+    # Bucketing pays when a query touches FEW buckets. Per-batch SCD2 maintenance touches
+    # all of them by construction, which is the case against it here and would be the case
+    # against it on any streamed dimension with randomly distributed keys.
+    # NOT is_current either, the other tempting choice: partitioning on a mutable field
+    # moves a row between partitions on every update.
+    # The lever that would actually help is compaction (infra/aws/k8s/93-maintenance.yaml),
+    # which attacks the file count directly rather than trading it for pruning.
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.accounts_spark (
         account_id BIGINT NOT NULL, name STRING, country STRING, tier STRING,
           source_updated_at TIMESTAMP, event_ts TIMESTAMP,
@@ -58,7 +75,7 @@ _STATEMENTS = [
           -- change does not.
           effective_from TIMESTAMP, effective_to TIMESTAMP, is_current BOOLEAN,
           source_lsn BIGINT, op STRING, commit_ts TIMESTAMP)
-      USING iceberg PARTITIONED BY (bucket(16, account_id)) TBLPROPERTIES ({_MOR_PROPS})""",
+      USING iceberg TBLPROPERTIES ({_MOR_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.gold.open_positions_spark (
         account_id BIGINT NOT NULL, symbol STRING NOT NULL, net_quantity BIGINT,
         net_notional DECIMAL(38,4), trade_count BIGINT, status STRING,

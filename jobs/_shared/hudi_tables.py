@@ -183,6 +183,17 @@ def silver_trades_opts():
 # instead of the default bloom probe across all of them, without inventing a partition
 # column, which on Hudi would also drag in the Athena column-ordering rule (partition
 # fields must be written last).
+#
+# KEPT WHERE THE ICEBERG EQUIVALENT WAS REVERTED, and the asymmetry is deliberate rather
+# than an oversight. bucket(16, account_id) on the Iceberg copy of this same table measured
+# 11x worse on the lookup and 5x worse on the MERGE, because an Iceberg bucketed append
+# writes one file per bucket it touches and 120 micro-batches therefore left 1920 files
+# instead of 120 (tests/bucket_layout_bench.py). Hudi's BUCKET index is not the same
+# mechanism: it is an INDEX, not a directory layout, the file groups are stable, and an
+# upsert lands in the existing group's log file rather than creating a new file per bucket
+# per commit. So the thing that made it lose on Iceberg does not apply here.
+# That is an argument, not a measurement. The Iceberg number is measured and this one is
+# reasoned, and if that distinction matters to a decision, measure it before relying on it.
 def silver_accounts_opts():
     return _opts("hudi_silver_accounts", "account_id,source_lsn", "source_lsn",
                  operation="upsert",

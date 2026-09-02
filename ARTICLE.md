@@ -203,23 +203,64 @@ wants. Sixteen buckets over a thousand accounts is about sixty accounts each, wh
 the file groups a sensible size without inventing parallelism that a small executor cannot
 use anyway.
 
-Iceberg reaches the same conclusion by a different route. It has no record index, so the
-equivalent is `PARTITIONED BY (bucket(16, account_id))`, a hidden partition transform:
-the same hashing idea expressed as physical layout rather than as an index, and hidden in
-the sense that queries filter on `account_id` and never mention buckets. Delta was
-already right by accident, clustering on `account_id`, since liquid clustering is
-adaptive and needs no partition column at all. The Flink engines get it free, because a
-primary key table is bucketed on the primary key by construction.
+Delta was already right by accident, clustering on `account_id`, since liquid clustering
+is adaptive and needs no partition column at all. The Flink engines get it free, because
+a primary key table is bucketed on the primary key by construction.
+
+Which leaves Iceberg, and Iceberg is where the argument fell over.
+
+### The same idea, measured, losing by a factor of eleven
+
+Iceberg has no record index, so the apparent equivalent is `PARTITIONED BY (bucket(16,
+account_id))`, a hidden partition transform: the same hashing idea expressed as physical
+layout rather than as an index. I shipped it on the strength of the reasoning above, which
+is the mistake, and the reasoning survived contact with a benchmark for about twenty
+minutes. Building the same table both ways on real S3, 1000 accounts and 36,000 versions:
+
+| layout | data files | current-row lookup | MERGE |
+| --- | --- | --- | --- |
+| none | 120 | 1384ms | 5692ms |
+| `bucket(16, account_id)` | 1920 | 15159ms | 28825ms |
+
+Eleven times worse on the lookup, five times worse on the MERGE.
+
+The mechanism is the file count, and it is entirely a consequence of the table being
+**streamed** rather than loaded. A bucketed append has to write one file per bucket it
+touches. The job commits a micro-batch every fifteen seconds, so 120 micro-batches leave
+1920 files where an unbucketed table leaves 120. Then the pruning that is supposed to pay
+for those files never arrives, because a batch of 75 randomly distributed account ids
+hashes into all sixteen buckets. Every bucket is read on every batch. All of the cost,
+none of the benefit.
+
+The lesson is not "bucketing is bad". Bucketing pays when a query touches few buckets, and
+the argument two sections up is still correct on its own terms: a bounded key space read by
+exact key really is bucketing's good case. What that argument left out is that per-batch
+SCD2 maintenance touches *every* bucket by construction, and that the writer is a stream
+committing every fifteen seconds rather than a batch job committing once. Hudi's bucket
+index is genuinely a different mechanism, an index over stable file groups where an upsert
+lands in the existing group's log file, so it does not multiply files this way and it
+stays. The Iceberg version is reverted.
+
+There is a smaller lesson underneath, which is that the first version of this benchmark
+also said bucketing lost, for completely the wrong reason. It built each table in a single
+append, so it was comparing one large file against sixteen, and it had quietly handed the
+unbucketed table a compaction that production never performs. Two benchmarks, the same
+verdict, and only one of them measuring the thing. Agreeing with a result is not the same
+as checking it.
+
+The real lever for `silver.accounts` is compaction, which attacks the file count directly
+instead of trading it for pruning that this access pattern cannot use.
 
 ### What this did not fix
 
 Worth saying plainly, because the tempting story is that the unorganised table explained
 the slow pipeline and it does not. `iceberg-silver-accounts` was running 47 to 51 second
 batches against a 15 second trigger, and it was indeed the only silver or gold table
-anywhere with no layout at all, which is a satisfying coincidence and not yet a proven
-cause. Measured against real S3, the current-row lookup is about a quarter of a batch and
-the MERGE is over half. Better layout should help both, but the honest position is that
-the layout was wrong on its own merits and the timing question is still open.
+anywhere with no layout at all, which is a satisfying coincidence and was never a proven
+cause. It is now a disproven one: the unlaid-out table does the lookup in 1.4s and the
+MERGE in 5.7s against real S3, nowhere near a 47 second batch. Whatever is costing that
+time is somewhere else, and the layout change would have made it worse rather than
+explaining it.
 
 The same applies to a related change. Shuffle partitions had been sitting on Spark's
 default of 200 while these executors run a single core, so every shuffle stage produced
