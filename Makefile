@@ -147,6 +147,12 @@ clean:
 	@echo "All containers and volumes removed."
 
 
+# Local stack, lake on real S3 + Glue. See scripts/lake-aws-env.sh for what this does
+# and does not cover.
+lake-aws:
+	@echo "run this in your shell, it must export into the compose environment:"
+	@echo "  . scripts/lake-aws-env.sh && make up start-delta"
+
 # ── pre-deploy checks ───────────────────────────────────────────────────────
 # Run after every change. `test` is seconds and needs nothing; `test-all` adds the
 # Flink SQL compile for both engines (Docker, ~6 min: paimon needs a Flink, fluss also
@@ -154,13 +160,6 @@ clean:
 # against a known-bad fixture, several checks written on 2026-08-27 were themselves
 # broken in ways that made them silently pass, which is how ~$42 of clusters went on
 # bugs that were free to catch.
-# Local stack, lake on real S3 + Glue. See scripts/lake-aws-env.sh for what this does
-# and does not cover.
-lake-aws:
-	@echo "run this in your shell, it must export into the compose environment:"
-	@echo "  . scripts/lake-aws-env.sh && make up start-delta"
-
-
 test:
 	./tests/run-checks.sh
 
