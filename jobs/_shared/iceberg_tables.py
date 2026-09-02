@@ -41,6 +41,13 @@ _STATEMENTS = [
         -- key this repo documents everywhere existed on three engines of five.
         source_lsn BIGINT)
       USING iceberg PARTITIONED BY (days(executed_at)) TBLPROPERTIES ({_APPEND_PROPS})""",
+    # bucket(16, account_id), the only silver or gold table here that had no layout at
+    # all. Every SCD2 micro-batch reads the current row for the keys in the batch, so an
+    # unorganised table means the MERGE scans everything to find them. Bucketing on
+    # account_id rather than partitioning by it: 1000 accounts would be 1000 directories,
+    # and bucket() is Iceberg's hidden-partition transform for exactly this shape.
+    # NOT is_current, which is the tempting choice and wrong: partitioning on a mutable
+    # field moves a row between partitions on every update.
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.accounts_spark (
         account_id BIGINT NOT NULL, name STRING, country STRING, tier STRING,
           source_updated_at TIMESTAMP, event_ts TIMESTAMP,
@@ -51,7 +58,7 @@ _STATEMENTS = [
           -- change does not.
           effective_from TIMESTAMP, effective_to TIMESTAMP, is_current BOOLEAN,
           source_lsn BIGINT, op STRING, commit_ts TIMESTAMP)
-      USING iceberg TBLPROPERTIES ({_MOR_PROPS})""",
+      USING iceberg PARTITIONED BY (bucket(16, account_id)) TBLPROPERTIES ({_MOR_PROPS})""",
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.gold.open_positions_spark (
         account_id BIGINT NOT NULL, symbol STRING NOT NULL, net_quantity BIGINT,
         net_notional DECIMAL(38,4), trade_count BIGINT, status STRING,

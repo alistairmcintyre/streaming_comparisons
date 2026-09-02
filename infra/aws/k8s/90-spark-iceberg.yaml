@@ -43,6 +43,11 @@ spec:
   # alert in 96-alerts.yaml can surface it.
   restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
+    # 8, not Spark's default of 200: these executors run 1 core, so 200 shuffle
+    # partitions is 200 serialised tasks per stage, and AQE cannot coalesce them
+    # because Spark disables AQE for streaming queries. Tidying rather than a fix,
+    # measured at 3% against real S3.
+    "spark.sql.shuffle.partitions": "8"
     # Keep the executor POD after it dies. Spark deletes it by default, so the one
     # place that records Reason=OOMKilled / Exit Code 137 is gone before
     # collect-diagnostics.sh runs -- which is exactly why ExecutorDeadException and
@@ -111,6 +116,11 @@ spec:
   sparkVersion: "3.5.1"
   restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
+    # 8, not Spark's default of 200: these executors run 1 core, so 200 shuffle
+    # partitions is 200 serialised tasks per stage, and AQE cannot coalesce them
+    # because Spark disables AQE for streaming queries. Tidying rather than a fix,
+    # measured at 3% against real S3.
+    "spark.sql.shuffle.partitions": "8"
     # Keep the executor POD after it dies. Spark deletes it by default, so the one
     # place that records Reason=OOMKilled / Exit Code 137 is gone before
     # collect-diagnostics.sh runs -- which is exactly why ExecutorDeadException and
@@ -184,6 +194,11 @@ spec:
   sparkVersion: "3.5.1"
   restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
+    # 8, not Spark's default of 200: these executors run 1 core, so 200 shuffle
+    # partitions is 200 serialised tasks per stage, and AQE cannot coalesce them
+    # because Spark disables AQE for streaming queries. Tidying rather than a fix,
+    # measured at 3% against real S3.
+    "spark.sql.shuffle.partitions": "8"
     # Keep the executor POD after it dies. Spark deletes it by default, so the one
     # place that records Reason=OOMKilled / Exit Code 137 is gone before
     # collect-diagnostics.sh runs -- which is exactly why ExecutorDeadException and
@@ -256,6 +271,11 @@ spec:
   sparkVersion: "3.5.1"
   restartPolicy: { type: OnFailure, onFailureRetries: 10, onFailureRetryInterval: 10, onSubmissionFailureRetries: 5, onSubmissionFailureRetryInterval: 20 }
   sparkConf:
+    # 8, not Spark's default of 200: these executors run 1 core, so 200 shuffle
+    # partitions is 200 serialised tasks per stage, and AQE cannot coalesce them
+    # because Spark disables AQE for streaming queries. Tidying rather than a fix,
+    # measured at 3% against real S3.
+    "spark.sql.shuffle.partitions": "8"
     # Keep the executor POD after it dies. Spark deletes it by default, so the one
     # place that records Reason=OOMKilled / Exit Code 137 is gone before
     # collect-diagnostics.sh runs -- which is exactly why ExecutorDeadException and

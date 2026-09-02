@@ -35,6 +35,12 @@ exec /opt/spark/bin/spark-submit \
   --conf "spark.hadoop.fs.s3a.secret.key=${AWS_SECRET_ACCESS_KEY:-minioadmin}" \
   --conf "spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem" \
   --conf "spark.hadoop.fs.s3a.endpoint.region=${AWS_REGION:-us-east-1}" \
+  # 8, not Spark's default of 200. The silver and gold executors run 1 core, so 200
+  # shuffle partitions means 200 serialised tasks per shuffle stage on tiny data, and
+  # AQE cannot coalesce them because Spark disables AQE for streaming queries outright.
+  # Measured honestly: this is tidying, not the fix for slow batches. 200 vs 4 was 12933
+  # vs 12525 ms against real S3, a 3% difference; the MERGE is 54% of a batch.
+  --conf "spark.sql.shuffle.partitions=${SHUFFLE_PARTITIONS:-8}" \
   --conf "spark.sql.adaptive.enabled=false" \
   --conf "hoodie.embed.timeline.server=false" \
   "${JOB_FILE}"

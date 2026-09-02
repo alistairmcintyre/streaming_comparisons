@@ -175,10 +175,21 @@ def silver_trades_opts():
 # superseded version's full attributes. Hudi's upsert replaces the whole record, so a
 # close row with nulled attributes would erase the history it exists to preserve
 # (tests/scd2_hudi_upsert_test.py).
+# silver.accounts is the one table here with no natural partition column: a dimension
+# keyed by account_id, with no date or symbol to split on, and is_current is mutable so
+# partitioning by it would move rows between partitions on every update. Hudi's answer to
+# that shape is the index rather than the directory layout, so this uses a BUCKET index on
+# account_id. It gives the per-batch current-row lookup a direct hash to the file group
+# instead of the default bloom probe across all of them, without inventing a partition
+# column, which on Hudi would also drag in the Athena column-ordering rule (partition
+# fields must be written last).
 def silver_accounts_opts():
     return _opts("hudi_silver_accounts", "account_id,source_lsn", "source_lsn",
                  operation="upsert",
                  extra={**_sync("silver", "accounts_hudi"),
+                        "hoodie.index.type": "BUCKET",
+                        "hoodie.bucket.index.num.buckets": "16",
+                        "hoodie.bucket.index.hash.field": "account_id",
                         "hoodie.datasource.write.keygenerator.class":
                         "org.apache.hudi.keygen.ComplexKeyGenerator"})
 
