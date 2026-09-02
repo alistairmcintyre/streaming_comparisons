@@ -71,6 +71,9 @@ spec:
     # still resolve file:///, so Hudi is not using Spark's Hadoop conf on that path.
     # It only runs during a ROLLBACK, which is why silver (nothing pending) never hit
     # it and gold (a commit left inflight when credentials died) hit it every attempt.
+    # It is NOT caused by this setting: reproduced off-cluster with the cache ON as
+    # well (tests/hudi_rollback_repro.py). It only became visible here because the
+    # credential failure had been killing the job before it reached a rollback.
     # Recovered by deleting the markers for the two genuinely incomplete instants,
     # after which gold held attempt 1 and its deltacommits started climbing again.
     # Note Hudi keeps .requested/.inflight next to COMPLETED instants too, so counting
@@ -168,6 +171,9 @@ spec:
     # still resolve file:///, so Hudi is not using Spark's Hadoop conf on that path.
     # It only runs during a ROLLBACK, which is why silver (nothing pending) never hit
     # it and gold (a commit left inflight when credentials died) hit it every attempt.
+    # It is NOT caused by this setting: reproduced off-cluster with the cache ON as
+    # well (tests/hudi_rollback_repro.py). It only became visible here because the
+    # credential failure had been killing the job before it reached a rollback.
     # Recovered by deleting the markers for the two genuinely incomplete instants,
     # after which gold held attempt 1 and its deltacommits started climbing again.
     # Note Hudi keeps .requested/.inflight next to COMPLETED instants too, so counting
@@ -265,6 +271,9 @@ spec:
     # still resolve file:///, so Hudi is not using Spark's Hadoop conf on that path.
     # It only runs during a ROLLBACK, which is why silver (nothing pending) never hit
     # it and gold (a commit left inflight when credentials died) hit it every attempt.
+    # It is NOT caused by this setting: reproduced off-cluster with the cache ON as
+    # well (tests/hudi_rollback_repro.py). It only became visible here because the
+    # credential failure had been killing the job before it reached a rollback.
     # Recovered by deleting the markers for the two genuinely incomplete instants,
     # after which gold held attempt 1 and its deltacommits started climbing again.
     # Note Hudi keeps .requested/.inflight next to COMPLETED instants too, so counting
@@ -362,6 +371,9 @@ spec:
     # still resolve file:///, so Hudi is not using Spark's Hadoop conf on that path.
     # It only runs during a ROLLBACK, which is why silver (nothing pending) never hit
     # it and gold (a commit left inflight when credentials died) hit it every attempt.
+    # It is NOT caused by this setting: reproduced off-cluster with the cache ON as
+    # well (tests/hudi_rollback_repro.py). It only became visible here because the
+    # credential failure had been killing the job before it reached a rollback.
     # Recovered by deleting the markers for the two genuinely incomplete instants,
     # after which gold held attempt 1 and its deltacommits started climbing again.
     # Note Hudi keeps .requested/.inflight next to COMPLETED instants too, so counting

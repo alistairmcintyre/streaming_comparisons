@@ -376,6 +376,34 @@ survive long enough to inspect. Note the host Spark reports for a lost executor 
 subnet. Looking for it in `get nodes` will find nothing and suggest a node was lost when
 none was.
 
+### A Hudi table that will not commit
+
+If a Hudi job crash-loops and its driver reports a rollback failing, the table has an
+instant that never completed. Count only instants with no completed file: Hudi keeps
+`.requested` and `.inflight` beside completed ones too, so a raw grep overstates it
+badly (18 markers on a table that had 2 real problems).
+
+```bash
+aws s3 ls "s3://$BUCKET/hudi/gold/open_positions/.hoodie/" | awk '{print $4}' \
+  | grep -E "^[0-9]+\." | python3 -c '
+import sys, re, collections
+by = collections.defaultdict(set)
+for n in (l.strip() for l in sys.stdin):
+    m = re.match(r"^(\d+)\.([a-z]+)(?:\.(requested|inflight))?$", n)
+    if m: by[(m.group(1), m.group(2))].add(m.group(3) or "COMPLETE")
+for k, v in by.items():
+    if "COMPLETE" not in v: print(f"incomplete: {k[0]}.{k[1]}")'
+```
+
+Delete the `.requested` and `.inflight` markers of those instants and the write markers
+under `.hoodie/.temp/<instant>/`, then restart the job. On a live run that took gold from
+crash-looping to committing on the first attempt.
+
+The rollback itself fails with `Wrong FS: s3a://..., expected: file:///` from Hudi's V1
+rollback helper, and no Spark-side configuration avoids it. See
+`tests/hudi_rollback_repro.py` for what was tried. A table only reaches this state when a
+commit dies mid-flight, so the real prevention is upstream.
+
 ### Was the node taken away?
 
 ```bash
