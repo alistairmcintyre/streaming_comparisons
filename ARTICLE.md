@@ -129,6 +129,105 @@ is a measurement problem: repacking nodes mid-run forces recomputation inside th
 window being timed and can move a pod to a different instance type partway through
 the comparison.
 
+## Laying the tables out, and why Hudi gets a different answer
+
+Every format in this comparison wants the same thing from you, which is a way to avoid
+reading the whole table to find a few rows. They just spell it differently, and the
+spelling matters more than it looks.
+
+The two trades tables were easy. Trades are immutable events with a timestamp, so
+Iceberg partitions by `days(executed_at)`, Delta clusters on the same column, Hudi uses a
+date partition path, and the Flink engines bucket by primary key. Gold is easy for the
+same reason: positions are read per symbol, symbol has maybe a hundred values, and a
+symbol never changes, so it partitions cleanly.
+
+`silver.accounts` is the awkward one, and it went unlaid-out on two engines for months
+without anyone noticing.
+
+It is an SCD2 dimension: every version of every account, with validity ranges, one row
+per account marked current. There is no date to split on and no low-cardinality attribute
+that means anything. The obvious candidate is `account_id`, but with a thousand accounts
+that is a thousand directories holding a few rows each, which trades one bad read pattern
+for another. The other obvious candidate is `is_current`, which would put the ~1000 live
+rows in one place and all the history in the other.
+
+`is_current` is a trap, and it is worth being explicit about why. It is a **mutable**
+field. Superseding an account flips its old row from true to false, and under a
+directory-based layout that is not an update, it is a physical move: delete from one
+partition, insert into the other. Every single update churns files. The rule that falls
+out of this, and it generalises past this project, is that you partition on what a row
+**is**, never on what a row currently **means**.
+
+So there is no good partition column, and the layout has to come from somewhere else.
+
+### Bloom versus bucket, which is where it gets interesting
+
+Hudi has a knob the others do not, because Hudi keeps an explicit index mapping record
+keys to the file group holding them. That index has implementations, and the choice
+between two of them is a genuine engineering decision rather than a default worth
+accepting.
+
+**Bloom** is the default. Each base file carries a bloom filter of its keys in the
+footer, plus the min and max key it holds. To locate an incoming key, Hudi narrows to
+files whose key range could contain it, probes their bloom filters, and then, because a
+bloom filter gives false positives and never false negatives, actually opens the
+candidate files to confirm. It is a probabilistic funnel that ends in real reads.
+
+The appeal is that it assumes nothing. Any key distribution, any file layout, no decision
+required up front. The cost is that the work scales with how many files it has to
+consider, and an SCD2 table only grows: every version of every account is another row,
+in another file, whose bloom filter is another probe. The lookup gets slower for no
+reason other than the passage of time.
+
+**Bucket** replaces the search with arithmetic. Fix a bucket count at table creation,
+hash the key field, and each bucket maps to exactly one file group. Locating a key is
+computing a hash. Nothing is probed, no filters are read, no candidate files are opened
+to rule them out, and it costs the same on day one as it does after a million versions.
+
+The trade is real and worth stating rather than glossing:
+
+- **The bucket count is close to permanent.** It is chosen before the data exists and
+  changing it later means rewriting the table. Bloom needs no such foresight.
+- **Skew goes straight through.** Hashing spreads keys evenly only if the keys are
+  evenly used. One account taking most of the traffic puts most of the writes on one
+  file group, and bucketing cannot help, whereas bloom would spread naturally across
+  files.
+- **It is a bet that the key distribution is known and stable.** For an arbitrary lake
+  table that is presumptuous. For a dimension of a thousand accounts it is simply true.
+
+That last point is what settles it here. This is a bounded, well-understood key space,
+read by exact key on every micro-batch, in a table that grows forever while the number of
+distinct keys does not. That is close to the ideal case for bucketing and close to the
+worst case for bloom, where the probe cost grows with history that the lookup never
+wants. Sixteen buckets over a thousand accounts is about sixty accounts each, which keeps
+the file groups a sensible size without inventing parallelism that a small executor cannot
+use anyway.
+
+Iceberg reaches the same conclusion by a different route. It has no record index, so the
+equivalent is `PARTITIONED BY (bucket(16, account_id))`, a hidden partition transform:
+the same hashing idea expressed as physical layout rather than as an index, and hidden in
+the sense that queries filter on `account_id` and never mention buckets. Delta was
+already right by accident, clustering on `account_id`, since liquid clustering is
+adaptive and needs no partition column at all. The Flink engines get it free, because a
+primary key table is bucketed on the primary key by construction.
+
+### What this did not fix
+
+Worth saying plainly, because the tempting story is that the unorganised table explained
+the slow pipeline and it does not. `iceberg-silver-accounts` was running 47 to 51 second
+batches against a 15 second trigger, and it was indeed the only silver or gold table
+anywhere with no layout at all, which is a satisfying coincidence and not yet a proven
+cause. Measured against real S3, the current-row lookup is about a quarter of a batch and
+the MERGE is over half. Better layout should help both, but the honest position is that
+the layout was wrong on its own merits and the timing question is still open.
+
+The same applies to a related change. Shuffle partitions had been sitting on Spark's
+default of 200 while these executors run a single core, so every shuffle stage produced
+200 serialised tasks over trivial data, and streaming queries disable adaptive execution
+so nothing coalesced them. That is obviously wrong and now set to 8. It is also worth
+about three percent, measured, which is a useful reminder that the obviously-wrong thing
+and the expensive thing are frequently not the same thing.
+
 ## Observations
 
 **The format is not the whole story; the engine's changelog support is.** Flink does
