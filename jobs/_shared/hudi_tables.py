@@ -157,7 +157,7 @@ def bronze_trades_opts():
 # ties at millisecond granularity at 1k/s, and a tie means an arbitrary winner. LSN is a
 # strict total order across the CDC stream and never ties.
 # This engine was ALREADY last-wins while paimon/fluss were first-wins and delta/iceberg
-# were first-wins within a bounded watermark window (now 2h), three different answers to "which row survives".
+# were first-wins within a bounded watermark window (now 1h), three different answers to "which row survives".
 def silver_trades_opts():
     return _opts("hudi_silver_trades", "trade_id", "source_lsn",
                  partitionpath="executed_date", operation="upsert",

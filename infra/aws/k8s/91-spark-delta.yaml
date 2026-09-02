@@ -155,11 +155,19 @@ spec:
   executor:
     instances: 1
     cores: 1
-    # 3g, not 2g. At 2g the pod limit is 2867Mi (heap x Spark's 0.4 non-JVM
-    # factor) and this executor was OOMKilled at exactly that during a live run:
-    # the 2h dropDuplicatesWithinWatermark state is on RocksDB (off-heap native),
-    # and the Kafka buffers, S3A upload buffers and PySpark workers are off-heap
-    # too, none of which a JVM heap setting bounds.
+    # 3g, not 2g. At 2g the pod limit is 2867Mi (heap x Spark's 0.4 non-JVM factor)
+    # and executors were OOMKilled at exactly that on a live run, 16 of them on this
+    # job alone.
+    # HEADROOM, NOT A DIAGNOSIS, and the distinction is worth keeping. A faithful
+    # local reproduction (tests/executor_memory_soak.py, real Kafka source, from_json
+    # through PySpark workers, RocksDB dedupe, Delta write to real S3) does NOT
+    # reproduce the OOM: at the full 3.6M-entry state a 1h window holds, the cgroup
+    # peak was 1529MiB, comfortably inside the old 2867Mi. So state size is not the
+    # mechanism, and what is remains unproven. Candidates not yet ruled out: the old
+    # 2h window held twice the state, and a live run also carries sustained 1k/s
+    # ingestion with a Kafka backlog that a replayed topic does not.
+    # Shortening the watermark to 1h (jobs/spark-*/silver_trades.py) halves the state
+    # and is the better-evidenced half of this change.
     memory: "3g"
     serviceAccount: lake
     env:

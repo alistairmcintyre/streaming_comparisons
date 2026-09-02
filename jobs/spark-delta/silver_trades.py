@@ -41,16 +41,21 @@ def main():
         # A re-delivery arriving after the window is appended as a genuine second row, and
         # NOTHING downstream can undo it: the gold fold is `+=` over (account_id, symbol)
         # and has no memory of which trade_ids it has already folded, so the position is
-        # then permanently wrong on two of the five engines. 2h is chosen to cover a whole
-        # run: run_minutes defaults to 120 and the EventBridge kill switch fires at 150,
-        # so for the runs this benchmark actually performs the window spans the entire
-        # event-time range and all five engines dedupe identically. It is a MATCH to the
-        # run length, not a margin over it, a run configured longer than 2h reopens the
-        # gap, and the window must be raised with it.
-        # COST: dropDuplicatesWithinWatermark state is one entry per distinct trade_id in
-        # the window, heap-resident under the default HDFS-backed state store. At 1k/s
-        # that is ~7.2M entries at 2h (~2x the 1h figure).
-        .withWatermark("event_ts", "2 hours")
+        # then permanently wrong on two of the five engines.
+        # 1 HOUR, DELIBERATELY SHORTER THAN THE RUN. This was 2h, chosen to span a whole
+        # 120-minute run so the window covered the entire event-time range and all five
+        # engines deduped identically. 1h halves the state for the same throughput, which
+        # is the point: at 1k/s the window holds one entry per distinct trade_id, so ~3.6M
+        # instead of ~7.2M, on executors that were being OOMKilled at their pod limit.
+        # THE EXPOSURE, stated rather than buried: a re-delivery arriving more than an
+        # hour after the original is no longer deduped, and on Delta and Iceberg it lands
+        # as a genuine second row that nothing downstream can remove. That is a real hole
+        # and it is accepted on the grounds that Debezium re-delivers on redelivery, which
+        # is seconds, not hours. Raise it back to match run length if a run ever shows
+        # duplicate trade_ids in the correctness snapshot.
+        # State lives on disk, not heap: the manifests set RocksDBStateStoreProvider. The
+        # cost is still real, since RocksDB is native memory charged to the container.
+        .withWatermark("event_ts", "1 hour")
         .dropDuplicatesWithinWatermark(["trade_id"])
         # conform(), not a bare select: this is a POSITIONAL append, and Iceberg matches
         # the frame to the table by position, not name. The bronze job got this wrong and
