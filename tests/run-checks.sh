@@ -18,6 +18,13 @@
 #   tests/run-checks.sh --all    + Flink SQL compile and its meta-tests (needs Docker)
 set -uo pipefail
 cd "$(dirname "$0")/.."
+# EVERY mktemp -d below lands under one scratch root that is deleted on exit. There are
+# 24 of them and none used to be cleaned up, so each run of this suite leaked about forty
+# directories into /tmp. The two that copy infra/ took infra/aws/.terraform with them,
+# 1.6G of provider plugins per copy; 1370 of these had accumulated to 38G before anyone
+# looked. mktemp honours TMPDIR, and it is exported so the `bash -c` meta-tests inherit it.
+SCRATCH=$(mktemp -d); export TMPDIR="$SCRATCH"
+trap 'rm -rf "$SCRATCH"' EXIT
 ALL=""; [ "${1:-}" = "--all" ] && ALL=1
 # Image registry for the Docker-backed checks, resolved from env/aws.env in one place.
 # shellcheck disable=SC1091
@@ -213,7 +220,9 @@ expect "workflow shell check catches a doubled backslash" 1 bash -c '
   cd "$d" && python3 "$OLDPWD/tests/check_workflow_shell.py"'
 
 expect "tf-vars check catches an unsupplied variable" 1 bash -c '
-  d=$(mktemp -d); cp -r infra "$d/infra"; mkdir -p "$d/.github/workflows" "$d/tests"
+  # tar, not cp -r: infra/aws/.terraform is 1.6G of provider plugins and no check reads it
+  d=$(mktemp -d); tar -c --exclude=.terraform infra | tar -x -C "$d"
+  mkdir -p "$d/.github/workflows" "$d/tests"
   cp .github/workflows/eks-run.yml .github/workflows/teardown.yml "$d/.github/workflows/"
   cp tests/check_tf_vars.py "$d/tests/"
   # drop the kill-switch buildspec variable, exactly the regression this exists to catch
@@ -362,7 +371,7 @@ if [ -n "$ALL" ]; then
   # PARTITION_ARTEFACTS instead leaves a real column unaccounted for, which the
   # comparison must report as EXTRA.
   expect "glue check catches an empty Columns list" 1 bash -c '
-    d=$(mktemp -d); cp -r jobs infra tests "$d/"
+    d=$(mktemp -d); tar -c --exclude=.terraform jobs infra tests | tar -x -C "$d"
     sed -i "s|\\\\\"Columns\\\\\": \${COLS}|\\\\\"Columns\\\\\": []|g" \
       "$d/infra/aws/scripts/register-glue-tables.sh"
     cd "$d" && FLOCI_PORT=4601 ./tests/glue-registration-test.sh'
