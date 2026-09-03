@@ -22,6 +22,15 @@
 
 SET 'execution.checkpointing.interval' = '10 s';
 SET 'execution.checkpointing.mode'     = 'EXACTLY_ONCE';
+-- Without these two the job checkpoints into the JobManager heap, which caps a single
+-- checkpoint at 5MB and failed 14 times on the 2026-09-01 run. The Paimon jobs have had
+-- both since they were written; these did not. See 70-flink-fluss.yaml.
+SET 'state.backend'                    = 'rocksdb';
+SET 'state.checkpoints.dir'            = '${FLINK_CHECKPOINT_BASE}/silver_accounts_fluss/';
+-- UTC, EXPLICITLY. UNIX_TIMESTAMP(string) parses in the session time zone while the
+-- executed_at strings are UTC, so an unpinned zone silently offsets every latency sample
+-- by the host's zone. Pinning it costs nothing and removes the variable.
+SET 'table.local-time-zone'            = 'UTC';
 
 CREATE CATALOG fluss_catalog WITH (
     'type'              = 'fluss',

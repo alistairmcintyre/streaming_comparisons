@@ -84,7 +84,11 @@ export FLUSS_BOOTSTRAP="fluss-coordinator:9123"
 export FLUSS_ICEBERG_OPTS=""
 export KAFKA_BOOTSTRAP="localhost:9092"
 export KAFKA_EXTRA_OPTS=""
-SUBST='${FLUSS_BOOTSTRAP} ${FLUSS_ICEBERG_OPTS} ${KAFKA_BOOTSTRAP} ${KAFKA_EXTRA_OPTS}'
+# Must mirror the submitter's env (70-flink-fluss.yaml). A name missing from SUBST is
+# written through as a literal ${...} and Flink rejects the SET, which is exactly how
+# this check earned its keep: the first version of the checkpoint-dir change left it out.
+export FLINK_CHECKPOINT_BASE="file:///tmp/fluss-validate/_chk"
+SUBST='${FLUSS_BOOTSTRAP} ${FLUSS_ICEBERG_OPTS} ${KAFKA_BOOTSTRAP} ${KAFKA_EXTRA_OPTS} ${FLINK_CHECKPOINT_BASE}'
 JOBS_DIR="${JOBS_DIR:-jobs/flink-fluss}"
 mkdir -p "$WORK/sql"
 for f in "$JOBS_DIR"/*.sql; do envsubst "$SUBST" < "$f" > "$WORK/sql/$(basename "$f")"; done

@@ -35,6 +35,20 @@ spec:
     execution.checkpointing.externalized-checkpoint-retention: "RETAIN_ON_CANCELLATION"
     state.checkpoints.num-retained: "3"
     state.savepoints.dir: "s3://${PAIMON_BUCKET}/_flink_savepoints/fluss"
+    # ROCKSDB, AND A CHECKPOINT DIRECTORY THAT IS NOT THE JOBMANAGER'S HEAP.
+    # This cluster had neither, while the Paimon cluster next door had both, and the
+    # difference is not cosmetic. With no state.checkpoints.dir set, Flink falls back to
+    # JOBMANAGER checkpoint storage, which holds state in the JM heap and caps a single
+    # checkpoint at 5,242,880 bytes. On the 2026-09-01 run that cap was reached and then
+    # exceeded 28 times:
+    #   Size of the state is larger than the maximum permitted memory-backed state.
+    #   Size=5318446, maxSize=5242880
+    # and 14 checkpoints failed to materialise on the latency_sink operator. A job that
+    # cannot checkpoint cannot commit durably, so this is the first thing to suspect
+    # whenever Fluss numbers look short.
+    # The state grows with the run, so this is not a cliff a longer run avoids: it is
+    # reached sooner the longer the job lives.
+    state.backend: rocksdb
     # Tolerate transient checkpoint failures (S3 5xx) instead of failing the job on the
     # first one; FlinkCheckpointsFailing in 96-alerts.yaml catches a persistent problem.
     execution.checkpointing.tolerable-failed-checkpoints: "3"
@@ -103,6 +117,11 @@ spec:
             - { name: FLUSS_BOOTSTRAP, value: "fluss-coordinator.fluss.svc:9123" }
             - { name: KAFKA_BOOTSTRAP, value: "trades-kafka-bootstrap.kafka.svc.cluster.local:9092" }
             - { name: FLUSS_PAIMON_WAREHOUSE, value: "s3://${PAIMON_BUCKET}/fluss/paimon" }
+            # Each SQL job sets state.checkpoints.dir = ${FLINK_CHECKPOINT_BASE}/<job>/.
+            # Unset, envsubst renders an empty string, the SET silently does nothing, and
+            # the job checkpoints into the JobManager heap under a 5MB cap. See the
+            # state.backend comment above.
+            - { name: FLINK_CHECKPOINT_BASE, value: "s3://${PAIMON_BUCKET}/_flink_chk/fluss" }
             - { name: DATALAKE_FORMAT, value: "paimon" }
             - { name: S3_ACCESS_KEY, value: "${S3_ACCESS_KEY}" }
             - { name: S3_SECRET_KEY, value: "${S3_SECRET_KEY}" }

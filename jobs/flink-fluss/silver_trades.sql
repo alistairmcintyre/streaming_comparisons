@@ -7,6 +7,15 @@
 
 SET 'execution.checkpointing.interval' = '10 s';
 SET 'execution.checkpointing.mode'     = 'EXACTLY_ONCE';
+-- Without these two the job checkpoints into the JobManager heap, which caps a single
+-- checkpoint at 5MB and failed 14 times on the 2026-09-01 run. The Paimon jobs have had
+-- both since they were written; these did not. See 70-flink-fluss.yaml.
+SET 'state.backend'                    = 'rocksdb';
+SET 'state.checkpoints.dir'            = '${FLINK_CHECKPOINT_BASE}/silver_trades_fluss/';
+-- UTC, EXPLICITLY. UNIX_TIMESTAMP(string) parses in the session time zone while the
+-- executed_at strings are UTC, so an unpinned zone silently offsets every latency sample
+-- by the host's zone. Pinning it costs nothing and removes the variable.
+SET 'table.local-time-zone'            = 'UTC';
 
 CREATE CATALOG fluss_catalog WITH (
     'type'              = 'fluss',
@@ -95,10 +104,23 @@ SELECT
     -- -999999). TO_TIMESTAMP handles it correctly: the stored executed_at was verified
     -- against the Spark-parsed engines and agrees to the millisecond.
     -- So go through the parsed TIMESTAMP, exactly as the gold emits already do.
+    -- SECONDS ARE NOT ENOUGH, on either side. DATE_FORMAT to 'yyyy-MM-dd HH:mm:ss'
+    -- discards the millisecond field and UNIX_TIMESTAMP() returns whole seconds, so each
+    -- sample carried up to a full second of error in BOTH terms and the pair could
+    -- straddle zero. The Spark engines emit int(ev.timestamp() * 1000) at full
+    -- millisecond precision (jobs/_shared/latency.py), so this was also an asymmetry
+    -- between the families, not just noise. DATE_FORMAT(t,'SSS') recovers the ms field.
     || CAST(UNIX_TIMESTAMP(DATE_FORMAT(
            TO_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z'''),
-           'yyyy-MM-dd HH:mm:ss')) * 1000 AS STRING)
-    || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING)
+           'yyyy-MM-dd HH:mm:ss')) * 1000
+         + CAST(DATE_FORMAT(
+           TO_TIMESTAMP(`after`.executed_at, 'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z'''),
+           'SSS') AS BIGINT) AS STRING)
+    -- CURRENT_ROW_TIMESTAMP(), not UNIX_TIMESTAMP(): evaluated per row and carrying
+    -- milliseconds, where UNIX_TIMESTAMP() truncates to the second.
+    || ',"ingest_ts_ms":' || CAST(
+           UNIX_TIMESTAMP(DATE_FORMAT(CURRENT_ROW_TIMESTAMP(), 'yyyy-MM-dd HH:mm:ss')) * 1000
+         + CAST(DATE_FORMAT(CURRENT_ROW_TIMESTAMP(), 'SSS') AS BIGINT) AS STRING)
     || ',"sample_kind":"flink_record"}'
 FROM kafka_trades_src
 WHERE `after`.trade_id IS NOT NULL AND MOD(`after`.trade_id, 997) = 0;

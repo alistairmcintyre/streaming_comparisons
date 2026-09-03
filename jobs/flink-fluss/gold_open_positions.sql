@@ -48,6 +48,15 @@
 
 SET 'execution.checkpointing.interval' = '10 s';
 SET 'execution.checkpointing.mode'     = 'EXACTLY_ONCE';
+-- Without these two the job checkpoints into the JobManager heap, which caps a single
+-- checkpoint at 5MB and failed 14 times on the 2026-09-01 run. The Paimon jobs have had
+-- both since they were written; these did not. See 70-flink-fluss.yaml.
+SET 'state.backend'                    = 'rocksdb';
+SET 'state.checkpoints.dir'            = '${FLINK_CHECKPOINT_BASE}/gold_open_positions_fluss/';
+-- UTC, EXPLICITLY. UNIX_TIMESTAMP(string) parses in the session time zone while the
+-- executed_at strings are UTC, so an unpinned zone silently offsets every latency sample
+-- by the host's zone. Pinning it costs nothing and removes the variable.
+SET 'table.local-time-zone'            = 'UTC';
 
 CREATE CATALOG fluss_catalog WITH (
     'type'              = 'fluss',
@@ -107,8 +116,14 @@ INSERT INTO fluss_catalog.gold.open_positions SELECT * FROM gold_book;
 INSERT INTO latency_sink
 SELECT CAST(account_id AS STRING),
     '{"pipeline":"fluss-gold","executed_at_ms":'
-    || CAST(UNIX_TIMESTAMP(DATE_FORMAT(last_updated_at, 'yyyy-MM-dd HH:mm:ss')) * 1000 AS STRING)
-    || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING)
+    -- Milliseconds on BOTH terms. DATE_FORMAT to seconds dropped the ms field and
+    -- UNIX_TIMESTAMP() truncates to the second, so every sample carried up to a
+    -- second of error at each end while Spark emitted full ms precision.
+    || CAST(UNIX_TIMESTAMP(DATE_FORMAT(last_updated_at, 'yyyy-MM-dd HH:mm:ss')) * 1000
+          + CAST(DATE_FORMAT(last_updated_at, 'SSS') AS BIGINT) AS STRING)
+    || ',"ingest_ts_ms":' || CAST(
+           UNIX_TIMESTAMP(DATE_FORMAT(CURRENT_ROW_TIMESTAMP(), 'yyyy-MM-dd HH:mm:ss')) * 1000
+         + CAST(DATE_FORMAT(CURRENT_ROW_TIMESTAMP(), 'SSS') AS BIGINT) AS STRING)
     || ',"sample_kind":"flink_record"}'
 FROM gold_book
 WHERE MOD(account_id, 97) = 0;

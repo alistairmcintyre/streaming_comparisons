@@ -78,9 +78,13 @@ case "${KAFKA_AUTH:-none}" in
   *)
     KAFKA_EXTRA_OPTS="" ;;
 esac
-export FLUSS_BOOTSTRAP FLUSS_ICEBERG_OPTS KAFKA_BOOTSTRAP KAFKA_EXTRA_OPTS
+# FLINK_CHECKPOINT_BASE comes from the submitter's env (70-flink-fluss.yaml). It MUST be
+# in SUBST: envsubst only replaces the names it is given, and a name left out is written
+# through to the rendered SQL as a literal ${...}, which Flink then rejects or ignores.
+: "${FLINK_CHECKPOINT_BASE:?set FLINK_CHECKPOINT_BASE; without it jobs checkpoint into the JobManager heap under a 5MB cap}"
+export FLUSS_BOOTSTRAP FLUSS_ICEBERG_OPTS KAFKA_BOOTSTRAP KAFKA_EXTRA_OPTS FLINK_CHECKPOINT_BASE
 
-SUBST='${FLUSS_BOOTSTRAP} ${FLUSS_ICEBERG_OPTS} ${KAFKA_BOOTSTRAP} ${KAFKA_EXTRA_OPTS}'
+SUBST='${FLUSS_BOOTSTRAP} ${FLUSS_ICEBERG_OPTS} ${KAFKA_BOOTSTRAP} ${KAFKA_EXTRA_OPTS} ${FLINK_CHECKPOINT_BASE}'
 mkdir -p "${RENDER_DIR}"
 render() { envsubst "${SUBST}" < "${JOB_DIR}/$1" > "${RENDER_DIR}/$1"; }
 SQL_CLIENT="${FLINK_HOME}/bin/sql-client.sh"
