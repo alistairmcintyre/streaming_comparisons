@@ -8,9 +8,22 @@ fails, nothing logs, the job is just slower than it looks like it should be. A n
 SparkApplication added later inherits exactly that, and the only way anyone would notice
 is by measuring again.
 
-HONEST ABOUT THE SIZE OF THE PRIZE: measured against real S3, 200 versus 4 was 12933 vs
-12525 ms, about 3%. This is tidiness with a guard, not a fix for anything large. It is
-here because an obviously wrong default that costs 3% is still worth not re-deriving.
+SIZE OF THE PRIZE, REVISED UPWARDS ONCE IT WAS MEASURED PROPERLY. On latency it is worth
+about 3%: against real S3, 200 versus 4 was 12933 vs 12525 ms. That is what this was
+originally shipped for and it undersold the change badly.
+
+The real cost is MEMORY, because shuffle partitions are not only a shuffle setting here.
+Spark creates one RocksDB state store instance PER SHUFFLE PARTITION per stateful
+operator, and with boundedMemoryUsage on its default of false each instance allocates its
+own memtables and block cache off-heap. Measured at the pod's real 2867MiB cgroup limit
+with tests/executor_memory_soak.py, 5M rows through a 2h dedupe window:
+
+    shuffle=8     40 SST files    peak 1248MiB
+    shuffle=200  833 SST files    peak 1617MiB
+
+20x the files and 30% more native memory from one number, on executors that were being
+OOMKilled at that exact limit. Neither arm actually died, so this is a contributor rather
+than a proven cause, but it is not tidiness.
 """
 import glob
 import sys

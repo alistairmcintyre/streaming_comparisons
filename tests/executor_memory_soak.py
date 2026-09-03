@@ -52,6 +52,15 @@ MODE  = os.environ.get("MEM_MODE", "state")
 # size and never asked what else grows.
 #   MEM_ROCKS  "default" (unset, what ships) or "bounded"
 ROCKS = os.environ.get("MEM_ROCKS", "default")
+# SHUFFLE PARTITIONS, WHICH IS NOT A SHUFFLE SETTING HERE. Spark creates ONE RocksDB state
+# store instance PER SHUFFLE PARTITION per stateful operator, and with
+# boundedMemoryUsage=false each instance allocates its own memtables and block cache
+# independently. So this number multiplies RocksDB's native footprint directly.
+# This soak hardcoded 4 and therefore built 4 instances, while the manifests ran Spark's
+# default of 200 until the run before last. That is the most likely reason two rounds of
+# this test failed to reproduce an OOM the cluster produced 20 times: not the state size,
+# not the file count, the INSTANCE COUNT.
+SHUF  = os.environ.get("MEM_SHUFFLE", "4")
 ROWS  = int(os.environ.get("MEM_ROWS", "8000000"))
 RATE  = int(os.environ.get("MEM_RATE", "1000"))
 HEAP  = os.environ.get("MEM_HEAP", "2g")
@@ -61,7 +70,7 @@ from pyspark.sql import SparkSession
 
 b = (SparkSession.builder.appName(f"executor-memory-soak-{MODE}").master("local[2]")
      .config("spark.driver.memory", HEAP)
-     .config("spark.sql.shuffle.partitions", "4")
+     .config("spark.sql.shuffle.partitions", SHUF)
      # The manifests' state store, and the reason this test exists.
      .config("spark.sql.streaming.stateStore.providerClass",
              "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider"))
@@ -78,7 +87,7 @@ spark = b.getOrCreate()
 spark.sparkContext.setLogLevel("ERROR")
 
 rt = spark.sparkContext._jvm.java.lang.Runtime.getRuntime()
-print(f"mode={MODE} rocks={ROCKS} rows={ROWS} heap_max={rt.maxMemory() // (1 << 20)}MiB "
+print(f"mode={MODE} rocks={ROCKS} shuffle={SHUF} rows={ROWS} heap_max={rt.maxMemory() // (1 << 20)}MiB "
       f"(asked {HEAP})", flush=True)
 
 CHK = f"/tmp/mem_soak_{MODE}/_chk"
@@ -160,7 +169,7 @@ while q.isActive and seen < ROWS:
               f"sst={_sst_count():>5}  "
               f"container={rss:>5,}/{_container_limit_mib()}MiB", flush=True)
 q.stop()
-print(f"RESULT mode={MODE} rocks={ROCKS} rows={seen} peak={peak}MiB "
+print(f"RESULT mode={MODE} rocks={ROCKS} shuffle={SHUF} rows={seen} peak={peak}MiB "
       f"limit={_container_limit_mib()}MiB sst={_sst_count()}", flush=True)
 print(f"OK: survived {seen:,} rows in mode={MODE}, no OOMKill at this container limit",
       flush=True)

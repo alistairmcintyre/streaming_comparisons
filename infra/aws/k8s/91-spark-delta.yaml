@@ -158,16 +158,25 @@ spec:
     # 3g, not 2g. At 2g the pod limit is 2867Mi (heap x Spark's 0.4 non-JVM factor)
     # and executors were OOMKilled at exactly that on a live run, 16 of them on this
     # job alone.
-    # HEADROOM, NOT A DIAGNOSIS, and the distinction is worth keeping. A faithful
-    # local reproduction (tests/executor_memory_soak.py, real Kafka source, from_json
-    # through PySpark workers, RocksDB dedupe, Delta write to real S3) does NOT
-    # reproduce the OOM: at the full 3.6M-entry state a 1h window holds, the cgroup
-    # peak was 1529MiB, comfortably inside the old 2867Mi. So state size is not the
-    # mechanism, and what is remains unproven. Candidates not yet ruled out: the old
-    # 2h window held twice the state, and a live run also carries sustained 1k/s
-    # ingestion with a Kafka backlog that a replayed topic does not.
-    # Shortening the watermark to 1h (jobs/spark-*/silver_trades.py) halves the state
-    # and is the better-evidenced half of this change.
+    # HEADROOM, NOT A DIAGNOSIS, and the distinction is worth keeping. Three theories
+    # have now been measured against the real 2867Mi cgroup limit with
+    # tests/executor_memory_soak.py, and none reproduces the kill on its own:
+    #
+    #   state size          9.4M rows through a 2h window   peak 1375MiB   survived
+    #   rocksdb unbounded   boundedMemoryUsage on vs off    no useful difference
+    #   200 shuffle parts   833 SST files vs 40 at 8        peak 1617MiB   survived
+    #
+    # The third is the one that matters and it is a CONTRIBUTOR rather than the cause.
+    # Spark creates one RocksDB state store instance PER SHUFFLE PARTITION per stateful
+    # operator, each allocating its own memtables and block cache off-heap, so the 200
+    # this deployment ran until recently cost about 370MiB of native memory over the 8 it
+    # runs now: 30% of the peak, invisible to every JVM heap setting. That was shipped as
+    # a 3% latency tidy-up and is worth considerably more than it was sold as.
+    # What the soak still does not carry, and any of it could close the remaining gap: a
+    # separate executor JVM, S3A upload buffers, an inline-compacting Delta write, PySpark
+    # worker processes, and a sustained Kafka backlog rather than a replayed topic.
+    # Shortening the watermark to 1h (jobs/spark-*/silver_trades.py) halves the state and
+    # remains the better-evidenced half of this change.
     memory: "3g"
     serviceAccount: lake
     env:
