@@ -308,9 +308,14 @@ by accident.
 | NodePool `limits.cpu` | 96 | 96 | 256 |
 | Kafka brokers | 3 | 3 | 5 |
 | `app.public.trades` partitions | 3 | 12 | 24 to 36 |
-| Spark executors, cores, memory | 1 x 1 x 2g | 2 x 2 x 4g | 4 x 2 x 8g |
+| Spark executors, cores, memory | 1 x 1 x 2g, silver 3g; Hudi 2 x 2 x 4g | 2 x 2 x 4g | 4 x 2 x 8g |
 | Flink TM cpu x mem | 2 x 4096m | 4 x 8192m | 8 x 16384m |
 | Checkpoint interval | 10s | 10s | 30s |
+
+The silver jobs carry 3g rather than 2g as headroom after the executor OOMKills, and
+Hudi is wider throughout because its upsert path is the heaviest in the set. Neither
+number is a measured high-water mark; see `tests/executor_memory_soak.py` for what the
+soak did and did not reproduce.
 
 Kafka partitions are the parallelism ceiling: a source cannot use more parallelism
 than there are partitions, so raising executor counts without raising partitions buys

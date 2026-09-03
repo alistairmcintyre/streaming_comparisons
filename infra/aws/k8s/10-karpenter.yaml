@@ -32,7 +32,7 @@ spec:
     # MUST NOT exceed the account's EC2 vCPU quota, or Karpenter loops:
     # create NodeClaim -> RunInstances fails VcpuLimitExceeded -> delete -> retry.
     # eu-west-1 quota was raised to 128 on-demand (L-1216C47A) AND 128 spot
-    # (L-34B43A08) on 2026-08-26, so 64 is comfortably inside it and leaves room
+    # (L-34B43A08) on 2026-08-26, so 96 is comfortably inside it and leaves room
     # for the ~4 vCPU the EKS managed nodegroup holds.
     # 96 fits FIVE engines at 1k/s with maintenance running: ~64 vCPU for
     # Iceberg/Delta/Paimon/Fluss plus ~18 for Hudi's 4 apps, with headroom. For 30k/s
@@ -42,7 +42,7 @@ spec:
     # WhenEmpty, not WhenEmptyOrUnderutilized, this cluster exists to MEASURE, and
     # "underutilized" describes a benchmark node for most of its life. Karpenter would
     # drain and repack it every 2 minutes, mid-measurement, which:
-    #   * kills the executors on it, and every Spark app here runs instances: 1, so
+    #   * kills the executors on it, and the Iceberg and Delta apps run instances: 1, so
     #     that is not a degraded query, it is a dead one (ExecutorDeadException on the
     #     app itself, MetadataFetchFailedException on whatever wanted its shuffle output
     #     which are the two failures the last run came back with and could not
@@ -50,11 +50,18 @@ spec:
     #   * forces recomputation inside the window whose latency is being recorded;
     #   * can land the pod on a different instance type, so the hardware under the
     #     comparison changes partway through it.
-    # Ruled out first, by measurement rather than assumption: the executors are not
-    # running out of memory. tests/executor_memory_soak.py drives the real workloads at
-    # the real pod limit (2g heap + Spark's 0.4 non-JVM overhead = 2867MiB) and 8.4M keys
-    # of RocksDB state peaked at 1451MiB, with 200k-row batches flat at ~800MiB. Nodes
-    # also carry 100Gi root volumes, so this is not disk pressure either.
+    # Memory is not the whole answer either, and the first version of this comment said
+    # so with more confidence than the evidence supported. tests/executor_memory_soak.py
+    # hardcoded shuffle.partitions=4 while the deployment ran Spark's default of 200, and
+    # Spark creates one RocksDB state store per shuffle partition per stateful operator,
+    # so it measured 4 instances against a cluster running 200 and reported "does not
+    # reproduce" twice. Re-measured at the real pod limit (2g heap + Spark's 0.4 non-JVM
+    # overhead = 2867MiB): 9.4M rows of state peaked at 1375MiB, more state than the live
+    # run carried, and 200 partitions cost ~370MiB of native memory over 8, about 30% of
+    # peak, on executors that were being OOMKilled at exactly that limit. Neither arm
+    # died, so shuffle partitions is a real contributor and not a sufficient cause, and
+    # the 3g on the silver apps is headroom rather than a proven fix. Nodes also carry
+    # 100Gi root volumes, so this is not disk pressure either.
     # SPOT IS STILL AN UNCONTROLLED VARIABLE. This stops Karpenter disrupting a node
     # voluntarily; it cannot stop EC2 reclaiming one. That is a deliberate cost trade, not
     # an oversight, but it means a reclaimed node silently corrupts one engine's numbers,

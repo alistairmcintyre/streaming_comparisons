@@ -68,15 +68,16 @@ cap spark $KB -n spark get sparkapplications -o wide
 # from the driver and NOTHING here recorded either of them:
 #
 #   OOMKilled          the container exceeded its cgroup limit -> exit 137. Visible only
-#                      on the pod, and only while the pod still exists. (Measured against
-#                      the real pod limit by tests/executor_memory_soak.py, which did not
-#                      reproduce it: 8.4M keys of RocksDB state peaked at 1451/2867MiB.
-#                      So expect this to be empty, and if it is not, that measurement is
-#                      wrong and this file is the evidence.)
+#                      on the pod, and only while the pod still exists. Measured against
+#                      the real pod limit by tests/executor_memory_soak.py, which does not
+#                      reproduce it: 9.4M rows of state peaked at 1375/2867MiB, and the
+#                      200 shuffle partitions the deployment used to run cost ~370MiB of
+#                      native memory over the 8 it runs now. Neither arm died, so nothing
+#                      here is a proven fix and this file is still the evidence.
 #   node disruption    Karpenter consolidated or spot reclaimed the node underneath it.
 #                      Visible only in the Karpenter log and the NodeClaim lifecycle.
 #
-# Every Spark app runs `instances: 1`, so either one kills the query outright.
+# The Iceberg and Delta apps run `instances: 1`, so either one kills the query outright.
 cap executors $KB -n spark get pods -l spark-role=executor -o wide
 # The corpse, not the summary: Last State / Reason / Exit Code live here. Requires
 # spark.kubernetes.executor.deleteOnTermination=false in the manifests, or Spark deletes
