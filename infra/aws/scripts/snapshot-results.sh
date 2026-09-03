@@ -153,6 +153,25 @@ if [ "${QUIESCED}" = "true" ]; then
     sleep 20
   done
   [ "$CONVERGED" = "true" ] || echo "  NOT CONVERGED within ${CONVERGE_TIMEOUT}s: counts below are a lower bound." >&2
+
+  # RE-RESOLVE THE GLUE POINTERS NOW THAT THE PIPELINES HAVE SETTLED. Paimon and Fluss are
+  # the only two tables registered with a pinned metadata_location, and the workflow
+  # registers them BEFORE anything waits for tiering to drain. That pointer never advances
+  # on its own, so every Athena count below would otherwise read whatever snapshot existed
+  # at registration time rather than the settled table. The other three engines are immune
+  # and need nothing here: Delta is registered at the table root and Athena reads the
+  # _delta_log itself, Hudi self-registers on every commit, and the Spark/Iceberg jobs
+  # write through the Glue catalog directly.
+  # register-glue-tables.sh says it in its own header: "Idempotent: safe to re-run; updates
+  # metadata_location as Paimon commits advance." It was simply never re-run late enough.
+  # Non-fatal: a failure here leaves the earlier pointers in place, which is exactly the
+  # behaviour that shipped before, so this can only improve on it.
+  REG="$(dirname "$0")/register-glue-tables.sh"
+  if [ -x "$REG" ]; then
+    echo "== refreshing paimon/fluss glue pointers before measuring =="
+    "$REG" >/dev/null 2>&1 && echo "  pointers refreshed." \
+      || echo "  WARN could not refresh Glue pointers; paimon/fluss counts may lag." >&2
+  fi
 fi
 
 # ── correctness: source events vs what each engine actually stored ───────────
