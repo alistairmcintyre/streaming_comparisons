@@ -177,30 +177,42 @@ def silver_trades_opts():
 # (tests/scd2_hudi_upsert_test.py).
 # silver.accounts is the one table here with no natural partition column: a dimension
 # keyed by account_id, with no date or symbol to split on, and is_current is mutable so
-# partitioning by it would move rows between partitions on every update. Hudi's answer to
-# that shape is the index rather than the directory layout, so this uses a BUCKET index on
-# account_id. It gives the per-batch current-row lookup a direct hash to the file group
-# instead of the default bloom probe across all of them, without inventing a partition
-# column, which on Hudi would also drag in the Athena column-ordering rule (partition
-# fields must be written last).
+# partitioning by it would move rows between partitions on every update.
 #
-# KEPT WHERE THE ICEBERG EQUIVALENT WAS REVERTED, and the asymmetry is deliberate rather
-# than an oversight. bucket(16, account_id) on the Iceberg copy of this same table measured
-# 11x worse on the lookup and 5x worse on the MERGE, because an Iceberg bucketed append
-# writes one file per bucket it touches and 120 micro-batches therefore left 1920 files
-# instead of 120 (tests/bucket_layout_bench.py). Hudi's BUCKET index is not the same
-# mechanism: it is an INDEX, not a directory layout, the file groups are stable, and an
-# upsert lands in the existing group's log file rather than creating a new file per bucket
-# per commit. So the thing that made it lose on Iceberg does not apply here.
-# That is an argument, not a measurement. The Iceberg number is measured and this one is
-# reasoned, and if that distinction matters to a decision, measure it before relying on it.
+# THE DEFAULT BLOOM INDEX, AFTER A BUCKET INDEX WAS TRIED AND MEASURED AND LOST. The
+# argument for BUCKET was that Hudi answers this table's shape with the index rather than
+# the directory layout, giving the per-batch current-row lookup a direct hash to the file
+# group instead of a bloom probe across all of them. It was kept when the Iceberg
+# bucket(16, account_id) was reverted, on the reasoning that Hudi's BUCKET is not the same
+# mechanism: an INDEX over stable file groups, where an upsert lands in the existing
+# group's log file rather than writing a new file per bucket per commit, so the thing that
+# sank it on Iceberg should not apply. That reasoning was recorded as an argument rather
+# than a measurement, and then it was measured (tests/hudi_index_bench.py, MinIO, 1000
+# accounts and 36,000 versions built by 60 upserts):
+#
+#                      build    lookup    upsert
+#     BLOOM (default)   112s     261ms    1513ms
+#     BUCKET(16)        325s     461ms    8059ms
+#     BLOOM (warm)      112s     204ms    1044ms
+#
+# 2.9x slower to build, roughly 2x worse on the lookup, and 5 to 8x worse on the upsert,
+# which is the path every micro-batch runs. The warm BLOOM re-run is faster than the
+# first, so ordering bias is not holding the result up.
+# The argument was right about the mechanism and wrong about the consequence. 16 buckets
+# forces 16 file groups, a 75-key batch over 1000 accounts hashes into all of them, and
+# every commit therefore does 16 log appends where BLOOM's smaller file-group count does a
+# handful. Bucketing multiplies per-commit work and randomly distributed keys defeat the
+# pruning that is supposed to pay for it. That is the same defeat as Iceberg by a
+# different route, which is exactly what the argument said could not happen.
+# CAVEATS, because this needs re-running before anyone leans on it for production: the
+# measurement is against MinIO rather than S3, where cheap listing favours BLOOM, and with
+# the Hudi metadata table disabled, which was the only way to get any run to finish.
 def silver_accounts_opts():
     return _opts("hudi_silver_accounts", "account_id,source_lsn", "source_lsn",
                  operation="upsert",
                  extra={**_sync("silver", "accounts_hudi"),
-                        "hoodie.index.type": "BUCKET",
-                        "hoodie.bucket.index.num.buckets": "16",
-                        "hoodie.bucket.index.hash.field": "account_id",
+                        # ComplexKeyGenerator stays: it is for the compound record key
+                        # (account_id, source_lsn), nothing to do with the index choice.
                         "hoodie.datasource.write.keygenerator.class":
                         "org.apache.hudi.keygen.ComplexKeyGenerator"})
 
