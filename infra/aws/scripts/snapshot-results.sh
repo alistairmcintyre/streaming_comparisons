@@ -234,6 +234,22 @@ for spec in "iceberg:bronze.trades_spark:compare" \
   if [ "$mode" = "mirror" ]; then
     echo "${eng},${tbl},${rows},${SRC},,,not_comparable" >> "$WORK/correctness.csv"
     echo "  ${eng}: ${rows} rows (lake tiering mirror, not comparable to the source offset)"
+    # AND THEN THE REAL ONE. The mirror row above stays because the gap between it and the
+    # live count IS the tiering lag, which is worth seeing, but it is not a verdict on
+    # whether Fluss kept the data. Only the live table can answer that, and only a Flink
+    # client can read the live table.
+    if LIVE=$("$(dirname "$0")/fluss-live-count.sh" 2>/dev/null | awk '$1=="silver.trades"{print $2}') \
+       && [ -n "${LIVE}" ]; then
+      LD=$(( LIVE - SRC ))
+      LPCT=$(awk -v d="$LD" -v s="$SRC" 'BEGIN{ if (s+0==0) print "n/a"; else printf "%.6f", (d/s)*100 }')
+      LST=$(count_verdict "$LIVE" "$SRC" "$CORRECTNESS_TOLERANCE" "$QUIESCED")
+      echo "${eng},silver.trades (live),${LIVE},${SRC},${LD},${LPCT},${LST}" >> "$WORK/correctness.csv"
+      echo "  ${eng}: ${LIVE} rows LIVE vs ${SRC} source (${LD}, ${LPCT}%) ${LST}"
+      echo "  ${eng}: tiering lag = $(( LIVE - rows )) rows behind the live table"
+    else
+      echo "${eng},silver.trades (live),,${SRC},,,unavailable" >> "$WORK/correctness.csv"
+      echo "  ${eng}: live count UNAVAILABLE (see fluss-live-count.sh); only the mirror above"
+    fi
   elif [ -z "${SRC}" ]; then
     echo "${eng},${tbl},${rows},,,,no_source_offset" >> "$WORK/correctness.csv"
     echo "  ${eng}: ${rows} rows (source offset unavailable, cannot verdict)"

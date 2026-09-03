@@ -121,6 +121,24 @@ expect "verdict test catches an unquiesced run scored as a pass" 1 bash -c '
     "$d/infra/aws/scripts/lib/verdict.sh"
   cd "$d" && ./tests/verdict_test.sh'
 
+# Spark's shuffle.partitions default is 200, silent, and wrong for 1-2 core executors: up
+# to 200 serialised tasks per shuffle stage, with AQE disabled for streaming queries so
+# nothing coalesces them. A new SparkApplication inherits it and nobody notices, because
+# nothing fails. Worth about 3% measured, so this guards a small thing, not a large one.
+expect "every spark app sets shuffle.partitions below 200" 0 \
+  python3 tests/check_shuffle_partitions.py
+
+expect "shuffle check catches an app left on the 200 default" 1 bash -c '
+  d=$(mktemp -d); tar -c --exclude=.terraform infra tests | tar -x -C "$d"
+  sed -i "s|\"spark.sql.shuffle.partitions\": \"8\"|\"spark.sql.shuffle.partitions\": \"200\"|" \
+    "$d/infra/aws/k8s/90-spark-iceberg.yaml"
+  cd "$d" && python3 tests/check_shuffle_partitions.py'
+
+expect "shuffle check catches an app with the key removed" 1 bash -c '
+  d=$(mktemp -d); tar -c --exclude=.terraform infra tests | tar -x -C "$d"
+  sed -i "/spark.sql.shuffle.partitions/d" "$d/infra/aws/k8s/91-spark-delta.yaml"
+  cd "$d" && python3 tests/check_shuffle_partitions.py'
+
 expect "every custom resource is covered by the kind pre-flight" 0 \
   python3 tests/check_kind_coverage.py
 
@@ -396,6 +414,14 @@ if [ -n "$ALL" ]; then
     sed -i "s|\\\\\"Columns\\\\\": \${COLS}|\\\\\"Columns\\\\\": []|g" \
       "$d/infra/aws/scripts/register-glue-tables.sh"
     cd "$d" && FLOCI_PORT=4601 ./tests/glue-registration-test.sh'
+
+  # The live Fluss count has no cross-check anywhere else in the benchmark: Athena reads
+  # the tiered Paimon mirror, not the hot table, so nothing else can contradict it. That is
+  # exactly why it needs one here. Seeds a known row count into a real Fluss cluster and
+  # asserts the production SQL returns it, with gold deliberately given a different count
+  # from silver so SQL counting the wrong table cannot pass.
+  expect "fluss live count returns the true row count" 0 \
+    ./tests/fluss_live_count_test.sh
 
   expect "hudi schema check catches an unaccounted column" 1 bash -c '
     d=$(mktemp -d); cp -r jobs "$d/jobs"
