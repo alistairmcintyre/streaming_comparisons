@@ -100,6 +100,27 @@ expect "post-run steps are gated so a failed apply does not bill" 0 \
 # report "ok" for any manifest that failed with "no matches for kind", so 14
 # SparkApplications went unchecked while the gate reported green. This needs no cluster:
 # it maps every custom kind to the thing that installs its CRD, and fails on a blind spot.
+# THE ROW-COUNT CHECKS COULD NOT FAIL. correctness.csv wrote `ok` for any engine whose
+# Athena query merely returned, never comparing the count to the Kafka end offset it had
+# already fetched and printed. On the 2026-09-01 run that passed a Hudi bronze over-count
+# of +80,810 rows and a Fluss gap of 2,025,500. This is the direct descendant of the bugs
+# in the header of this file, so it gets the same treatment: drive every branch, then
+# break the logic on purpose and confirm the test notices.
+expect "row-count verdicts (correctness and hop completeness)" 0 \
+  ./tests/verdict_test.sh
+
+expect "verdict test catches a SHORTFALL downgraded to ok" 1 bash -c '
+  d=$(mktemp -d); tar -c --exclude=.terraform infra tests | tar -x -C "$d"
+  sed -i "s|elif \[ \"\$d\"  -lt 0 \];      then echo SHORTFALL|elif [ \"\$d\"  -lt 0 ]; then echo ok|" \
+    "$d/infra/aws/scripts/lib/verdict.sh"
+  cd "$d" && ./tests/verdict_test.sh'
+
+expect "verdict test catches an unquiesced run scored as a pass" 1 bash -c '
+  d=$(mktemp -d); tar -c --exclude=.terraform infra tests | tar -x -C "$d"
+  sed -i "s|\[ \"\$quiesced\" != \"true\" \] && { echo unquiesced; return; }||g" \
+    "$d/infra/aws/scripts/lib/verdict.sh"
+  cd "$d" && ./tests/verdict_test.sh'
+
 expect "every custom resource is covered by the kind pre-flight" 0 \
   python3 tests/check_kind_coverage.py
 

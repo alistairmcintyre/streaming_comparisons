@@ -6,6 +6,7 @@
 #   ...                                                        /processing_delay.csv   <- headline metric
 #   ...                                                        /invariants.csv         <- fold correctness
 #   ...                                                        /dedupe.csv             <- silver dedupe correctness
+#   ...                                                        /completeness.csv       <- bronze -> silver hop
 #   ...                                                        /latency_percentiles.csv
 #   ...                                                        /correctness.csv
 #
@@ -112,6 +113,48 @@ athena() {  # $1 = SQL -> prints first column of first data row, or empty
   return 1
 }
 
+# ── WAIT FOR THE NON-KAFKA HOPS TO DRAIN ─────────────────────────────────────
+# quiesce-run.sh stops the load and waits for zero Kafka consumer lag, which is necessary
+# and NOT sufficient. Only the BRONZE hop consumes Kafka. bronze->silver and silver->gold
+# are table-to-table streaming reads with their own checkpoints and no consumer group, so
+# kafka-consumer-groups.sh cannot see them and zero lag proves only that bronze caught up.
+# Everything downstream rested on a fixed 90s sleep, which at the 47-51s batches this run
+# was producing is one or two micro-batches.
+#
+# That is the most likely explanation for the 2026-09-01 numbers, where bronze was exact
+# on Iceberg, Delta and Paimon and their silver tables were 212,500, 146,000 and 8,928
+# rows behind with zero duplicates. Probably an undrained hop rather than data loss, and
+# the point of this wait is that the two stop being indistinguishable.
+#
+# Runs HERE rather than in quiesce-run.sh because that script executes before the Glue
+# registration step, so Delta and Paimon are not yet queryable through Athena.
+# Bounded, and honest when it gives up: CONVERGED is recorded in results.json, so a
+# snapshot taken over a still-moving pipeline is labelled rather than silently published.
+CONVERGE_TIMEOUT="${CONVERGE_TIMEOUT:-600}"
+CONVERGED=skipped
+if [ "${QUIESCED}" = "true" ]; then
+  echo "== waiting for bronze -> silver to converge (max ${CONVERGE_TIMEOUT}s) =="
+  deadline=$(( $(date +%s) + CONVERGE_TIMEOUT ))
+  CONVERGED=false
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    behind=0; unknown=0
+    for spec in "iceberg:bronze.trades_spark:silver.trades_spark" \
+                "delta:bronze.trades_delta:silver.trades_delta" \
+                "paimon:bronze.trades_paimon:silver.trades_paimon"; do
+      rest="${spec#*:}"; brz="${rest%%:*}"; sil="${rest##*:}"
+      b=$(athena "SELECT CAST(count(*) AS varchar) FROM ${brz}") || { unknown=$((unknown+1)); continue; }
+      v=$(athena "SELECT CAST(count(*) AS varchar) FROM ${sil}") || { unknown=$((unknown+1)); continue; }
+      [ "$b" -ne "$v" ] && behind=$(( behind + (b - v) ))
+    done
+    echo "  rows still to land: ${behind} (engines unreadable: ${unknown})"
+    if [ "$behind" -eq 0 ] && [ "$unknown" -eq 0 ]; then
+      echo "  converged."; CONVERGED=true; break
+    fi
+    sleep 20
+  done
+  [ "$CONVERGED" = "true" ] || echo "  NOT CONVERGED within ${CONVERGE_TIMEOUT}s: counts below are a lower bound." >&2
+fi
+
 # ── correctness: source events vs what each engine actually stored ───────────
 # Source of truth is the Kafka end offset: every CDC event the pipelines could have
 # seen. A shortfall means data loss; an excess means duplication.
@@ -123,25 +166,64 @@ if command -v kubectl >/dev/null 2>&1; then
 fi
 echo "source_events (kafka end offset): ${SRC:-unavailable}"
 
-echo "engine,table,rows,status" > "$WORK/correctness.csv"
+# THIS CHECK USED TO BE INCAPABLE OF FAILING. It fetched SRC above, printed it, and then
+# wrote `ok` for every engine whose Athena query merely RETURNED, never comparing the two.
+# The comment directly above it said "a shortfall means data loss; an excess means
+# duplication" and neither condition was asserted anywhere. On the 2026-09-01 run that let
+# two real defects through as `ok`: Hudi's bronze at +80,810 rows ABOVE the source, and
+# Fluss 2,025,500 rows below it. A check nobody has watched fail is a check nobody knows
+# works, which is the whole thesis of tests/run-checks.sh, and this one had never failed.
+#
+# TOLERANCE. Exact equality is the right bar for an append-only landing table read after
+# quiesce, so the default is 0. It is a variable rather than a literal because a run that
+# was NOT quiesced legitimately has rows in flight, and in that case the comparison is
+# reported as `unquiesced` rather than pretending to a verdict it cannot reach.
+# Hoisted above the correctness check, which now reads it: an unquiesced run has rows
+# legitimately in flight and must not be given a pass/fail verdict on row counts.
+QUIESCED="${QUIESCED:-unknown}"
+# count_verdict / hop_verdict live in their own file so tests/verdict_test.sh can drive
+# every branch. See the header there for why that seam exists.
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib/verdict.sh"
+CORRECTNESS_TOLERANCE="${CORRECTNESS_TOLERANCE:-0}"
+
+echo "engine,table,rows,source_events,delta,delta_pct,status" > "$WORK/correctness.csv"
 # Fluss's landing table is silver.trades, not bronze: its PK table is the cleaned
 # deduped view, so it has one hop fewer by design (see `hops` in results.json).
 # Hudi is queried through _rt, not _ro. A MOR table's _ro view reads base files only and
 # does not merge the log files, so it returns STALE counts, jobs/_shared/hudi_tables.py
 # states the rule outright. The fold invariant below was counting silver through _ro and
 # gold through _rt, which would have reported drift that was purely the query view.
-for spec in "iceberg:bronze.trades_spark" \
-            "delta:bronze.trades_delta" \
-            "paimon:bronze.trades_paimon" \
-            "fluss:silver.trades_fluss" \
-            "hudi:bronze.trades_hudi_rt"; do
-  eng="${spec%%:*}"; tbl="${spec##*:}"
-  if rows=$(athena "SELECT count(*) FROM ${tbl}"); then
-    echo "${eng},${tbl},${rows},ok" >> "$WORK/correctness.csv"
-    echo "  ${eng}: ${rows} rows"
-  else
-    echo "${eng},${tbl},,query_failed" >> "$WORK/correctness.csv"
+#
+# FLUSS IS EXCLUDED FROM THE VERDICT, and this is the same trap the fold invariant below
+# already documents. `silver.trades_fluss` is the LAKE TIERING MIRROR, a Paimon copy that
+# lags the live Fluss PK table by design. Comparing it to a Kafka end offset measures
+# tiering lag, not completeness, and reading it as data loss is a mistake this file has
+# now made once. It is still reported, with status `not_comparable`, because the number is
+# worth seeing; it just is not a pass or a fail.
+for spec in "iceberg:bronze.trades_spark:compare" \
+            "delta:bronze.trades_delta:compare" \
+            "paimon:bronze.trades_paimon:compare" \
+            "fluss:silver.trades_fluss:mirror" \
+            "hudi:bronze.trades_hudi_rt:compare"; do
+  eng="${spec%%:*}"; rest="${spec#*:}"; tbl="${rest%%:*}"; mode="${rest##*:}"
+  if ! rows=$(athena "SELECT count(*) FROM ${tbl}"); then
+    echo "${eng},${tbl},,${SRC},,,query_failed" >> "$WORK/correctness.csv"
     echo "  ${eng}: query FAILED (expected for hudi. Athena supports 0.14/0.15, we write 1.2.0)"
+    continue
+  fi
+  if [ "$mode" = "mirror" ]; then
+    echo "${eng},${tbl},${rows},${SRC},,,not_comparable" >> "$WORK/correctness.csv"
+    echo "  ${eng}: ${rows} rows (lake tiering mirror, not comparable to the source offset)"
+  elif [ -z "${SRC}" ]; then
+    echo "${eng},${tbl},${rows},,,,no_source_offset" >> "$WORK/correctness.csv"
+    echo "  ${eng}: ${rows} rows (source offset unavailable, cannot verdict)"
+  else
+    D=$(( rows - SRC ))
+    PCT=$(awk -v d="$D" -v s="$SRC" 'BEGIN{ if (s+0==0) print "n/a"; else printf "%.6f", (d/s)*100 }')
+    ST=$(count_verdict "$rows" "$SRC" "$CORRECTNESS_TOLERANCE" "$QUIESCED")
+    echo "${eng},${tbl},${rows},${SRC},${D},${PCT},${ST}" >> "$WORK/correctness.csv"
+    echo "  ${eng}: ${rows} rows vs ${SRC} source (${D}, ${PCT}%) ${ST}"
   fi
 done
 
@@ -163,7 +245,6 @@ done
 # Only meaningful after quiesce-run.sh: mid-flight, gold legitimately trails silver by
 # whatever is in the current micro-batch. `quiesced` records whether that ran, so a
 # drift figure can never be read as data loss when it was really just a race.
-QUIESCED="${QUIESCED:-unknown}"
 # READ BOTH SIDES AT COMPARABLE TIMES, or say that you did not. This invariant compares a
 # gold aggregate against a silver row count, and for the Iceberg-metadata engines those are
 # two DIFFERENT SNAPSHOTS taken whenever each table last committed. A live run showed:
@@ -254,6 +335,46 @@ done
 # Caveat worth stating: it measures the delay of rows that were WRITTEN. A pipeline so
 # far behind that a position never reaches gold contributes nothing here, read it
 # alongside correctness.csv, which catches exactly that.
+# ── HOP COMPLETENESS (does silver hold everything bronze landed?) ────────────
+#
+#     count(silver.trades) == count(bronze.trades)
+#
+# NOTHING CHECKED THIS, and the 2026-09-01 run shows why it needs to. Bronze was exact on
+# Iceberg, Delta and Paimon, all three matching the source to the row, while their silver
+# tables were 212,500, 146,000 and 8,928 short respectively, with zero duplicates found.
+# correctness.csv could not see it because it only looks at the landing table; dedupe.csv
+# could not see it because it asserts uniqueness and never completeness; the fold
+# invariant could not see it because gold folds whatever silver holds, so a row missing
+# from BOTH leaves drift at zero. Three green checks over a real gap.
+#
+# The two candidate explanations need separating and this check is what forces the issue:
+# either quiesce drained the Kafka lag but not the bronze->silver hop, in which case this
+# is a measurement artefact and quiesce-run.sh needs to wait on this equality; or the
+# dedupe path is dropping rows, in which case it is data loss. Both are worth knowing and
+# neither was visible.
+#
+# Fluss has no bronze hop at all, so it is legitimately absent here rather than skipped.
+echo "hop completeness: count(silver.trades) vs count(bronze.trades)   [quiesced=${QUIESCED}]"
+echo "engine,bronze_rows,silver_rows,missing,missing_pct,quiesced,status" > "$WORK/completeness.csv"
+for spec in "iceberg:bronze.trades_spark:silver.trades_spark" \
+            "delta:bronze.trades_delta:silver.trades_delta" \
+            "paimon:bronze.trades_paimon:silver.trades_paimon" \
+            "hudi:bronze.trades_hudi_rt:silver.trades_hudi_rt"; do
+  eng="${spec%%:*}"; rest="${spec#*:}"; brz="${rest%%:*}"; sil="${rest##*:}"
+  BN=$(athena "SELECT CAST(count(*) AS varchar) FROM ${brz}") || BN=""
+  SN=$(athena "SELECT CAST(count(*) AS varchar) FROM ${sil}") || SN=""
+  if [ -n "$BN" ] && [ -n "$SN" ]; then
+    M=$(( BN - SN ))
+    PCT=$(awk -v m="$M" -v b="$BN" 'BEGIN{ if (b+0==0) print "n/a"; else printf "%.6f", (m/b)*100 }')
+    ST=$(hop_verdict "$BN" "$SN" "$QUIESCED")
+    echo "${eng},${BN},${SN},${M},${PCT},${QUIESCED},${ST}" >> "$WORK/completeness.csv"
+    echo "  ${eng}: bronze=${BN} silver=${SN} missing=${M} (${PCT}%) ${ST}"
+  else
+    echo "${eng},${BN},${SN},,,${QUIESCED},query_failed" >> "$WORK/completeness.csv"
+    echo "  ${eng}: query FAILED (hudi is expected)"
+  fi
+done
+
 echo "processing_delay: gold.commit_ts - gold.last_updated_at"
 echo "engine,table,p50_ms,p95_ms,p99_ms,rows,status" > "$WORK/processing_delay.csv"
 for spec in "iceberg:gold.open_positions_spark" \
@@ -338,6 +459,7 @@ cat > "$WORK/results.json" <<JSON
   "source_events_kafka": "${SRC:-null}",
   "primary_metric": "processing_delay.csv, gold.commit_ts minus gold.last_updated_at, computed identically by every engine and read out of the tables themselves",
   "quiesced": "${QUIESCED:-unknown}",
+  "hops_converged": "${CONVERGED:-skipped}",
   "engines": {
     "iceberg": { "hops": 3, "layers": "kafka -> bronze.trades_spark -> silver.trades_spark -> gold.open_positions_spark",  "engine": "spark" },
     "delta":   { "hops": 3, "layers": "kafka -> bronze.trades_delta -> silver.trades_delta -> gold.open_positions_delta",  "engine": "spark" },
@@ -351,7 +473,10 @@ cat > "$WORK/results.json" <<JSON
     "SECONDARY: latency_percentiles.csv, from the Kafka emit chain that feeds the live dashboard. It decomposes delay per hop (-bronze/-silver/-gold), which the in-table metric cannot, but Spark emits POST-COMMIT (observe + StreamingQueryListener) while Flink SQL has no post-commit hook and samples at PROCESSING time, so its cross-family numbers are not comparable.",
     "gold.opened_at is MIN(executed_at) over the position, not reset when a flat position reopens. Reset-on-flat is expressible in the Spark MERGE but not as a pure Flink fold, so it would make the two families disagree on identical input.",
     "CORRECTNESS IS DETECTED, NOT REPAIRED. invariants.csv reports sum(gold.trade_count) - count(silver.trades) per engine. Delta guards its MERGE with txnAppId/txnVersion AND the Flink engines fold in checkpointed state, so both are exactly-once; Iceberg AND Hudi have no idempotent-write primitive AND a replayed micro-batch double-counts permanently. A reconcile job was deliberately not added: rewriting the book adds write amplification to whichever engine drifted, contaminating the measurement. Non-zero drift is a published result, not a hidden repair.",
-    "invariants.csv and correctness.csv are only meaningful when quiesced=true (quiesce-run.sh stopped the load and waited for zero consumer lag). Mid-flight, gold legitimately trails silver.",
+    "invariants.csv, correctness.csv and completeness.csv are only meaningful when quiesced=true (quiesce-run.sh stopped the load and waited for zero consumer lag). Mid-flight, gold legitimately trails silver, and all three report status unquiesced rather than a verdict they cannot reach.",
+    "correctness.csv NOW COMPARES against the Kafka end offset and can fail: ok / SHORTFALL / EXCESS. It previously wrote ok whenever the Athena query merely returned, which let a Hudi bronze over-count of +80,810 rows and a 2,025,500-row Fluss gap through as passes on the 2026-09-01 run.",
+    "FLUSS IS not_comparable IN correctness.csv, not a pass or a fail. silver.trades_fluss is the lake tiering MIRROR, a Paimon copy that lags the live Fluss PK table by design, so measuring it against a Kafka end offset measures tiering lag rather than completeness. The same trap is documented for the fold invariant.",
+    "completeness.csv is the bronze -> silver hop, which nothing checked before. correctness.csv only looks at the landing table, dedupe.csv asserts uniqueness and never completeness, and the fold invariant cannot see a row missing from silver AND gold. On 2026-09-01 all three were green while Iceberg silver sat 212,500 rows below its own bronze.",
     "ENRICHMENT IS NOT IN GOLD. country/tier are account attributes with no defensible temporal semantic on a current-state position row, so gold holds position facts only AND enrichment is a read-time LEFT JOIN to silver.accounts. LEFT always: trades AND accounts are independent CDC streams, so a fill can land before its account row AND an inner join would silently drop that position from the book. All five golds therefore have identical 9-column schemas.",
     "HUDI HAS NO PER-BATCH ADMISSION CONTROL. Delta caps its stream with maxFilesPerTrigger (200) and Iceberg with streaming-max-files-per-micro-batch (500); Hudi 1.2.0 exposes no equivalent option. Under steady state all three behave similarly, but after a stall Hudi consumes its whole backlog in one micro-batch, so batch-size-sensitive figures are not comparable during recovery.",
     "Hudi queries are expected to fail: Athena supports Hudi 0.14/0.15 and this project writes 1.2.0.",
@@ -365,6 +490,7 @@ aws s3 cp "$WORK/correctness.csv"           "${DEST}/correctness.csv"           
 aws s3 cp "$WORK/processing_delay.csv"      "${DEST}/processing_delay.csv"      --only-show-errors
 aws s3 cp "$WORK/invariants.csv"           "${DEST}/invariants.csv"           --only-show-errors
 aws s3 cp "$WORK/dedupe.csv"                "${DEST}/dedupe.csv"                --only-show-errors
+aws s3 cp "$WORK/completeness.csv"          "${DEST}/completeness.csv"          --only-show-errors
 aws s3 cp "$WORK/latency_percentiles.csv"   "${DEST}/latency_percentiles.csv"   --only-show-errors
 echo "wrote:"
 aws s3 ls "${DEST}/" | sed 's|^|  |'

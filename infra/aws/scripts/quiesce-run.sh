@@ -65,6 +65,17 @@ if [ "${stable:-0}" -lt 2 ]; then
   exit 1
 fi
 
+# WHAT THE LAG CHECK ABOVE DOES NOT COVER, stated because it reads like it covers more
+# than it does. Only the BRONZE hop consumes Kafka. bronze->silver and silver->gold are
+# table-to-table streaming reads with their own checkpoints and no consumer group, so
+# kafka-consumer-groups.sh cannot see them: zero lag proves bronze caught up and says
+# nothing about the two hops after it.
+# The sleep below is therefore a floor, not a drain. On the 2026-09-01 run silver sat
+# 212,500 rows behind its own bronze on Iceberg while this script reported a clean
+# quiesce. snapshot-results.sh now waits for bronze == silver explicitly before it
+# measures, and records hops_converged in results.json; that wait lives there rather than
+# here because Delta and Paimon are not registered in Glue until after this runs.
+#
 # Sinks commit on their own cadence (Spark 15s triggers, Flink 10s checkpoints, Fluss
 # tiering 30s freshness). Zero lag means READ, not COMMITTED, give the slowest of those
 # a couple of cycles to land before anything reads the tables.
