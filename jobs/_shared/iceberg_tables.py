@@ -63,8 +63,23 @@ _STATEMENTS = [
     # against it on any streamed dimension with randomly distributed keys.
     # NOT is_current either, the other tempting choice: partitioning on a mutable field
     # moves a row between partitions on every update.
-    # The lever that would actually help is compaction (infra/aws/k8s/93-maintenance.yaml),
-    # which attacks the file count directly rather than trading it for pruning.
+    # The lever that actually helps is compaction (infra/aws/k8s/93-maintenance.yaml), which
+    # attacks the file count directly rather than trading it for pruning. Measured, and it
+    # is the ONLY thing that moved: 132 files to 1 took the MERGE from 567ms to 271ms
+    # (tests/layout_strategy_bench.py).
+    # AND SORTING IS NOT WORTH ADDING EITHER, which was the obvious next idea. Both
+    # write-side distribution modes are inert on this table: hash distributes by partition
+    # columns and there are none, and range distributes by sort order but only redistributes
+    # WITHIN one write, so a 300-row micro-batch landing in about one file has nothing to
+    # redistribute. Clustering across commits is a compaction concern on any engine.
+    # The deeper reason is scale: this whole table, every version of every account, is
+    # 539 KB and compacts to a SINGLE file. File statistics prune files, so with one file
+    # there is nothing to skip. Data skipping is a large-table technique and this is not a
+    # large table. Adding strategy => 'sort' to the rewrite would buy nothing and cost a
+    # global sort.
+    # Delta's clusterBy("account_id") on the same table is equally moot at this size; its
+    # real advantage is optimizeWrite + autoCompact running INLINE, holding the file count
+    # down continuously rather than every 15 minutes.
     f"""CREATE TABLE IF NOT EXISTS {_CAT}.silver.accounts_spark (
         account_id BIGINT NOT NULL, name STRING, country STRING, tier STRING,
           source_updated_at TIMESTAMP, event_ts TIMESTAMP,

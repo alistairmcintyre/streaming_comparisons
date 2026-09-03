@@ -251,6 +251,51 @@ as checking it.
 The real lever for `silver.accounts` is compaction, which attacks the file count directly
 instead of trading it for pruning that this access pattern cannot use.
 
+### The obvious next idea, and why it is also wrong
+
+If partitioning multiplies files, the textbook answer is to sort instead: keep the data
+ordered by the merge key and let per-file min/max statistics prune. That is what Delta was
+doing all along with `clusterBy("account_id")`, and Iceberg was doing neither, since
+`write.distribution-mode` was `none`, no table had a sort order, and the compaction job ran
+the default binpack strategy, which merges small files without reordering rows. So the
+statistics existed in every manifest and spanned almost the whole key space, which makes
+them decoration.
+
+Fixing that turned out to be impossible, in an interesting way. Measured across four
+layouts on the same table:
+
+| layout | files | avg key span | MERGE |
+| --- | --- | --- | --- |
+| none (shipped) | 132 | 419 / 1000 | 567ms |
+| `distribution-mode=hash` | 132 | 419 / 1000 | 486ms |
+| `range` + `WRITE ORDERED BY` | 132 | 419 / 1000 | 470ms |
+| sorted compaction | **1** | 999 / 1000 | **271ms** |
+
+Neither write-side mode changes anything, and they fail for different reasons. `hash`
+distributes by *partition* columns, and this table has none, so there is nothing to hash
+on. `range` distributes by the *sort order*, so it needs no partition column and should
+have worked, and it did not: distribution only redistributes rows **within a single
+write**. A 300-row micro-batch lands in about one file, so there is nothing to
+redistribute, and a file's min/max is set by which rows the batch happened to contain
+rather than by how they were ordered inside it. Clustering *across* commits is inherently
+a compaction concern, on any engine.
+
+Then compaction rewrote 128 files into one, and the whole point collapsed. That one file
+is **539 KB**: the complete SCD2 history of a thousand accounts. File statistics prune
+files, so with one file there is nothing to skip, which is why the key span went *up*
+rather than down. Data skipping is a large-table technique, and after all that argument
+about layout, this is not a large table.
+
+What did move was the file count, and it moved the MERGE from 567ms to 271ms. Fewer
+objects to open, not better pruning. The fifteen-minute binpack compaction already
+delivers that, which means the configuration that shipped was right the whole time and is
+now measured rather than assumed.
+
+The useful part is the shape of the mistake. Three plausible optimisations, each defensible
+on paper, and the thing that decided all three was a number nobody had looked up: how big
+the table actually is. It also retires the layout theory for those 47 to 51 second batches
+permanently, because half a megabyte merges in under a second at every layout tried.
+
 ### What this did not fix
 
 Worth saying plainly, because the tempting story is that the unorganised table explained
