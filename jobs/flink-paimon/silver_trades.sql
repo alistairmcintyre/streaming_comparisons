@@ -9,6 +9,10 @@ SET 'execution.checkpointing.interval'  = '10 s';
 SET 'execution.checkpointing.mode'      = 'EXACTLY_ONCE';
 SET 'execution.checkpointing.timeout'   = '60 s';
 SET 'state.backend'                     = 'rocksdb';
+-- UTC, EXPLICITLY. UNIX_TIMESTAMP(string) parses in the session time zone while
+-- the executed_at strings are UTC, so an unpinned zone silently offsets every
+-- latency sample by whatever zone the TaskManager happens to run in.
+SET 'table.local-time-zone'             = 'UTC';
 SET 'state.checkpoints.dir'             = '${FLINK_CHECKPOINT_BASE}/silver_trades_paimon/';
 SET 'parallelism.default'               = '1';
 
@@ -49,8 +53,14 @@ WHERE trade_id IS NOT NULL;
 INSERT INTO latency_sink
 SELECT
     '{"pipeline":"paimon-silver","executed_at_ms":'
-    || CAST(UNIX_TIMESTAMP(DATE_FORMAT(executed_at, 'yyyy-MM-dd HH:mm:ss')) * 1000 AS STRING)
-    || ',"ingest_ts_ms":' || CAST(UNIX_TIMESTAMP() * 1000 AS STRING)
+    -- Milliseconds on BOTH terms. DATE_FORMAT to seconds dropped the ms field and
+    -- UNIX_TIMESTAMP() truncates to the second, so every sample carried up to a
+    -- second of error at each end while Spark emitted full ms precision.
+    || CAST(UNIX_TIMESTAMP(DATE_FORMAT(executed_at, 'yyyy-MM-dd HH:mm:ss')) * 1000
+          + CAST(DATE_FORMAT(executed_at, 'SSS') AS BIGINT) AS STRING)
+    || ',"ingest_ts_ms":' || CAST(
+           UNIX_TIMESTAMP(DATE_FORMAT(CURRENT_ROW_TIMESTAMP(), 'yyyy-MM-dd HH:mm:ss')) * 1000
+         + CAST(DATE_FORMAT(CURRENT_ROW_TIMESTAMP(), 'SSS') AS BIGINT) AS STRING)
     || ',"sample_kind":"flink_record"}'
 FROM paimon.bronze.trades
     /*+ OPTIONS('scan.mode' = 'latest-full') */

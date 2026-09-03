@@ -33,6 +33,10 @@ SET 'execution.checkpointing.interval'  = '10 s';
 SET 'execution.checkpointing.mode'      = 'EXACTLY_ONCE';
 SET 'execution.checkpointing.timeout'   = '60 s';
 SET 'state.backend'                     = 'rocksdb';
+-- UTC, EXPLICITLY. UNIX_TIMESTAMP(string) parses in the session time zone while
+-- the executed_at strings are UTC, so an unpinned zone silently offsets every
+-- latency sample by whatever zone the TaskManager happens to run in.
+SET 'table.local-time-zone'             = 'UTC';
 SET 'state.checkpoints.dir'             = '${FLINK_CHECKPOINT_BASE}/silver_accounts_paimon/';
 SET 'parallelism.default'               = '1';
 
