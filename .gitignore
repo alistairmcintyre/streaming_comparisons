@@ -239,3 +239,6 @@ crash.log
 # local run artefacts
 spark-warehouse/
 .claude/
+
+# local scratch, notes and interview prep, never committed
+local/
